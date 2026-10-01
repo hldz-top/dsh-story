@@ -1,0 +1,5 @@
+# Apply after the Story plugin is mounted, only for a newly authorized run.
+- id: dsh-story
+  config:
+    maxResearchCalls: 12
+    maxResearchSources: 96

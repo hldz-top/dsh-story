@@ -1,0 +1,590 @@
+/** Manuscript version publication and reviewed adoption over one writing domain. */
+import { createHash, randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import { planSettings } from './settings-plan.ts'
+import { manuscriptTargetSchema, settingsCollectionSchema, type ManuscriptRecord } from './manuscript-records.ts'
+import { parseBodyOutput, parseBookOutlineOutput, parseChapterOutlineOutput, parseContinuityOutput, parseReviewOutput, StageOutputSchemas } from './stage-output.ts'
+import { WritingError } from './contracts.ts'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { Domain } from '@deepseek-ai/dsh-storage-domain'
+import type { z } from 'zod'
+import type { Actor, Artifact, ArtifactId, ArtifactRef, NovelId, RequestId } from './contracts.ts'
+import { assembleBody, inspectBody } from './body-text.ts'
+import type { BodyLengthResult, BodyWordBounds } from './body-text.ts'
+import type { ReviewCategory, StageInputRef } from './stage-output.ts'
+import type { AppliedChapterRecord } from './manuscript-records.ts'
+import type { writingDomain, NovelRecord } from './records.ts'
+import type { WritingService } from './service.ts'
+
+/** Explicit chapter-total acceptance bounds owned by host configuration. */
+export type ManuscriptLimits = BodyWordBounds
+/** Exact stage scope; settings collections are assembled by the program. */
+export type ManuscriptTarget = z.infer<typeof manuscriptTargetSchema>
+/** Model-generated manuscript stage scope. */
+export type GeneratedManuscriptTarget = Exclude<ManuscriptTarget, { kind: 'settings' }>
+/** Versioned manuscript document kind. */
+export type ManuscriptKind = ManuscriptTarget['kind']
+/** Explicit selected roots for one deterministic settings collection. */
+export interface AssembleSettingsRequest { readonly novelId: NovelId; readonly requestId: RequestId; readonly selectedCodes: readonly string[] }
+/** Current inputs and mechanical expectations for one native stage invocation. */
+export interface ManuscriptContext {
+  readonly target: GeneratedManuscriptTarget
+  readonly researchPlanId: ArtifactId
+  readonly revisionOf: ArtifactId | null
+  readonly inputRefs: readonly ArtifactRef[]
+  readonly requiredChecks: readonly ReviewCategory[]
+  readonly obligations: readonly { id: string; description: string }[]
+  readonly sceneIds: readonly string[]
+  readonly priorChapter: { body: ArtifactRef<'body'>; continuity: ArtifactRef<'continuity'> } | null
+}
+/** Exact generated version submitted by a native child run. */
+export interface SaveManuscriptCandidateRequest {
+  readonly novelId: NovelId; readonly requestId: RequestId; readonly target: GeneratedManuscriptTarget
+  readonly childSessionId: SessionId; readonly output: unknown; readonly researchPlanId: ArtifactId; readonly revisionOf?: ArtifactId
+}
+/** One candidate, its latest review, and validity of its original inputs. */
+export interface ManuscriptCandidateView {
+  readonly target: ManuscriptTarget; readonly artifact: ArtifactRef<ManuscriptKind>; readonly inputRefs: readonly StageInputRef[]
+  readonly childSessionId: SessionId | null; readonly revisionOf: ArtifactId | null; readonly status: 'candidate' | 'reviewed' | 'blocked' | 'applied'
+  readonly review: ArtifactRef<'review'> | null; readonly stale: boolean; readonly changedInputs: readonly StageInputRef[]
+  readonly wordCount: number | null; readonly length: BodyLengthResult | null
+}
+/** Exact candidate review with a latest-review compare-and-set precondition. */
+export interface SaveManuscriptReviewRequest {
+  readonly novelId: NovelId; readonly candidateId: ArtifactId; readonly requestId: RequestId; readonly expectedReviewId: ArtifactId | null
+  readonly childSessionId: SessionId; readonly output: unknown
+}
+/** Standalone settings or outline adoption with a current-head precondition. */
+export interface ApplyManuscriptCandidateRequest {
+  readonly novelId: NovelId; readonly candidateId: ArtifactId; readonly reviewId: ArtifactId; readonly expectedAppliedId: ArtifactId | null
+}
+/** Atomic publication of one reviewed body and its reviewed actual continuity. */
+export interface ApplyChapterRequest {
+  readonly novelId: NovelId; readonly bodyId: ArtifactId; readonly bodyReviewId: ArtifactId
+  readonly continuityId: ArtifactId; readonly continuityReviewId: ArtifactId; readonly expectedBodyId: ArtifactId | null; readonly expectedContinuityId: ArtifactId | null
+}
+/** Current chapter application with mechanically recomputed count and source validity. */
+export interface AppliedChapterView extends AppliedChapterRecord { readonly wordCount: number; readonly stale: boolean; readonly changedInputs: readonly StageInputRef[] }
+/** Retained candidates, current standalone heads, and atomic chapter applications. */
+export interface ManuscriptView {
+  readonly history: readonly ManuscriptCandidateView[]; readonly heads: readonly ManuscriptCandidateView[]; readonly appliedChapters: readonly AppliedChapterView[]
+}
+
+/** Uses the writing service's existing domain and lifecycle; never opens another provider. */
+export class ManuscriptStore {
+  constructor(private readonly domain: Domain<typeof writingDomain>, private readonly owner: WritingService) {}
+
+  /** @param actor - Owning workspace. @param request - Explicit selected settings roots. @returns An unreviewed immutable settings collection. */
+  async assembleSettings(actor: Actor, request: AssembleSettingsRequest): Promise<ManuscriptCandidateView> {
+    actor.signal?.throwIfAborted()
+    const novel = this.record(actor, request.novelId)
+    const target = { kind: 'settings' as const, selectedCodes: [...planSettings(request.selectedCodes).selectedCodes] }
+    const hash = digest(target)
+    const replay = novel.manuscriptHistory.find(item => item.request.requestId === request.requestId)
+    if (replay !== undefined) { sameRequest(replay.request.hash, hash); return this.view(actor, novel, replay) }
+    const output = this.collection(actor, novel, target.selectedCodes)
+    const artifact = this.artifact(novel.id, 'settings', JSON.stringify(output))
+    await this.domain.table('artifacts').put(artifact.id, artifact)
+    actor.signal?.throwIfAborted()
+    const updated = await this.domain.table('novels').update(novel.id, current => {
+      actor.signal?.throwIfAborted()
+      const duplicate = current.manuscriptHistory.find(item => item.request.requestId === request.requestId)
+      if (duplicate !== undefined) { sameRequest(duplicate.request.hash, hash); return current }
+      const actual = this.collection(actor, current, target.selectedCodes)
+      if (!isDeepStrictEqual(actual, output)) throw new WritingError('revision-conflict', 'Selected settings changed before collection publication')
+      return { ...current, manuscriptHistory: [...current.manuscriptHistory, { artifact: reference(artifact), target,
+        inputRefs: output.inputRefs, childSessionId: null, researchPlanId: null, request: { requestId: request.requestId, hash }, reviewHistory: [], applied: false, revisionOf: null }] }
+    })
+    const saved = updated.manuscriptHistory.find(item => item.request.requestId === request.requestId)
+    if (saved === undefined) throw new WritingError('corrupt-artifact', 'Settings collection receipt is missing')
+    return this.view(actor, updated, saved)
+  }
+
+  /** @param actor - Owning workspace. @param novelId - Exact novel. @returns Current heads and retained versions. */
+  getManuscript(actor: Actor, novelId: NovelId): ManuscriptView {
+    const novel = this.record(actor, novelId)
+    const history = novel.manuscriptHistory.map(candidate => this.view(actor, novel, candidate))
+    const heads = novel.manuscriptHeads.map(head => {
+      const candidate = history.find(item => item.artifact.id === head.artifactId)
+      if (candidate === undefined || candidate.status !== 'applied' || slot(candidate.target) !== `${head.kind}:${head.chapterNumber}`) throw new WritingError('corrupt-artifact', 'Manuscript head does not identify its adopted document')
+      return candidate
+    })
+    const chapters = new Map<number, AppliedChapterRecord>()
+    for (const chapter of novel.appliedChapters) chapters.set(chapter.chapterNumber, chapter)
+    return { history, heads, appliedChapters: [...chapters.values()].sort((a, b) => a.chapterNumber - b.chapterNumber).map(chapter => this.chapterView(actor, novel, chapter)) }
+  }
+
+  /** @param actor - Owning workspace. @param request - Exact candidate review. @returns The reviewed candidate. */
+  async saveManuscriptReview(actor: Actor, request: SaveManuscriptReviewRequest): Promise<ManuscriptCandidateView> {
+    actor.signal?.throwIfAborted()
+    const novel = this.record(actor, request.novelId)
+    const candidate = this.candidate(novel, request.candidateId)
+    this.validateCandidate(actor, novel, candidate)
+    const output = this.reviewOutput(actor, novel, candidate, request.output)
+    const hash = digest([request.childSessionId, request.expectedReviewId, output])
+    const replay = candidate.reviewHistory.find(item => item.request.requestId === request.requestId)
+    if (replay !== undefined) { sameRequest(replay.request.hash, hash); return this.view(actor, novel, candidate) }
+    this.admitReview(actor, novel, candidate, request.expectedReviewId)
+    const artifact = this.artifact(novel.id, 'review', JSON.stringify(output))
+    await this.domain.table('artifacts').put(artifact.id, artifact)
+    actor.signal?.throwIfAborted()
+    const updated = await this.domain.table('novels').update(novel.id, current => {
+      actor.signal?.throwIfAborted()
+      const active = this.candidate(current, candidate.artifact.id)
+      const duplicate = active.reviewHistory.find(item => item.request.requestId === request.requestId)
+      if (duplicate !== undefined) { sameRequest(duplicate.request.hash, hash); return current }
+      this.admitReview(actor, current, active, request.expectedReviewId)
+      return { ...current, manuscriptHistory: current.manuscriptHistory.map(item => item.artifact.id === active.artifact.id
+        ? { ...item, reviewHistory: [...item.reviewHistory, { artifact: reference(artifact), childSessionId: request.childSessionId,
+          request: { requestId: request.requestId, hash }, blocking: output.issues.some(issue => issue.severity === 'blocking') }] } : item) }
+    })
+    return this.view(actor, updated, this.candidate(updated, candidate.artifact.id))
+  }
+
+  /** @param actor - Owning workspace. @param request - Exact passing review and expected head. @returns The adopted version. */
+  async applyManuscriptCandidate(actor: Actor, request: ApplyManuscriptCandidateRequest): Promise<ManuscriptCandidateView> {
+    actor.signal?.throwIfAborted()
+    const novel = this.record(actor, request.novelId)
+    const candidate = this.candidate(novel, request.candidateId)
+    if (candidate.target.kind === 'body' || candidate.target.kind === 'continuity') throw new WritingError('review-blocked', 'Body and continuity must apply together')
+    this.passingReview(actor, novel, candidate, request.reviewId)
+    if (candidate.applied) return this.view(actor, novel, candidate)
+    const updated = await this.domain.table('novels').update(novel.id, current => {
+      actor.signal?.throwIfAborted()
+      const active = this.candidate(current, candidate.artifact.id)
+      this.passingReview(actor, current, active, request.reviewId)
+      if (active.applied) return current
+      this.currentInputs(actor, current, active)
+      const head = current.manuscriptHeads.find(item => `${item.kind}:${item.chapterNumber}` === slot(active.target))
+      if ((head?.artifactId ?? null) !== request.expectedAppliedId || (active.revisionOf !== null && request.expectedAppliedId !== active.revisionOf)) throw new WritingError('revision-conflict', 'A different manuscript version is the current head')
+      if (active.target.kind === 'body' || active.target.kind === 'continuity') throw new WritingError('review-blocked', 'Body and continuity must apply together')
+      return { ...current, manuscriptHistory: current.manuscriptHistory.map(item => item.artifact.id === active.artifact.id ? { ...item, applied: true } : item),
+        manuscriptHeads: [...current.manuscriptHeads.filter(item => `${item.kind}:${item.chapterNumber}` !== slot(active.target)),
+          { kind: active.target.kind, chapterNumber: 'chapterNumber' in active.target ? active.target.chapterNumber : null, artifactId: active.artifact.id }] }
+    })
+    return this.view(actor, updated, this.candidate(updated, candidate.artifact.id))
+  }
+
+  /** @param actor - Owning workspace. @param request - Target before research planning. @returns Current source references without research evidence. */
+  manuscriptResearchInputs(actor: Actor, request: { novelId: NovelId; target: GeneratedManuscriptTarget; revisionOf?: ArtifactId }): readonly ArtifactRef[] {
+    return this.context(actor, this.record(actor, request.novelId), request.target, request.revisionOf).inputRefs
+  }
+
+  /** @param actor - Owning workspace. @param request - Exact novel and requested stage. @returns Admissible source versions and mechanical requirements. */
+  manuscriptInputs(actor: Actor, request: { novelId: NovelId; target: GeneratedManuscriptTarget; researchPlanId: ArtifactId; revisionOf?: ArtifactId }): ManuscriptContext {
+    const novel = this.record(actor, request.novelId)
+    const context = this.context(actor, novel, request.target, request.revisionOf)
+    const research = this.owner.getResearch(actor, { novelId: novel.id, planId: request.researchPlanId })
+    if (research.stale || research.result === null || (research.outcome !== 'succeeded' && research.outcome !== 'not-needed')) throw new WritingError('research-incomplete', 'Manuscript generation requires adequate research for the current creative brief')
+    const [brief, ...rest] = context.inputRefs
+    if (brief === undefined) throw new WritingError('corrupt-artifact', 'Manuscript context has no creative brief')
+    return { ...context, researchPlanId: request.researchPlanId, inputRefs: [brief, research.result, ...rest] }
+  }
+
+  /** @param actor - Owning workspace. @param request - Native stage JSON for exact input versions. @returns An immutable candidate without implicit application. */
+  async saveManuscriptCandidate(actor: Actor, request: SaveManuscriptCandidateRequest): Promise<ManuscriptCandidateView> {
+    actor.signal?.throwIfAborted()
+    const novel = this.record(actor, request.novelId)
+    const target = manuscriptTargetSchema.parse(request.target)
+    if (target.kind === 'settings') throw new WritingError('invalid-input', 'This manuscript stage output is not yet available')
+    const parsed = StageOutputSchemas[target.kind].parse(request.output)
+    const hash = digest([target, request.researchPlanId, request.childSessionId, { ...parsed, inputRefs: [...parsed.inputRefs].sort((a, b) => a.artifactId < b.artifactId ? -1 : a.artifactId > b.artifactId ? 1 : 0) }, ...(request.revisionOf === undefined ? [] : [request.revisionOf])])
+    const replay = novel.manuscriptHistory.find(item => item.request.requestId === request.requestId)
+    if (replay !== undefined) { sameRequest(replay.request.hash, hash); return this.view(actor, novel, replay) }
+    const context = this.manuscriptInputs(actor, request)
+    const refs = context.inputRefs.map(inputRef)
+    const { output } = this.generatedOutput(actor, novel, target, refs, request.researchPlanId, parsed, request.revisionOf ?? null)
+    const artifact = this.artifact(novel.id, target.kind, JSON.stringify(output))
+    await this.domain.table('artifacts').put(artifact.id, artifact)
+    actor.signal?.throwIfAborted()
+    const updated = await this.domain.table('novels').update(novel.id, current => {
+      actor.signal?.throwIfAborted()
+      const duplicate = current.manuscriptHistory.find(item => item.request.requestId === request.requestId)
+      if (duplicate !== undefined) { sameRequest(duplicate.request.hash, hash); return current }
+      const actual = this.manuscriptInputs(actor, request)
+      if (!sameRefs(actual.inputRefs.map(inputRef), output.inputRefs)) throw new WritingError('revision-conflict', 'Manuscript inputs changed before candidate publication')
+      return { ...current, manuscriptHistory: [...current.manuscriptHistory, { artifact: reference(artifact), target, inputRefs: refs,
+        childSessionId: request.childSessionId, researchPlanId: request.researchPlanId, request: { requestId: request.requestId, hash }, reviewHistory: [], applied: false, revisionOf: request.revisionOf ?? null }] }
+    })
+    const saved = updated.manuscriptHistory.find(item => item.request.requestId === request.requestId)
+    if (saved === undefined) throw new WritingError('corrupt-artifact', 'Manuscript publication receipt is missing')
+    return this.view(actor, updated, saved)
+  }
+
+  /** @param actor - Owning workspace. @param request - Exact reviewed body/continuity pair and expected current pair. @returns One atomically applied chapter. */
+  async applyChapter(actor: Actor, request: ApplyChapterRequest): Promise<AppliedChapterView> {
+    actor.signal?.throwIfAborted()
+    const novel = this.record(actor, request.novelId)
+    const replay = novel.appliedChapters.find(item => item.body.id === request.bodyId && item.continuity.id === request.continuityId)
+    if (replay !== undefined) {
+      if (replay.bodyReview.id !== request.bodyReviewId || replay.continuityReview.id !== request.continuityReviewId) throw new WritingError('review-blocked', 'Applied chapter review identities differ from this request')
+      return this.chapterView(actor, novel, replay)
+    }
+    this.checkedPair(actor, novel, request, this.owner.manuscriptLimits)
+    const updated = await this.domain.table('novels').update(novel.id, current => {
+      actor.signal?.throwIfAborted()
+      const duplicate = current.appliedChapters.find(item => item.body.id === request.bodyId && item.continuity.id === request.continuityId)
+      if (duplicate !== undefined) {
+        if (duplicate.bodyReview.id !== request.bodyReviewId || duplicate.continuityReview.id !== request.continuityReviewId) throw new WritingError('review-blocked', 'Applied chapter review identities differ from this request')
+        return current
+      }
+      const pair = this.checkedPair(actor, current, request, this.owner.manuscriptLimits)
+      this.currentInputs(actor, current, pair.body)
+      this.currentInputs(actor, current, pair.continuity)
+      const previous = current.appliedChapters.findLast(item => item.chapterNumber === pair.chapterNumber)
+      if ((previous?.body.id ?? null) !== request.expectedBodyId || (previous?.continuity.id ?? null) !== request.expectedContinuityId) throw new WritingError('revision-conflict', 'A different body or continuity version is already applied')
+      const bodyReview = pair.body.reviewHistory.at(-1)
+      const continuityReview = pair.continuity.reviewHistory.at(-1)
+      if (bodyReview === undefined || continuityReview === undefined || pair.body.artifact.kind !== 'body' || pair.continuity.artifact.kind !== 'continuity') throw new WritingError('corrupt-artifact', 'Reviewed chapter pair is incomplete')
+      return { ...current, manuscriptHistory: current.manuscriptHistory.map(item => item.artifact.id === pair.body.artifact.id || item.artifact.id === pair.continuity.artifact.id ? { ...item, applied: true } : item),
+        appliedChapters: [...current.appliedChapters, { chapterNumber: pair.chapterNumber,
+          body: { ...pair.body.artifact, kind: 'body' as const }, bodyReview: bodyReview.artifact,
+          continuity: { ...pair.continuity.artifact, kind: 'continuity' as const }, continuityReview: continuityReview.artifact, obligations: pair.output.obligations, wordBounds: { ...this.owner.manuscriptLimits } }] }
+    })
+    const saved = updated.appliedChapters.find(item => item.body.id === request.bodyId && item.continuity.id === request.continuityId)
+    if (saved === undefined) throw new WritingError('corrupt-artifact', 'Applied chapter receipt is missing')
+    return this.chapterView(actor, updated, saved)
+  }
+
+  private checkedPair(actor: Actor, novel: NovelRecord, request: ApplyChapterRequest, bounds: ManuscriptLimits) {
+    const body = this.candidate(novel, request.bodyId)
+    const continuity = this.candidate(novel, request.continuityId)
+    if (body.target.kind !== 'body' || continuity.target.kind !== 'continuity' || continuity.target.bodyId !== body.artifact.id
+      || continuity.target.chapterNumber !== body.target.chapterNumber) throw new WritingError('review-blocked', 'Body and continuity must identify the same chapter and exact body version')
+    this.passingReview(actor, novel, body, request.bodyReviewId)
+    this.passingReview(actor, novel, continuity, request.continuityReviewId)
+    const prose = this.validateCandidate(actor, novel, body)
+    const actual = this.validateCandidate(actor, novel, continuity)
+    if (prose.kind !== 'body' || actual.kind !== 'continuity') throw new WritingError('corrupt-artifact', 'Chapter pair has incorrect document kinds')
+    const inspection = inspectBody(prose.output, bounds)
+    if (inspection.length.blocking) throw new WritingError('review-blocked', 'Chapter word count is outside configured limits')
+    if (actual.output.obligations.some(item => item.status !== 'fulfilled')) throw new WritingError('review-blocked', 'Every required chapter obligation must be fulfilled')
+    return { body, continuity, chapterNumber: body.target.chapterNumber, output: actual.output, wordCount: inspection.wordCount }
+  }
+
+  private chapterView(actor: Actor, novel: NovelRecord, chapter: AppliedChapterRecord): AppliedChapterView {
+    const pair = this.checkedPair(actor, novel, { novelId: novel.id, bodyId: chapter.body.id, bodyReviewId: chapter.bodyReview.id,
+      continuityId: chapter.continuity.id, continuityReviewId: chapter.continuityReview.id, expectedBodyId: null, expectedContinuityId: null }, chapter.wordBounds)
+    if (!pair.body.applied || !pair.continuity.applied || chapter.chapterNumber !== pair.chapterNumber
+      || !isDeepStrictEqual(chapter.body, pair.body.artifact) || !isDeepStrictEqual(chapter.continuity, pair.continuity.artifact)
+      || !isDeepStrictEqual(chapter.bodyReview, pair.body.reviewHistory.at(-1)?.artifact) || !isDeepStrictEqual(chapter.continuityReview, pair.continuity.reviewHistory.at(-1)?.artifact)
+      || !isDeepStrictEqual(chapter.obligations, pair.output.obligations)) throw new WritingError('corrupt-artifact', 'Applied chapter record differs from its reviewed immutable versions')
+    const changes = [...this.changedInputs(actor, novel, pair.body), ...this.changedInputs(actor, novel, pair.continuity)]
+    const changedInputs = [...new Map(changes.map(ref => [ref.artifactId, ref])).values()]
+    return structuredClone({ ...chapter, wordCount: pair.wordCount, stale: changedInputs.length > 0, changedInputs })
+  }
+
+  private context(actor: Actor, novel: NovelRecord, requested: GeneratedManuscriptTarget, revisionOf?: ArtifactId): Omit<ManuscriptContext, 'researchPlanId'> {
+    const target = manuscriptTargetSchema.parse(requested)
+    if (target.kind === 'settings') throw new WritingError('invalid-input', 'This manuscript stage context is not yet available')
+    const lineage = revisionOf === undefined ? [] : [this.revisionBase(actor, novel, target, revisionOf).artifact]
+    const settings = this.head(actor, novel, 'settings', null)
+    const brief = this.owner.getNovel(actor, novel.id).brief
+    const refs: ArtifactRef[] = [brief, settings.artifact]
+    this.owner.getArtifact(actor, { novelId: novel.id, artifactId: brief.id })
+    if (target.kind === 'book-outline') return { target, revisionOf: revisionOf ?? null, inputRefs: [...refs, ...lineage], requiredChecks: requiredChecks(target.kind), obligations: [], sceneIds: [], priorChapter: null }
+    const book = this.head(actor, novel, 'book-outline', null)
+    refs.push(book.artifact)
+    const plan = StageOutputSchemas['book-outline'].parse(JSON.parse(this.owner.getArtifact(actor, { novelId: novel.id, artifactId: book.artifact.id }).text))
+    const chapter = plan.chapters.find(item => item.chapterNumber === target.chapterNumber)
+    if (chapter === undefined) throw new WritingError('invalid-input', 'Requested chapter is outside the applied book plan')
+    let sceneIds: string[] = []
+    if (target.kind === 'body' || target.kind === 'continuity') {
+      const outline = this.head(actor, novel, 'chapter-outline', target.chapterNumber)
+      refs.push(outline.artifact)
+      const parsed = StageOutputSchemas['chapter-outline'].parse(JSON.parse(this.owner.getArtifact(actor, { novelId: novel.id, artifactId: outline.artifact.id }).text))
+      sceneIds = parsed.scenes.map(scene => scene.id)
+    }
+    let priorChapter: ManuscriptContext['priorChapter'] = null
+    if (target.chapterNumber > 1) {
+      const previous = novel.appliedChapters.findLast(item => item.chapterNumber === target.chapterNumber - 1)
+      if (previous === undefined) throw new WritingError('revision-conflict', 'The previous chapter must be applied before continuing')
+      this.chapterView(actor, novel, previous)
+      const body = this.candidate(novel, previous.body.id)
+      const continuity = this.candidate(novel, previous.continuity.id)
+      this.passingReview(actor, novel, body, previous.bodyReview.id)
+      this.passingReview(actor, novel, continuity, previous.continuityReview.id)
+      this.currentInputs(actor, novel, body)
+      this.currentInputs(actor, novel, continuity)
+      priorChapter = { body: previous.body, continuity: previous.continuity }
+      refs.push(previous.body, previous.continuity)
+    }
+    if (target.kind === 'continuity') {
+      const body = this.candidate(novel, target.bodyId)
+      if (body.target.kind !== 'body' || body.target.chapterNumber !== target.chapterNumber) throw new WritingError('invalid-input', 'Continuity must identify the reviewed body of this chapter')
+      const review = body.reviewHistory.at(-1)
+      if (review === undefined) throw new WritingError('review-blocked', 'Review the exact body before deriving continuity')
+      this.passingReview(actor, novel, body, review.artifact.id)
+      this.currentInputs(actor, novel, body)
+      const checked = this.validateCandidate(actor, novel, body)
+      if (checked.kind !== 'body' || inspectBody(checked.output, this.owner.manuscriptLimits).length.blocking) throw new WritingError('review-blocked', 'Body length blocks continuity generation')
+      const bodyInputs = body.inputRefs.filter(ref => this.owner.getArtifact(actor, { novelId: novel.id, artifactId: ref.artifactId }).kind !== 'research-evidence')
+      if (!sameRefs(bodyInputs, refs.map(inputRef))) throw new WritingError('revision-conflict', 'Reviewed body uses different current chapter sources')
+      refs.push(body.artifact, review.artifact)
+    }
+    return { target, revisionOf: revisionOf ?? null, inputRefs: [...refs, ...lineage], requiredChecks: requiredChecks(target.kind), obligations: chapter.obligations, sceneIds, priorChapter }
+  }
+
+  private generatedOutput(actor: Actor, novel: NovelRecord, target: GeneratedManuscriptTarget, refs: readonly StageInputRef[], researchPlanId: ArtifactId, value: unknown, revisionOf: ArtifactId | null) {
+    const allSources = refs.map(ref => {
+      const source = this.owner.getArtifact(actor, { novelId: novel.id, artifactId: ref.artifactId })
+      if (source.sha256 !== ref.sha256) throw new WritingError('corrupt-artifact', 'Manuscript input hash differs from saved content')
+      return source
+    })
+    if (revisionOf !== null) {
+      const base = this.candidate(novel, revisionOf)
+      if ((target.kind !== 'book-outline' && target.kind !== 'chapter-outline') || !base.applied || !isDeepStrictEqual(base.target, target) || allSources.at(-1)?.id !== revisionOf) throw new WritingError('corrupt-artifact', 'Revision lineage differs from the exact applied target')
+    }
+    const sources = revisionOf === null ? allSources : allSources.slice(0, -1)
+    const research = this.owner.getResearch(actor, { novelId: novel.id, planId: researchPlanId })
+    if (research.result === null || (research.outcome !== 'succeeded' && research.outcome !== 'not-needed')
+      || sources[0]?.id !== research.briefArtifactId || sources[1]?.id !== research.result.id) throw new WritingError('corrupt-artifact', 'Manuscript research provenance differs from its inputs')
+    if (sources[0]?.kind !== 'creative-brief' || sources[1]?.kind !== 'research-evidence' || sources[2]?.kind !== 'settings') throw new WritingError('corrupt-artifact', 'Manuscript base source roles are incomplete')
+    const settings = settingsCollectionSchema.parse(JSON.parse(sources[2].text))
+    if (!settings.inputRefs.some(ref => ref.artifactId === sources[0]?.id)) throw new WritingError('corrupt-artifact', 'Settings belong to a different brief version')
+    if (target.kind === 'book-outline') {
+      if (sources.length !== 3) throw new WritingError('corrupt-artifact', 'Book source roles are incomplete')
+      return { kind: 'book-outline' as const, output: parseBookOutlineOutput(value, { inputRefs: refs, chapterCount: target.chapterCount }) }
+    }
+    if (target.kind !== 'chapter-outline' && target.kind !== 'body' && target.kind !== 'continuity') throw new WritingError('invalid-input', 'This manuscript output is not available')
+    const book = sources[3]
+    if (book?.kind !== 'book-outline') throw new WritingError('corrupt-artifact', 'Chapter requires its exact book outline')
+    const plan = StageOutputSchemas['book-outline'].parse(JSON.parse(book.text))
+    if (!plan.inputRefs.some(ref => ref.artifactId === sources[2]?.id)) throw new WritingError('corrupt-artifact', 'Book outline uses different settings')
+    const chapter = plan.chapters.find(item => item.chapterNumber === target.chapterNumber)
+    if (chapter === undefined) throw new WritingError('invalid-input', 'Requested chapter is outside its book plan')
+    let sceneIds: string[] = []
+    const priorIndex = target.kind === 'chapter-outline' ? 4 : 5
+    if (target.kind === 'body' || target.kind === 'continuity') {
+      const outline = sources[4]
+      if (outline?.kind !== 'chapter-outline') throw new WritingError('corrupt-artifact', 'Body requires its exact chapter outline')
+      const chapterPlan = StageOutputSchemas['chapter-outline'].parse(JSON.parse(outline.text))
+      if (chapterPlan.chapterNumber !== target.chapterNumber || !chapterPlan.inputRefs.some(ref => ref.artifactId === book.id)) throw new WritingError('corrupt-artifact', 'Body chapter outline belongs to a different chapter or book')
+      sceneIds = chapterPlan.scenes.map(scene => scene.id)
+    }
+    const priorCount = target.chapterNumber === 1 ? 0 : 2
+    const bodyIndex = priorIndex + priorCount
+    const expectedCount = bodyIndex + (target.kind === 'continuity' ? 2 : 0)
+    if (sources.length !== expectedCount) throw new WritingError('corrupt-artifact', 'Chapter input roles are incomplete')
+    if (target.chapterNumber > 1) {
+      const previousBody = sources[priorIndex]
+      const previousContinuity = sources[priorIndex + 1]
+      if (previousBody?.kind !== 'body' || previousContinuity?.kind !== 'continuity'
+        || !novel.appliedChapters.some(item => item.chapterNumber === target.chapterNumber - 1 && item.body.id === previousBody.id && item.continuity.id === previousContinuity.id)) {
+        throw new WritingError('corrupt-artifact', 'Prior chapter sources were not applied together')
+      }
+    }
+    if (target.kind === 'continuity') {
+      const body = sources[bodyIndex]
+      const review = sources[bodyIndex + 1]
+      if (body?.kind !== 'body' || body.id !== target.bodyId || review?.kind !== 'review') throw new WritingError('corrupt-artifact', 'Continuity requires the exact reviewed body and its review')
+      const bodyRecord = this.candidate(novel, body.id)
+      if (bodyRecord.target.kind !== 'body' || bodyRecord.target.chapterNumber !== target.chapterNumber || !bodyRecord.reviewHistory.some(item => item.artifact.id === review.id)) throw new WritingError('corrupt-artifact', 'Continuity review does not belong to the requested chapter body')
+      const bodyOutput = StageOutputSchemas.body.parse(JSON.parse(body.text))
+      const bodyReview = this.reviewOutput(actor, novel, bodyRecord, JSON.parse(review.text))
+      if (bodyReview.issues.some(issue => issue.severity === 'blocking')) throw new WritingError('review-blocked', 'Continuity body still has blocking issues')
+      const expectedBodySources = sources.slice(0, bodyIndex).filter(source => source.kind !== 'research-evidence').map(inputRef)
+      const actualBodySources = bodyRecord.inputRefs.filter(ref => this.owner.getArtifact(actor, { novelId: novel.id, artifactId: ref.artifactId }).kind !== 'research-evidence')
+      if (!sameRefs(actualBodySources, expectedBodySources)) throw new WritingError('corrupt-artifact', 'Continuity and body use different chapter source versions')
+      const evidenceSources = [{ artifactId: body.id, text: assembleBody(bodyOutput) }]
+      if (target.chapterNumber > 1) {
+        const previous = sources[priorIndex + 1]
+        if (previous === undefined) throw new WritingError('corrupt-artifact', 'Previous actual continuity is missing')
+        evidenceSources.push({ artifactId: previous.id, text: previous.text })
+      }
+      return { kind: 'continuity' as const, output: parseContinuityOutput(value, { inputRefs: refs, chapterNumber: target.chapterNumber,
+        obligationIds: chapter.obligations.map(item => item.id), reviewedBodyId: body.id, evidenceSources }) }
+    }
+    if (target.kind === 'body') return { kind: 'body' as const, output: parseBodyOutput(value, { inputRefs: refs, chapterNumber: target.chapterNumber, sceneIds }) }
+    return { kind: 'chapter-outline' as const, output: parseChapterOutlineOutput(value, { inputRefs: refs, chapterNumber: target.chapterNumber, obligationIds: chapter.obligations.map(item => item.id) }) }
+  }
+
+  private revisionBase(actor: Actor, novel: NovelRecord, target: GeneratedManuscriptTarget, revisionOf: ArtifactId): ManuscriptRecord {
+    const base = this.candidate(novel, revisionOf)
+    if ((target.kind !== 'book-outline' && target.kind !== 'chapter-outline') || !base.applied || !isDeepStrictEqual(base.target, target)) throw new WritingError('invalid-input', 'Revision base must be an applied outline with the same target scope')
+    this.validateCandidate(actor, novel, base)
+    this.validateReviews(actor, novel, base)
+    if (!novel.manuscriptHeads.some(head => head.artifactId === base.artifact.id)) throw new WritingError('revision-conflict', 'Manuscript revision base is no longer the current head')
+    return base
+  }
+
+  private head(actor: Actor, novel: NovelRecord, kind: 'settings' | 'book-outline' | 'chapter-outline', chapterNumber: number | null): ManuscriptRecord {
+    const head = novel.manuscriptHeads.find(item => item.kind === kind && item.chapterNumber === chapterNumber)
+    if (head === undefined) throw new WritingError('revision-conflict', `An applied ${kind} is required`)
+    const candidate = this.candidate(novel, head.artifactId)
+    if (!candidate.applied || slot(candidate.target) !== `${kind}:${chapterNumber}`) throw new WritingError('corrupt-artifact', 'Manuscript head has the wrong scope or status')
+    this.validateCandidate(actor, novel, candidate)
+    this.validateReviews(actor, novel, candidate)
+    this.currentInputs(actor, novel, candidate)
+    return candidate
+  }
+
+  private candidate(novel: NovelRecord, id: ArtifactId): ManuscriptRecord {
+    const candidate = novel.manuscriptHistory.find(item => item.artifact.id === id)
+    if (candidate === undefined) throw new WritingError('artifact-not-found', 'Manuscript candidate is not published in this novel')
+    return candidate
+  }
+
+  private currentInputs(actor: Actor, novel: NovelRecord, candidate: ManuscriptRecord): void {
+    if (this.changedInputs(actor, novel, candidate).length > 0) throw new WritingError('revision-conflict', 'Manuscript inputs have changed')
+  }
+
+  private admitReview(actor: Actor, novel: NovelRecord, candidate: ManuscriptRecord, expectedReviewId: ArtifactId | null): void {
+    if ((candidate.reviewHistory.at(-1)?.artifact.id ?? null) !== expectedReviewId) throw new WritingError('revision-conflict', 'A newer manuscript review already exists')
+    if (candidate.applied) throw new WritingError('review-blocked', 'Create a new candidate to revise an applied manuscript')
+    this.currentInputs(actor, novel, candidate)
+  }
+
+  private reviewOutput(actor: Actor, novel: NovelRecord, candidate: ManuscriptRecord, value: unknown) {
+    const refs = [inputRef(candidate.artifact), ...candidate.inputRefs]
+    const evidenceSources = refs.map(ref => {
+      const source = this.owner.getArtifact(actor, { novelId: novel.id, artifactId: ref.artifactId })
+      if (source.sha256 !== ref.sha256) throw new WritingError('corrupt-artifact', 'Manuscript review input hash differs from saved content')
+      return { artifactId: source.id, text: source.kind === 'body' ? assembleBody(StageOutputSchemas.body.parse(JSON.parse(source.text))) : source.text }
+    })
+    return parseReviewOutput(value, { reviewed: inputRef(candidate.artifact), inputRefs: candidate.inputRefs, requiredChecks: requiredChecks(candidate.target.kind), evidenceSources })
+  }
+
+  private passingReview(actor: Actor, novel: NovelRecord, candidate: ManuscriptRecord, reviewId: ArtifactId): void {
+    this.validateCandidate(actor, novel, candidate)
+    const latest = candidate.reviewHistory.at(-1)
+    if (latest === undefined || latest.artifact.id !== reviewId) throw new WritingError('review-blocked', 'The latest exact manuscript review is required')
+    const artifact = this.owner.getArtifact(actor, { novelId: novel.id, artifactId: reviewId })
+    const output = this.reviewOutput(actor, novel, candidate, JSON.parse(artifact.text))
+    if (output.issues.some(issue => issue.severity === 'blocking')) throw new WritingError('review-blocked', 'Manuscript review still has blocking issues')
+  }
+
+  private validateReviews(actor: Actor, novel: NovelRecord, candidate: ManuscriptRecord): void {
+    try {
+      for (const [index, review] of candidate.reviewHistory.entries()) {
+        const artifact = this.owner.getArtifact(actor, { novelId: novel.id, artifactId: review.artifact.id })
+        const parsed = this.reviewOutput(actor, novel, candidate, JSON.parse(artifact.text))
+        if (review.blocking !== parsed.issues.some(issue => issue.severity === 'blocking')) throw new Error('Review index differs from immutable issues')
+        if (review.request.hash !== digest([review.childSessionId, candidate.reviewHistory[index - 1]?.artifact.id ?? null, parsed])) throw new Error('Review provenance differs from its publication receipt')
+      }
+      if (candidate.applied && (candidate.reviewHistory.length === 0 || candidate.reviewHistory.at(-1)?.blocking)) throw new Error('Applied manuscript has no passing review')
+      if (candidate.applied && (candidate.target.kind === 'body' || candidate.target.kind === 'continuity')
+        && !novel.appliedChapters.some(chapter => chapter.body.id === candidate.artifact.id || chapter.continuity.id === candidate.artifact.id)) throw new Error('Applied body or continuity has no atomic chapter application')
+    } catch (cause) { throw new WritingError('corrupt-artifact', 'Manuscript review or adoption status cannot be verified', { cause }) }
+  }
+
+  private record(actor: Actor, novelId: NovelId): NovelRecord {
+    this.owner.getNovel(actor, novelId)
+    const novel = this.domain.table('novels').get(novelId)
+    if (novel === undefined) throw new WritingError('novel-not-found', 'Novel does not exist')
+    return novel
+  }
+
+  private collection(actor: Actor, novel: NovelRecord, selectedCodes: readonly string[]) {
+    const settings = this.owner.getSettings(actor, novel.id)
+    const dimensions = selectedCodes.map(code => {
+      const item = settings.applied.find(candidate => candidate.dimensionCode === code)
+      if (item === undefined || item.stale) throw new WritingError('revision-conflict', `Selected settings dimension is missing or stale: ${code}`)
+      return item
+    })
+    const brief = this.owner.getNovel(actor, novel.id).brief
+    this.owner.getArtifact(actor, { novelId: novel.id, artifactId: brief.id })
+    return settingsCollectionSchema.parse({ version: 1, selectedCodes: [...selectedCodes], inputRefs: [brief, ...dimensions.map(item => item.artifact)].map(inputRef),
+      dimensions: dimensions.map(item => StageOutputSchemas.settings.parse(JSON.parse(this.owner.getArtifact(actor, { novelId: novel.id, artifactId: item.artifact.id }).text))) })
+  }
+
+  private validateCandidate(actor: Actor, novel: NovelRecord, candidate: ManuscriptRecord, seen = new Set<ArtifactId>()) {
+    try {
+      if (seen.has(candidate.artifact.id)) throw new Error('Manuscript inputs contain a cycle')
+      const path = new Set(seen).add(candidate.artifact.id)
+      const stored = this.owner.getArtifact(actor, { novelId: novel.id, artifactId: candidate.artifact.id })
+      const value: unknown = JSON.parse(stored.text)
+      const sources = candidate.inputRefs.map(ref => {
+        const artifact = this.owner.getArtifact(actor, { novelId: novel.id, artifactId: ref.artifactId })
+        if (artifact.sha256 !== ref.sha256) throw new Error('Input hash differs from immutable content')
+        const upstream = novel.manuscriptHistory.find(item => item.artifact.id === ref.artifactId)
+        if (upstream !== undefined) this.validateCandidate(actor, novel, upstream, path)
+        return artifact
+      })
+      if (candidate.target.kind === 'settings') {
+        const output = settingsCollectionSchema.parse(value)
+        if (candidate.researchPlanId !== null || candidate.childSessionId !== null || candidate.revisionOf !== null || !isDeepStrictEqual(candidate.target.selectedCodes, output.selectedCodes)
+          || !sameRefs(candidate.inputRefs, output.inputRefs)) throw new Error('Settings collection index differs from immutable content')
+        if (sources[0]?.kind !== 'creative-brief' || sources.slice(1).some(source => source.kind !== 'settings-dimension')) throw new Error('Settings collection sources have incorrect kinds')
+        const dimensions = sources.slice(1).map(source => StageOutputSchemas.settings.parse(JSON.parse(source.text)))
+        if (!isDeepStrictEqual(dimensions, output.dimensions) || !isDeepStrictEqual(dimensions.map(item => item.dimensionCode), output.selectedCodes)
+          || !isDeepStrictEqual(planSettings(output.selectedCodes).selectedCodes, output.selectedCodes)) throw new Error('Selected settings coverage differs from its sources')
+        if (candidate.request.hash !== digest(candidate.target)) throw new Error('Settings collection receipt differs from its selected dimensions')
+        return { kind: 'settings' as const, output }
+      }
+      if (candidate.researchPlanId === null || candidate.childSessionId === null) throw new Error('Generated manuscript requires research and child-run provenance')
+      if (candidate.revisionOf !== null && novel.manuscriptHistory.findIndex(item => item.artifact.id === candidate.revisionOf) >= novel.manuscriptHistory.indexOf(candidate)) throw new Error('Revision lineage must identify an earlier publication')
+      const parsed = this.generatedOutput(actor, novel, candidate.target, candidate.inputRefs, candidate.researchPlanId, value, candidate.revisionOf)
+      const expectedHash = digest([candidate.target, candidate.researchPlanId, candidate.childSessionId,
+        { ...parsed.output, inputRefs: [...parsed.output.inputRefs].sort((a, b) => a.artifactId < b.artifactId ? -1 : a.artifactId > b.artifactId ? 1 : 0) }, ...(candidate.revisionOf === null ? [] : [candidate.revisionOf])])
+      if (candidate.request.hash !== expectedHash) throw new Error('Generated manuscript provenance differs from its publication receipt')
+      return parsed
+    } catch (cause) { throw new WritingError('corrupt-artifact', 'Manuscript content or input references cannot be verified', { cause }) }
+  }
+
+  private changedInputs(actor: Actor, novel: NovelRecord, candidate: ManuscriptRecord, seen = new Set<ArtifactId>()): StageInputRef[] {
+    if (seen.has(candidate.artifact.id)) throw new WritingError('corrupt-artifact', 'Manuscript source references contain a cycle')
+    const path = new Set(seen).add(candidate.artifact.id)
+    const settings = this.owner.getSettings(actor, novel.id)
+    return candidate.inputRefs.filter(ref => {
+      if (ref.artifactId === candidate.revisionOf) return !candidate.applied && !novel.manuscriptHeads.some(head => head.artifactId === candidate.revisionOf)
+      if (novel.briefHistory.some(brief => brief.id === ref.artifactId)) return novel.briefHistory.at(-1)?.id !== ref.artifactId
+      const dimension = settings.history.find(item => item.artifact.id === ref.artifactId)
+      if (dimension !== undefined) return dimension.stale || !settings.applied.some(item => item.artifact.id === ref.artifactId)
+      const upstream = novel.manuscriptHistory.find(item => item.artifact.id === ref.artifactId)
+      if (upstream !== undefined) {
+        if (this.changedInputs(actor, novel, upstream, path).length > 0) return true
+        if (upstream.target.kind === 'body' || upstream.target.kind === 'continuity') {
+          if (candidate.target.kind === 'continuity' && upstream.artifact.id === candidate.target.bodyId && !upstream.applied) return false
+          const chapterNumber = upstream.target.chapterNumber
+          const current = novel.appliedChapters.findLast(item => item.chapterNumber === chapterNumber)
+          return (upstream.target.kind === 'body' ? current?.body.id : current?.continuity.id) !== upstream.artifact.id
+        }
+        return !novel.manuscriptHeads.some(head => head.artifactId === upstream.artifact.id)
+      }
+      const reviewerOf = novel.manuscriptHistory.find(item => item.reviewHistory.some(review => review.artifact.id === ref.artifactId))
+      if (reviewerOf !== undefined) return reviewerOf.reviewHistory.at(-1)?.artifact.id !== ref.artifactId || this.changedInputs(actor, novel, reviewerOf, path).length > 0
+      return false
+    })
+  }
+
+  private view(actor: Actor, novel: NovelRecord, candidate: ManuscriptRecord): ManuscriptCandidateView {
+    const validated = this.validateCandidate(actor, novel, candidate)
+    this.validateReviews(actor, novel, candidate)
+    const inspection = validated.kind === 'body' ? inspectBody(validated.output, this.owner.manuscriptLimits) : null
+    const changedInputs = this.changedInputs(actor, novel, candidate)
+    const review = candidate.reviewHistory.at(-1)
+    return structuredClone({ target: candidate.target, artifact: candidate.artifact, inputRefs: candidate.inputRefs, childSessionId: candidate.childSessionId, revisionOf: candidate.revisionOf,
+      status: candidate.applied ? 'applied' : inspection?.length.blocking ? 'blocked' : review === undefined ? 'candidate' : review.blocking ? 'blocked' : 'reviewed',
+      review: review?.artifact ?? null, stale: changedInputs.length > 0, changedInputs, wordCount: inspection?.wordCount ?? null, length: inspection?.length ?? null })
+  }
+
+  private artifact<K extends ManuscriptKind | 'review'>(novelId: NovelId, kind: K, text: string): Artifact<K> {
+    const bytes = Buffer.byteLength(text, 'utf8')
+    if (bytes > this.owner.limits.maxArtifactBytes) throw new WritingError('artifact-too-large', 'Artifact exceeds the configured UTF-8 byte limit')
+    return { id: brandString<ArtifactId>(`artifact_${randomUUID()}`), novelId, kind, revision: 1, text, sha256: createHash('sha256').update(text).digest('hex'), chars: [...text].length, bytes }
+  }
+}
+
+function digest(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
+function sameRequest(stored: string, received: string): void { if (stored !== received) throw new WritingError('request-conflict', 'Request ID was already used with different input') }
+function inputRef(ref: ArtifactRef): StageInputRef { return { artifactId: ref.id, sha256: ref.sha256 } }
+function reference<K extends ManuscriptKind | 'review'>(artifact: Artifact<K>): ArtifactRef<K> {
+  const { id, kind, revision, sha256, chars, bytes } = artifact
+  return { id, kind, revision, sha256, chars, bytes }
+}
+
+function slot(target: ManuscriptTarget): string { return `${target.kind}:${'chapterNumber' in target ? target.chapterNumber : null}` }
+function requiredChecks(kind: ManuscriptKind): ReviewCategory[] {
+  if (kind === 'settings') return ['completeness', 'consistency']
+  if (kind === 'book-outline') return ['completeness', 'consistency', 'obligations']
+  if (kind === 'body') return ['completeness', 'consistency', 'obligations', 'continuity', 'length']
+  return ['completeness', 'consistency', 'obligations', 'continuity']
+}
+
+function sameRefs(left: readonly StageInputRef[], right: readonly StageInputRef[]): boolean {
+  return left.length === right.length && new Set(left.map(ref => ref.artifactId)).size === left.length
+    && new Set(right.map(ref => ref.artifactId)).size === right.length
+    && left.every(ref => right.some(other => ref.artifactId === other.artifactId && ref.sha256 === other.sha256))
+}

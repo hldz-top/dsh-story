@@ -1,0 +1,167 @@
+/** Public identifiers, requests, and immutable writing-service results. */
+import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { z } from 'zod'
+
+/** Server-generated novel identity, independent of a Session or filesystem path. */
+export type NovelId = Branded<'story-novel'>
+/** Server-generated immutable artifact identity. */
+export type ArtifactId = Branded<'story-artifact'>
+/** Caller-supplied idempotency identity; at most 256 characters. */
+export type RequestId = Branded<'story-request'>
+
+/** Durable and tool-boundary novel identifier parser. */
+export const novelIdSchema = z.string().regex(/^novel_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/).transform(brandString<NovelId>)
+/** Durable and tool-boundary artifact identifier parser. */
+export const artifactIdSchema = z.string().regex(/^artifact_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/).transform(brandString<ArtifactId>)
+/** Requests preserve exact caller bytes; blank values are invalid. */
+export const requestIdSchema = z.string().min(1).max(256).refine(value => value.trim().length > 0).transform(brandString<RequestId>)
+
+/** @param value - Untrusted tool identifier. @returns Validated novel identity. */
+export function parseNovelId(value: unknown): NovelId { return novelIdSchema.parse(value) }
+/** @param value - Untrusted tool identifier. @returns Validated artifact identity. */
+export function parseArtifactId(value: unknown): ArtifactId { return artifactIdSchema.parse(value) }
+/** @param value - Untrusted idempotency key. @returns Validated request identity. */
+export function parseRequestId(value: unknown): RequestId { return requestIdSchema.parse(value) }
+
+/** Host-admitted Session and its resolved workspace display path. */
+export interface Actor {
+  readonly sessionId: SessionId
+  readonly workspace: string
+  /** Invocation-only cancellation; never included in durable records. */
+  readonly signal?: AbortSignal
+}
+/** Explicit deployment limits; byte sizes are UTF-8, read offsets count Unicode code points. */
+export interface WritingLimits { readonly maxArtifactBytes: number; readonly maxReadChars: number }
+/** Explicit per-plan evidence and native web-call limits. */
+export interface ResearchLimits {
+  readonly maxResearchQuestions: number
+  readonly maxResearchCalls: number
+  readonly maxResearchSources: number
+  readonly maxEvidenceChars: number
+  readonly maxResearchLogEvents: number
+}
+/** Immutable documents published by the writing service. */
+export const artifactKinds = ['creative-brief', 'research-plan', 'research-evidence', 'settings-dimension', 'review', 'settings', 'book-outline', 'chapter-outline', 'body', 'continuity'] as const
+/** Stored artifact discriminator shared by tool and storage JSON validation. */
+export type ArtifactKind = typeof artifactKinds[number]
+/** Exact immutable document version. */
+export interface ArtifactRef<K extends ArtifactKind = ArtifactKind> {
+  readonly id: ArtifactId
+  readonly kind: K
+  readonly revision: number
+  readonly sha256: string
+  readonly chars: number
+  readonly bytes: number
+}
+/** Full stored version, available only through bounded, ownership-checked reads. */
+export interface Artifact<K extends ArtifactKind = ArtifactKind> extends ArtifactRef<K> { readonly novelId: NovelId; readonly text: string }
+/** Novel metadata at one committed revision, without embedding long text. */
+export interface NovelView {
+  readonly id: NovelId
+  readonly title: string
+  readonly workspace: string
+  readonly revision: number
+  readonly brief: ArtifactRef<'creative-brief'>
+  readonly briefHistory: readonly ArtifactRef<'creative-brief'>[]
+}
+/** Creation is workspace-idempotent and does not change Session selection. */
+export interface CreateNovelRequest { readonly requestId: RequestId; readonly title: string; readonly brief: string }
+/** Brief saves compare the current revision inside the durable update queue. */
+export interface SaveBriefRequest {
+  readonly novelId: NovelId
+  readonly requestId: RequestId
+  readonly expectedRevision: number
+  readonly text: string
+}
+/** An exact version under an owned novel; no current-version substitution occurs. */
+export interface ArtifactRequest { readonly novelId: NovelId; readonly artifactId: ArtifactId }
+/** Requested character interval; limit must not exceed the configured maximum. */
+export interface ReadArtifactRequest extends ArtifactRequest { readonly offset: number; readonly limit: number }
+/** A Unicode code-point interval that can be continued until eof. */
+export interface ArtifactSlice extends ArtifactRequest {
+  readonly kind: ArtifactKind
+  readonly revision: number
+  readonly sha256: string
+  readonly offset: number
+  readonly nextOffset: number
+  readonly totalChars: number
+  readonly text: string
+  readonly eof: boolean
+}
+
+/** A planning question; internal and creative questions require no external facts. */
+export interface ResearchQuestion {
+  readonly id: string
+  readonly kind: 'internal' | 'creative' | 'external'
+  readonly question: string
+  readonly reason: string
+}
+/** A native web call reserved against one plan before execution. */
+export interface ResearchCall { readonly callId: ToolCallId; readonly name: 'web_search' | 'web_fetch' }
+/** An excerpt of a recorded source; sha256 covers the entire recorded source string. */
+export interface ResearchSource {
+  readonly sourceIndex: number
+  readonly url: string
+  readonly title: string | null
+  readonly excerpt: string
+  readonly offset: number
+  readonly totalChars: number
+  readonly sha256: string
+  readonly truncated: boolean
+}
+/** Original native reference that cannot supply a usable HTTP(S) evidence source. */
+export interface ResearchRejectedSource {
+  readonly sourceIndex: number
+  readonly reference: string
+  readonly title: string | null
+  readonly reason: 'unsupported-reference'
+}
+/** Host-verified call/result pair; rejected references retain original source indexes. */
+export interface ResearchObservation extends ResearchCall {
+  readonly input: { readonly queries: readonly string[] } | { readonly url: string }
+  readonly callSeq: number
+  readonly resultSeq: number
+  readonly status: 'succeeded' | 'failed'
+  readonly sources: readonly ResearchSource[]
+  readonly rejectedSources: readonly ResearchRejectedSource[]
+  readonly error: string | null
+}
+/** Model-authored interpretation of evidence; it cannot declare an execution successful. */
+export interface ResearchFinding {
+  readonly questionId: string
+  readonly callIds: readonly ToolCallId[]
+  readonly conclusion: string
+  readonly adequate: boolean
+}
+/** Program-derived research completion classification, preserving every failed question. */
+export type ResearchOutcome = 'not-needed' | 'succeeded' | 'insufficient' | 'failed'
+/** Immutable plan input anchored to the current creative brief. */
+export interface StartResearchRequest {
+  readonly novelId: NovelId
+  readonly requestId: RequestId
+  readonly briefArtifactId: ArtifactId
+  readonly questions: readonly ResearchQuestion[]
+}
+/** Exact research plan under its owning novel. */
+export interface ResearchRequest { readonly novelId: NovelId; readonly planId: ArtifactId }
+/** Readable research state; plan and result are independent immutable documents at revision 1, identified by id and hash. */
+export interface ResearchView extends ResearchRequest {
+  readonly stale: boolean
+  readonly plan: ArtifactRef<'research-plan'>
+  readonly result: ArtifactRef<'research-evidence'> | null
+  readonly briefArtifactId: ArtifactId
+  readonly sessionId: SessionId
+  readonly startSeq: number
+  readonly questions: readonly ResearchQuestion[]
+  readonly reservedCalls: readonly ResearchCall[]
+  readonly outcome: ResearchOutcome | null
+}
+
+/** Stable service errors for tool-facing failure reporting. */
+export type WritingErrorCode = 'novel-not-found' | 'workspace-mismatch' | 'artifact-not-found' | 'request-conflict' | 'revision-conflict' | 'invalid-range' | 'artifact-too-large' | 'invalid-input' | 'corrupt-artifact' | 'closed' | 'research-not-found' | 'research-active' | 'research-budget' | 'research-incomplete' | 'session-mismatch' | 'settings-not-found' | 'review-blocked'
+/** A rejected writing command; no success result is substituted. */
+export class WritingError extends Error {
+  constructor(readonly code: WritingErrorCode, message: string, options?: ErrorOptions) { super(message, options); this.name = 'WritingError' }
+}

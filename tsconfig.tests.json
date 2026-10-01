@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "rootDir": ".",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "allowJs": true,
+    "checkJs": true,
+    "types": ["node", "react"]
+  },
+  "include": ["tests/**/*.ts", "tests/profile/fixture.mjs", "vitest.config.ts"]
+}

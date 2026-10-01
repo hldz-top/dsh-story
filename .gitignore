@@ -1,0 +1,13 @@
+node_modules/
+lib/
+types/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+.dsh-dev/
+.codex/
+.idea/
+*.tgz
+.DS_Store

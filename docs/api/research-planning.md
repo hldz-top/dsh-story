@@ -1,0 +1,38 @@
+---
+description: "Local research necessity capture and frozen retrieval permissions for native writing stages."
+---
+# Research necessity
+
+## Summary
+
+Every new writing research stage first uses a native child that can read the exact local inputs and return structured output. The runner saves this decision before admitting retrieval. Author-defined genre, tone and fictional choices resolve from those inputs; only missing real-world facts required by the assigned output authorize external research. The [research API](research.md) owns evidence retrieval and completion.
+
+## Table of Contents
+
+- [Decision and inputs](#decision-and-inputs)
+- [Execution and persistence](#execution-and-persistence)
+- [Failure and compatibility](#failure-and-compatibility)
+
+## Decision and inputs
+
+The runner records `novelId`, `briefArtifactId`, `requestId`, the assigned `purpose`, the exact `outputTarget` and immutable `inputs` in the native planning prompt. A settings target identifies its dimension and catalog entry; a manuscript target identifies its kind and chapter scope. The catalog entry is the complete dimension definition: its kind states only the output form (one label, a short set of labels or free-form facts), and it has no predefined option list. The prompt therefore treats label choice as a creative question and forbids questions about host program internals, such as option lists, schemas, validation rules, counting implementation or tools. Every internal question must be answerable from the supplied inputs. Revision targets also carry the revision instructions. Input references include artifact identity, kind, revision, digest, character count and byte count. The child reads complete pages through `story_read_artifact` and must verify them against those references. The supplied creative brief and accepted dependency artifacts are the authoritative story sources.
+
+[researchNecessitySchema](../../src/research-planning.ts) defines the captured output. `mode` is `input-only` or `external-required`; `reason` explains the decision. `questions` contains the existing research question fields. `externalRequirements` contains exactly one entry for each external question, associating its `questionId` with the unresolved `outputDecision` and `missingFact`. Internal and creative questions have no external requirement. Duplicate identifiers, inconsistent mode, missing requirement entries and excess questions or text reject admission. Question count uses `maxResearchQuestions`; all decision text together uses `maxEvidenceChars`, measured in Unicode code points.
+
+An author's declared genre is a creative constraint. Optional market classification or genre-convention research does not become a prerequisite merely because it could provide background. A requested accurate real-world detail that the accepted inputs do not establish remains a required external question. The host validates the captured structure and permission decision; whether a particular fact is necessary remains a model judgment that needs real-model acceptance evidence.
+
+## Execution and persistence
+
+The runner stores a planning attempt under the research key with `/planning` appended. The native child receives only `story_read_artifact` and the native `structured_output` capture tool. Model route, request bounds, deadlines, cancellation and child disposal use the existing [stage executor](../../src/stage-executor.ts). The prompt, exact input references, native child identity and raw output remain in the run history and Session log. Invalid captures remain available for diagnosis.
+
+A successful planning capture is parsed before the retrieval child starts. The runner quotes the admitted decision in that child's prompt and requires `story_start_research` to reproduce the exact novel, brief, request identifier and questions. A child-scoped native `tools/execute` admission check rejects mismatches before the service writes a plan. It also refuses web execution until this child owns the exact active plan. Input-only children receive local research tools without `web_search` or `web_fetch`; the service independently rejects web reservations for plans without external questions.
+
+Research completion still requires adequate findings for every planned question. The runner independently verifies the persisted plan's questions against the frozen decision and admits only completed, current evidence owned by the exact native child and start receipt. There is no additional AgentLoop, provider route, retrieval runtime or automatic replacement plan.
+
+## Failure and compatibility
+
+A captured invalid decision stops the stage before retrieval. Native tool-argument correction and request retry behavior remain owned by DSH. Failure does not reclassify an external question, enlarge a budget or replace a failed plan. A terminal writing run is not automatically resubmitted.
+
+An existing research attempt without a planning attempt retains its original prompt and question-admission path. The runner does not insert a new decision into that historical attempt. New attempts persist planning before retrieval, and an explicitly resumed run reuses saved planning output under the existing immutable request checks. The planning capture uses run storage rather than changing historical research plan content; evidence content version compatibility is documented in the research API.
+
+Offline regressions exercise complete native child execution, persisted planning, malformed decisions, frozen start arguments, pre-plan retrieval denial, input-only tool visibility and disposal. They establish implementation behavior, not the quality of the model's necessity judgments or completion of a real novel.

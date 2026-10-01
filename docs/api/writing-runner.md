@@ -1,0 +1,112 @@
+---
+description: "Native writing orchestration, configured budgets, reviewed publication, upstream revision and explicit recovery."
+---
+# Writing runner
+
+## Scope and ownership
+
+[`WritingRunner`](../../src/writing-runner.ts) coordinates researched settings, outlines, bodies and continuity through DSH native child execution. The [writing service](writing-service.md) owns authoritative documents and applied heads; the [run store](writing-runs.md) owns immutable requests, stage attempts and saved raw output. The runner owns only admitted in-process work and cancellation. It does not create an AgentLoop, select a model or open a separate database.
+
+The package root exports `WritingRunner`, `StageDeliveries`, `registerStageDeliveryProjection`, `openRunStore`, `openWritingService` and their declared service/run types. The plugin provides `ctx.story` and `ctx.storyRunner`, and mounts [writing tools](writing-tools.md) as Cordis effects. Tool callers use those public tools; implementation references below point to the source modules that own exact types.
+
+## Invocation API
+
+`new WritingRunner(ctx, service, runs, limits, deliveries)` receives the existing Context, open writing service, open run store, explicit `RunExecutionLimits` and a `StageDeliveries` publisher constructed with `(ctx, service, runs, previewDirectory)`. The plugin registers the stage-delivery projection before constructing the runner. One awaited disposal effect cancels and awaits the runner, then drains the run store and writing service; independent asynchronous disposers would not guarantee that order. Each operation derives its actor from the actual `ToolExecution` Session and filesystem workspace. A supplied novel ID cannot override ownership.
+
+| Method | Input and observable result |
+| --- | --- |
+| `start(exec, input)` | `StartWritingInput` contains `novelId`, current `briefArtifactId`, novel-scoped `requestId`, explicit `settingsRoots`, `chapterCount`, inclusive `fromChapter`/`throughChapter`, and the write/update mode. The runner supplies `revision: null` and snapshots both execution and service limits. Returns terminal `WritingRun` metadata after owned native work settles. |
+| `revise(exec, input)` | Accepts the run-store input without `executionLimits` or `serviceLimits`, requires `mode: 'revise'` and `revision: {baseArtifactId, instructions}`. Revises only that exact current applied settings dimension, book outline or chapter outline, then returns terminal metadata. The request retains its explicit chapter scope, but does not authorize downstream writing. |
+| `resume(exec, runId, retryUnknown)` | Checks the current service limits against the saved snapshot before changing progress or retry authorization, then resumes retained progress in the owning workspace using captured execution settings. An already active in-process invocation shares its completion. An outcome-unknown attempt requires explicit `true`; saved successful outputs are reused. |
+| `stop(exec, runId)` | Cancels an active run and awaits it, or marks an inactive running/interrupted run stopped. An already terminal run is returned unchanged. |
+| `close()` | Prevents further admissions, aborts owned active runs and awaits both admitted starts and active completion. It does not close either storage owner. |
+| `runs` | Read-only reference to the run-store API for workspace-authorized metadata queries and explicit output reads. |
+| `limits` | Constructor-supplied execution settings; new runs persist their own snapshot. |
+
+The current brief must equal the request's `briefArtifactId` at admission and before each stage attempt. Settings roots must form a valid enabled dependency plan. `story_write` refuses existing stale settings or manuscript state and asks for explicit update intent. The run store enforces request identity, valid chapter ranges, one unfinished run per novel and finite attempt/output budgets. A repeated request with different fields rejects; a completed unchanged request reuses its result while current admission requirements still hold.
+
+Admission, ownership and invalid-input failures reject the call. Once execution starts, a stage or domain failure produces retained `status: 'failed'` and its reason; cancellation produces `stopped`. Failure to persist terminal cleanup can still reject. A returned run is therefore not necessarily completed: callers must inspect its status and error.
+
+## Automatic writing
+
+1. Expand only the requested settings roots through the real catalog's dependency closure. Process dependency layers in order and allow independent dimensions within a layer to overlap up to `maxParallelStages`.
+2. For each needed dimension, capture a local [research necessity decision](research-planning.md), complete the frozen research plan, generate a typed candidate, obtain an independent review and apply the exact passing version. Assemble the selected settings and review completeness and cross-dimension consistency. Blocking collection feedback drives bounded dimension repair before another collection review.
+3. Generate, review and apply the book outline for the explicit total chapter count.
+4. For each requested chapter in order, generate and apply its reviewed chapter outline, generate and review its body, then derive and review continuity from the actual body and previously applied facts.
+5. Publish that exact body's and continuity's reviewed references together through one queued novel update. Verify each requested chapter is applied and current before marking the run completed.
+
+Every new manuscript research stage also captures necessity before retrieval. Planning attempts count toward `maxRunAttempts` and use the same native request/deadline limits; an existing saved research attempt retains its original prompt and is not silently replaced. The pipeline reuses current matching settings, outlines and applied chapters. A requested range does not silently expand to rewrite chapters outside it; its required preceding context must exist. Plans remain plans: final continuity and fulfilled obligations require evidence in actual prose. [Manuscript admission](manuscript.md) owns exact input/head checks and atomic chapter publication.
+
+`story_update` follows the same dependency order, rebuilding affected work within the requested scope while preserving immutable history. `story_revise` instead adopts only its named upstream replacement, records `revisionOf`, and stops. Descendants retain their existing text and IDs and expose stale inputs until an explicit update is requested. Settings and manuscript artifacts each have immutable identity; do not infer revision lineage from an incrementing numeric artifact revision.
+
+## Typed review and bounded repair
+
+Native child structured capture uses the [published stage schema](stage-execution.md#writing-stage-schema-publication). The canonical [stage parsers](stage-output.md) additionally check stage identity, exact input references, required scenes/checks, source quotations and obligation evidence. Structural native capture is not domain approval.
+
+Each local candidate or review repair loop allows one initial attempt plus at most `maxRepairAttempts` replacements. Settings collection repair has its own bounded loop; the global `maxRunAttempts` separately caps all retained attempts, including research and authorized replacements. These are distinct limits, not one total retry count.
+
+A captured value is saved before domain admission. An invalid typed candidate or review supplies its explicit validation error to a distinct repair attempt. Blocking review feedback supplies the exact previous candidate and review as readable artifacts. Repair prompts request the complete replacement while preserving unaffected facts and prose; they do not authorize overwriting prior content. Non-output errors such as research failure, storage failure or changed inputs are not converted into empty candidates or arbitrary automatic retries.
+
+A stage whose child ends with a malformed provider response (`stage-malformed` in [stage execution](stage-execution.md)) has a known failed outcome: a response arrived, but DSH could not decode it. The runner records that attempt as failed and retries the identical request under the same stage key, up to `maxRepairAttempts` replacements for that stage. Each replacement is a durable attempt counted by `maxRunAttempts` and starts a new native child, which repeats the stage's reads, model requests and, for research, web calls. Exhaustion fails the run with the malformed-response message; an explicit resume replaces the failed attempt under the same bound. Because the key and request stay the same, a resumed run replays the saved path instead of re-executing the stage. A structured value captured before a later turn error is not treated as malformed.
+
+Only stages that write or review a book outline, chapter outline or body receive the configured chapter-total range in their requirements. Settings generation and review prompts use the catalog kind of the requested dimension. A [classification dimension](../specs/story-writing-plugin/CONTEXT.md) (`enum_single` or `enum_multi`) records its labels, brief grounds and constraints for later stages rather than invented world detail. The service rejects a new classification candidate that exceeds the [settings size bound](stage-output.md#settings-dimensions), and the runner treats that rejection as invalid output for repair.
+
+The host assembles and counts each body after generation and every repair. The configured inclusive word range is a hard blocker independent of model review. Range-bearing prompts state the range and the Story counting rule. The body writing stage also receives an aim at the middle of the range; outline stages keep their planned targets, and review prompts state that a host-measured count inside the range is not a length defect. A length repair receives the host count, the violated bound and distance, per-scene counts and the aim, and a repair instruction to condense or expand across all scenes instead of preserving passage wording. Required-event omissions, consistency contradictions and continuity conflicts block application; style advice remains advisory. Unfulfilled continuity obligations also block. Exhaustion retains available candidates, reviews and raw output and ends the run as failed without advancing the next chapter.
+
+## Durable attempts and model-visible data
+
+Before native startup, `prepareAttempt` persists the exact prompt, input digests, output schema and original parent Session. The executor's `onStarted` callback saves the actual child Session association before allowing its first model stream. After execution and awaited child disposal, the runner saves `JSON.stringify(structured)` as immutable raw output, then parses and publishes admitted domain artifacts. An attempt marked succeeded proves durable raw output only.
+
+Prompts contain explicit task data and reference metadata. Domain source documents are read through logged bounded `story_read_artifact` calls; generation references do not inject full document text. Research uses the actual logged start receipt and persisted native web results, checked against the original child lineage. Saved source excerpts remain untrusted data. [Research admission](research-stage.md) and [native execution](stage-execution.md) own those checks.
+
+Run queries omit prompts, response schemas and long raw outputs. `story_read_run_output` explicitly reads retained raw output in bounded Unicode pages with exact digest/size metadata. `story_preview` projects a domain artifact into its full versioned Markdown representation. Neither a metadata result nor an excerpt proves a complete document was read; callers follow the reader through `eof`.
+
+## Cancellation and recovery
+
+Stop combines the calling tool's signal with a run-owned controller. Parallel settings work settles before failure is finalized, and every published native child is disposed before its executor returns. Cancellation checks and service-owned queued version checks prevent late results from being adopted after stop. Earlier applied work remains visible; cancellation is not a transaction rolling it back.
+
+Reopening the run store marks persisted running runs interrupted, reconciles exact saved output, and marks unsaved active attempts unknown. It does not launch children. Explicit resume checks ownership and the current brief, reuses completed attempts, and requires permission to replace unresolved attempts. Unknown describes missing durable outcome, not proof that no provider execution or cost occurred.
+
+Execution and run-store limits remain captured. Each new run also records seven `serviceLimits` fields: `maxArtifactBytes`, `maxReadChars`, `maxResearchQuestions`, `maxResearchCalls`, `maxResearchSources`, `maxEvidenceChars` and `maxResearchLogEvents`. Resume compares all seven and the service chapter bounds before calling the durable resume operation. A mismatch rejects without changing stopped status, saved progress or unknown-attempt retry authorization. Restore the original limits to resume; no default or relaxed budget is inferred. Model routing remains inherited from the actual current parent through DSH, and changed source versions or incompatible saved attempt requests still reject.
+
+The run store migrates plugin-owned version-1 novel-run records to version 2 without changing the host domain generation. Migrated runs carry explicit `serviceLimits: null`; their metadata and saved output remain readable, but they cannot resume or prepare new attempts. Stop an unfinished legacy run and begin a distinct request under explicit current limits. [Run-store migration](writing-runs.md) owns admission and retained-history details.
+
+## Configuration
+
+[`Config` and plugin application](../../src/index.ts) own defaults and validation. The required host services are `storageDomain`, `tools`, `fs`, `subagents`, `sessions`, `sessionPersistence` and `sessionProjections`. The native `present` tool must be available in the actual calling Agent scope; start, revise and resume check availability before admitting work. Deployment must configure the verified in-process spawn provider and native web tools/providers used by research; a nonblank provider name alone does not verify its implementation.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `stageProvider` | `spawn` | Configured native in-process subagent provider; not an LLM model/provider override. |
+| `maxDelegationDepth` | `2` | Positive absolute native child depth cap. |
+| `maxStageRequests` | `96` | Positive model-dispatch allowance per native child, including retries. |
+| `stageTimeoutMs` | `600000` | Stage deadline in milliseconds, including startup and cleanup; cancellation still waits for owned work to settle. Maximum `2147483647`. |
+| `maxRepairAttempts` | `2` | Nonnegative replacements per local repair loop. |
+| `maxParallelStages` | `3` | Positive cap for independent settings dimensions within one dependency layer. |
+| `maxRunAttempts` | `512` | Positive retained attempt cap per run. |
+| `minChapterWords` | `3000` | Inclusive assembled-body minimum using the [Story counter](body-text.md#counting). |
+| `maxChapterWords` | `5000` | Inclusive assembled-body maximum; cannot be below the minimum. |
+| `maxArtifactBytes` | `1048576` | Positive UTF-8 limit for a domain artifact; also supplied as the run store's raw-output and revision-instruction limit. |
+| `maxReadChars` | `4096` | Positive maximum Unicode code points per artifact/raw-output tool page. |
+| `previewDirectory` | `.dsh-story` | Normalized Session-relative directory; empty, dot, parent, whitespace-padded, backslash, colon and control-character segments reject. |
+| `maxResearchQuestions` | `12` | Positive per-plan question limit. |
+| `maxResearchCalls` | `12` | Positive native web-call reservation limit per plan. |
+| `maxResearchSources` | `24` | Positive admitted source-count limit per research result. |
+| `maxEvidenceChars` | `16000` | Positive bounded evidence/finding text allowance under the [research rules](research.md). |
+| `maxResearchLogEvents` | `2048` | Positive logical Session-event admission limit. |
+
+All numeric limits require safe integers; all are positive except `maxRepairAttempts`, which permits zero. `stageProvider` must be nonblank. Run execution settings, run-store size/attempt limits and the seven writing/research service limits are copied into each new run. The mounted service enforces its configured limits; a retained run can resume only when those service limits and chapter bounds match its snapshot. These limits bound observed requests and data, not provider currency charges.
+
+## Stage presentation
+
+[`StageDeliveries`](../../src/stage-deliveries.ts) builds or verifies the complete exact-version Markdown file, executes the registered native `present` tool under the actual parent token, checks its committed `deliverables/presented` event and awaits Session flush. Dependent stage work continues after this publication succeeds; independent settings stages may overlap. A denied tool, changed preview, missing event or flush failure remains a run failure rather than an empty successful delivery.
+
+Automatic publication selects exactly four artifact kinds: the complete settings collection (`settings`), `book-outline`, `chapter-outline` and `body`. Eligible persisted candidates and repaired versions can be shown before application; a full preview is not approval. A fresh three-chapter run without repairs produces eight automatic documents: one settings collection, one book outline, three chapter outlines and three bodies. Research plans/results, `settings-dimension`, reviews, continuity and rejected raw output retain their durable records and explicit readers, but receive no new automatic publication.
+
+The pure `story-stage-deliveries` Session projection groups recorded paths by the actual Story tool call ID. The Client cards for write, update, revise and resume subscribe through `useProjection`, retain committed versions while the call runs, and use the existing `openFile` action. The cards do not infer paths, automatically switch the document being read, or erase historical deliveries of other kinds. The generic publisher continues to support explicit artifact and rejected-response publication; the four-kind selection belongs to the runner.
+
+Publication uses the existing known Session event and native tool policy. It adds neither a fabricated model tool call nor an unrecognized Session event. Committed delivery identity is reconstructed from the log, and repeated publication within the same owning call checks the same file before reusing its event. A resumed call can show retained eligible versions under its own card while reusing completed native stage output. A cached blocking collection review may drive resumed repair only when the latest persisted domain review exactly matches that saved response. Its eligible settings collection can be displayed; the review stays internal. Raw output without such an admitted review returns through normal admission and bounded review repair without an automatic rejected-output preview.
+
+## Validation status
+
+The dated [migration validation record](../development/migration-validation.md) distinguishes native three-chapter/repair/lifecycle tests, JSON/SQLite persistence, revision/update tools and configuration tests. The recorded 517 Vitest and 36 Node tests and earlier Web evidence predate the four-kind automatic presentation change. Current policy validation, final rebuilt artifacts and browser acceptance are pending; real-model quality, private installation and human acceptance require separate evidence.
