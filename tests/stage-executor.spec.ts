@@ -390,3 +390,77 @@ it('applies child tool admission before side effects and removes it after child 
   expect(effects).toEqual(['allowed'])
   expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
 })
+
+/**
+ * Mount a model-facing delegation tool the way a per-Agent composition does (for example DSH tool-subagent with a
+ * standing `modelSelectionSettings` composition): registered in each new child's OWN scope on `agent/created`. The
+ * child's inherited-tool allow list cannot filter an Agent's own registrations, so only the stage boundary can.
+ */
+function attachChildScopedDispatchTool(fixture: Awaited<ReturnType<typeof useStageFixture>>, timing: 'created' | 'first-request' = 'created') {
+  const dispatched: string[] = []
+  const register = (agent: { readonly ctx: typeof fixture.ctx }) => agent.ctx.effect(() => agent.ctx.tools.register(defineTool({
+    name: 'subagent', description: 'Delegate a self-contained task to a subagent.',
+    parameters: { prompt: { type: 'string', required: true } }, isConcurrencySafe: () => true,
+    output: { schema: { type: 'boolean' }, render: () => [{ type: 'text', text: 'Delegated.' }] },
+    execute: async args => { dispatched.push(args.prompt); return true },
+  })))
+  const children = new Map<string, { readonly ctx: typeof fixture.ctx }>()
+  fixture.ctx.on('agent/created', ({ agent }) => {
+    if (agent.session.header.parentSession !== fixture.parent.session.id) return
+    children.set(agent.session.id, agent)
+    if (timing === 'created') register(agent)
+  }, { global: true })
+  return { dispatched, registerFor: (sessionId: string) => { const agent = children.get(sessionId); if (agent === undefined) throw new Error('Unknown child'); register(agent) } }
+}
+
+it('refuses a writing stage whose child can see a dispatch tool outside its allow list before any model request', async () => {
+  const fixture = await useStageFixture(() => call('subagent', { prompt: 'Draft the chapter for me.' }))
+  const dispatch = attachChildScopedDispatchTool(fixture)
+  let started: string | undefined
+  const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
+    attemptId: 'attempt-hidden-dispatch', prompt: 'Write the chapter yourself.', outputSchema, onStarted: async id => { started = id },
+  }, { ...config, allowedTools: [] }))
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-tool-scope', message: expect.stringContaining('subagent') } })
+  expect(started).toBeDefined()
+  expect(fixture.childRequests).toHaveLength(0)
+  expect(dispatch.dispatched).toEqual([])
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
+})
+
+it('denies a dispatch tool that appears in the child scope after its first model request', async () => {
+  let fixture: Awaited<ReturnType<typeof useStageFixture>> | undefined
+  let dispatch: ReturnType<typeof attachChildScopedDispatchTool> | undefined
+  fixture = await useStageFixture((request, index) => {
+    if (index > 0) return call('structured_output', { prose: 'Must not be requested.' })
+    // Register while the first response streams, so the call reaches execution with the tool already in the child scope.
+    dispatch!.registerFor(request.sessionId!)
+    return call('subagent', { prompt: 'Draft the chapter for me.' })
+  })
+  dispatch = attachChildScopedDispatchTool(fixture, 'first-request')
+  const outcome = await fixture.run(exec => executeStage(fixture!.ctx, exec, {
+    attemptId: 'attempt-late-dispatch', prompt: 'Write the chapter yourself.', outputSchema, onStarted: async () => {},
+  }, { ...config, allowedTools: [] }))
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-tool-scope' } })
+  expect(dispatch.dispatched).toEqual([])
+  expect(fixture.childRequests).toHaveLength(1)
+  expect(fixture.childRequests[0]!.tools?.map(tool => tool.name)).toEqual(['structured_output'])
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
+})
+
+it('keeps the allowed artifact tools and structured capture visible to a writing stage', async () => {
+  const fixture = await useStageFixture((request, index) => {
+    if (index === 0) {
+      expect(request.tools?.map(tool => tool.name).sort()).toEqual(['guarded_read', 'structured_output'])
+      return call('guarded_read', {})
+    }
+    return call('structured_output', { prose: 'Read, then wrote.' })
+  })
+  fixture.ctx.effect(() => fixture.ctx.tools.register(defineTool({
+    name: 'guarded_read', description: 'Read a fixture artifact.', parameters: {}, isConcurrencySafe: () => true,
+    output: { schema: { type: 'boolean' }, render: () => [{ type: 'text', text: 'Read.' }] }, execute: async () => true,
+  })))
+  const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
+    attemptId: 'attempt-allowed-tools', prompt: 'Read and write.', outputSchema, onStarted: async () => {},
+  }, { ...config, allowedTools: ['guarded_read'] }))
+  expect(outcome).toMatchObject({ status: 'fulfilled', value: { structured: { prose: 'Read, then wrote.' } } })
+})
