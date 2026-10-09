@@ -414,13 +414,15 @@ export class WritingRunner {
   }
 
   /**
-   * A malformed structured_output call retries the exact same key and byte-identical prompt, never a successor
-   * key: prepareAttempt already permits replacing a latest 'failed' attempt, so this keeps a later resume's replay
-   * deterministic (it recomputes the same key first and finds the eventual success, no duplicate paid call). Every
-   * other stage outcome (success, or any non-malformed failure) settles in exactly one prepareAttempt/executeStage pass.
+   * A malformed structured_output call, or a child turn that ends without returning its structured result, retries
+   * the exact same key and byte-identical prompt, never a successor key: prepareAttempt already permits replacing a
+   * latest 'failed' attempt, so this keeps a later resume's replay deterministic (it recomputes the same key first and
+   * finds the eventual success, no duplicate paid call). At most maxRepairAttempts automatic retries follow the first
+   * execution; then the stage fails with an explicit exhaustion message. Every other stage outcome (success, or any
+   * other failure) settles in exactly one prepareAttempt/executeStage pass.
    */
   private async capture(inv: Invocation, key: string, prompt: string, refs: readonly ArtifactRef[], outputSchema: object, allowedTools: readonly string[], authorizeTool?: StageRequest['authorizeTool']): Promise<CapturedStage> {
-    for (let malformedRetry = 0; ; malformedRetry++) {
+    for (let retry = 0; ; retry++) {
       inv.actor.signal?.throwIfAborted()
       if (this.service.getNovel(inv.actor, inv.run.novelId).brief.id !== inv.run.briefArtifactId) throw new WritingError('revision-conflict', 'Creative brief changed during writing')
       let attempt = await this.runs.prepareAttempt(inv.actor, inv.run.id, { key, prompt, inputRefs: refs.map(inputRef), outputSchema })
@@ -439,17 +441,20 @@ export class WritingRunner {
         attempt = await this.runs.saveOutput(inv.actor, inv.run.id, attempt.id, text)
         return { ...result, attempt }
       } catch (cause) {
-        // A malformed structured_output call is a completed model call with a known, invalid result, not an uncertain outcome.
-        const malformed = cause instanceof StageExecutionError && cause.code === 'stage-malformed'
+        // A malformed structured_output call, or a turn that ended without structured output, is a completed model call
+        // with a known, unusable result, not an uncertain outcome.
+        const retryable = cause instanceof StageExecutionError && (cause.code === 'stage-malformed' || cause.code === 'stage-missing-result')
         // A tool-scope refusal is a deterministic stage-boundary decision with no stage output, not an uncertain model outcome.
         const toolScope = cause instanceof StageExecutionError && cause.code === 'stage-tool-scope'
         const latest = this.runs.get(withoutSignal(inv.actor), inv.run.id).attempts.find(item => item.id === attempt.id)
         if (latest?.status === 'prepared' || latest?.status === 'running') {
-          try { await this.runs.failAttempt(withoutSignal(inv.actor), inv.run.id, attempt.id, { outcome: malformed || toolScope || !published ? 'failed' : 'unknown', message: message(cause) }) }
+          try { await this.runs.failAttempt(withoutSignal(inv.actor), inv.run.id, attempt.id, { outcome: retryable || toolScope || !published ? 'failed' : 'unknown', message: message(cause) }) }
           catch (storageCause) { throw new AggregateError([cause, storageCause], 'Native stage failed and its outcome could not be recorded', { cause }) }
         }
-        if (malformed && malformedRetry < inv.run.executionLimits.maxRepairAttempts) continue
-        throw cause
+        if (!retryable) throw cause
+        if (retry < inv.run.executionLimits.maxRepairAttempts) continue
+        const retries = inv.run.executionLimits.maxRepairAttempts
+        throw new StageExecutionError(cause.code, `${cause.message}; stage ${key} failed after ${retries} automatic ${retries === 1 ? 'retry' : 'retries'}`, { cause })
       }
     }
   }

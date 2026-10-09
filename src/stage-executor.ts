@@ -50,7 +50,7 @@ function boundedProviderMessage(text: string): string {
 /** A stage failure that remains distinct from ordinary child output. */
 export class StageExecutionError extends Error {
   /** @param code - Stable failure classification. @param message - Failure summary without private task text. @param options - Original failure cause when available. */
-  constructor(readonly code: 'stage-budget' | 'stage-timeout' | 'stage-incomplete' | 'stage-config' | 'stage-provider' | 'stage-malformed' | 'stage-tool-scope', message: string, options?: ErrorOptions) {
+  constructor(readonly code: 'stage-budget' | 'stage-timeout' | 'stage-incomplete' | 'stage-config' | 'stage-provider' | 'stage-malformed' | 'stage-tool-scope' | 'stage-missing-result', message: string, options?: ErrorOptions) {
     super(message, options)
     this.name = 'StageExecutionError'
   }
@@ -94,12 +94,17 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
   const permittedTools = new Set([...config.allowedTools, STRUCTURED_OUTPUT_TOOL])
   // The child's own turn/end reason carries the exact model failure; the run's coarse stopReason discards it.
   let turnFailure: LlmFailure | undefined
+  // Whether the child's turn ended normally; the in-process driver reports a normal end without a capture as 'error'.
+  let turnCompleted = false
   // Native spawn publishes its descriptor before the first request, but may run before start() returns.
   const stopObserving = ctx.on('session/event', (session, event) => {
     if (event.type === 'subagent/descriptor' && event.data.mode === 'one-shot'
       && event.data.label === request.attemptId && event.data.provider === config.stageProvider
       && session.header.parentSession === parent.session.id) childId = session.id
-    else if (event.type === 'turn/end' && childId !== undefined && session.id === childId && event.data.reason.kind === 'error') turnFailure = event.data.reason.error
+    else if (event.type === 'turn/end' && childId !== undefined && session.id === childId) {
+      turnCompleted = event.data.reason.kind === 'completed'
+      if (event.data.reason.kind === 'error') turnFailure = event.data.reason.error
+    }
   }, { global: true })
   // Admission follows durable association; llm/stream includes provider retries within a single loop step.
   const stopAdmission = ctx.on('llm/stream', async function* (options, next): AsyncIterable<StreamChunk> {
@@ -154,6 +159,12 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
           // A captured structured value alongside a later-step error is not a malformed response: keep it stage-incomplete/unknown rather than discarding a valid capture to retry.
           if (result.value.stopReason === 'error' && result.value.structured === undefined && turnFailure?.code === MALFORMED_RESPONSE_CODE) {
             throw new StageExecutionError('stage-malformed', `Writing stage's model response could not be decoded (${MALFORMED_RESPONSE_CODE}): ${boundedProviderMessage(turnFailure.message)}`)
+          }
+          // The child's turn ended normally (for example with plain assistant text) without calling structured_output:
+          // a completed model call with a known, unusable result rather than an uncertain outcome.
+          if (result.value.structured === undefined && turnCompleted && turnFailure === undefined
+            && (result.value.stopReason === 'completed' || result.value.stopReason === 'error')) {
+            throw new StageExecutionError('stage-missing-result', 'Writing stage turn ended without returning its structured result')
           }
           throw new StageExecutionError('stage-incomplete', `Writing stage ended without a complete structured result: ${result.value.stopReason}`)
         }

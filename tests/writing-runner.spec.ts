@@ -600,3 +600,57 @@ it('fails a writing run clearly when a stage child could see a subagent dispatch
   expect(dispatched).toEqual([])
   expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
 })
+
+it('retries a chapter body turn that ended without its structured result under the same key and completes the run', async () => {
+  let injected = false
+  const fixture = await useWritingFixture({ injectFinish(stage) {
+    if (stage.kind !== 'body' || injected) return undefined
+    injected = true
+    return { kind: 'stop' }
+  } })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.error).toBeNull()
+  expect(outcome.value.status).toBe('completed')
+  const attempts = outcome.value.attempts.filter(item => item.key === 'body/1/candidate/0')
+  expect(attempts).toHaveLength(2)
+  expect(attempts[0]).toMatchObject({ status: 'failed', output: null, error: 'Writing stage turn ended without returning its structured result' })
+  expect(attempts[1]).toMatchObject({ status: 'succeeded' })
+  expect(outcome.value.attempts.some(item => item.key === 'body/1/candidate/1')).toBe(false)
+  const bodyChildren = [...fixture.stages.values()].filter(stage => stage.kind === 'body')
+  expect(bodyChildren).toHaveLength(2)
+  expect(bodyChildren.every(stage => (stage.task?.validationError ?? null) === null)).toBe(true)
+})
+
+it('fails the run clearly once review turns without a structured result exhaust their automatic retries', async () => {
+  const fixture = await useWritingFixture({ executionLimits: { maxRepairAttempts: 2 }, injectFinish(stage) {
+    return stage.kind === 'review' ? { kind: 'stop' } : undefined
+  } })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.status).toBe('failed')
+  expect(outcome.value.error).toContain('Writing stage turn ended without returning its structured result; stage settings/0/a1/candidate/0/review/0 failed after 2 automatic retries')
+  const attempts = outcome.value.attempts.filter(item => item.key === 'settings/0/a1/candidate/0/review/0')
+  expect(attempts).toHaveLength(3)
+  expect(attempts.every(item => item.status === 'failed' && item.output === null)).toBe(true)
+  expect(outcome.value.attempts.some(item => item.key === 'settings/0/a1/candidate/0/review/1')).toBe(false)
+  expect(outcome.value.attempts.every(item => item.status !== 'unknown')).toBe(true)
+  expect(fixture.service.getSettings(fixture.actor, fixture.novel.id).applied).toEqual([])
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
+  // The failure is a known outcome, so an explicit resume needs no permission to resend an uncertain call.
+  const resumed = await fixture.run(exec => fixture.runner.resume(exec, outcome.value.id, false))
+  if (resumed.status === 'rejected') throw resumed.reason
+  expect(resumed.value.status).toBe('failed')
+  expect(resumed.value.attempts.filter(item => item.key === 'settings/0/a1/candidate/0/review/0')).toHaveLength(6)
+})
+
+it('does not retry a missing structured result when the repair budget is zero', async () => {
+  const fixture = await useWritingFixture({ executionLimits: { maxRepairAttempts: 0 }, injectFinish(stage) {
+    return stage.kind === 'settings' ? { kind: 'stop' } : undefined
+  } })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.status).toBe('failed')
+  expect(outcome.value.error).toContain('failed after 0 automatic retries')
+  expect(outcome.value.attempts.filter(item => item.key === 'settings/0/a1/candidate/0')).toEqual([expect.objectContaining({ status: 'failed' })])
+})

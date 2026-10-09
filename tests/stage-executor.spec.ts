@@ -86,12 +86,13 @@ it('counts native provider retries within a single loop step against the same st
   expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
 })
 
-it('rejects plain text instead of claiming a structured stage result', async () => {
+it('rejects plain text as a missing structured result instead of claiming a structured stage result', async () => {
   const fixture = await useStageFixture(() => [{ type: 'finish', reason: { kind: 'stop' } }])
   const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
     attemptId: 'attempt-missing', prompt: 'Produce structured prose.', outputSchema, onStarted: async () => {},
   }, config))
-  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-incomplete' } })
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-missing-result', message: 'Writing stage turn ended without returning its structured result' } })
+  expect(fixture.childRequests).toHaveLength(1)
   expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
 })
 
