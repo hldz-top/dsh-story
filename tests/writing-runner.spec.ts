@@ -401,6 +401,40 @@ it('repairs a settings review whose quote adds words to its source and names tha
   expect(repairedChild?.task?.validationError).toContain('character for character')
 })
 
+/** Real e1 planning capture from live run run_dbe969a5: 13 questions against maxResearchQuestions 12. */
+const e1Planning = JSON.parse(await readFile(new URL('./fixtures/run-dbe969a5-e1-planning.json', import.meta.url), 'utf8')) as { decision: object }
+
+it('repairs a research planning decision that exceeds the question limit and gives the replacement the count and the limit', async () => {
+  let overran = false
+  const fixture = await useWritingFixture({ intervene(stage, output) {
+    if (stage.kind !== 'research-planning' || overran) return output
+    overran = true
+    return e1Planning.decision
+  } })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.error).toBeNull()
+  expect(outcome.value.status).toBe('completed')
+  const planning = outcome.value.attempts.filter(item => item.key.startsWith('settings/0/a1/research/planning'))
+  expect(planning.map(item => [item.key, item.status])).toEqual([['settings/0/a1/research/planning', 'succeeded'], ['settings/0/a1/research/planning/1', 'succeeded']])
+  const repairStage = [...fixture.stages.values()].filter(stage => stage.kind === 'research-planning')[1]!
+  const prompt = await loggedPrompt(fixture, repairStage.sessionId)
+  expect(prompt).toContain('The host rejected the previous planning decision for this exact target: Research questions exceed the configured limits: 13 questions, at most 12 per plan counting internal, creative and external questions together')
+  const firstPrompt = await loggedPrompt(fixture, [...fixture.stages.values()].find(stage => stage.kind === 'research-planning')!.sessionId)
+  expect(firstPrompt).not.toContain('The host rejected the previous planning decision')
+})
+
+it('fails with the specific planning overrun once the repair budget is exhausted', async () => {
+  const fixture = await useWritingFixture({ executionLimits: { maxRepairAttempts: 0 }, intervene(stage, output) {
+    return stage.kind === 'research-planning' ? e1Planning.decision : output
+  } })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.status).toBe('failed')
+  expect(outcome.value.error).toContain('Research planning repair limit was exhausted: Research questions exceed the configured limits: 13 questions, at most 12 per plan')
+  expect(outcome.value.attempts.filter(item => item.key.includes('/research/planning')).map(item => item.key)).toEqual(['settings/0/a1/research/planning'])
+})
+
 it('retries a malformed settings-dimension review response under the same review key and completes the run', async () => {
   let injected = false
   const fixture = await useWritingFixture({ injectFinish(stage) {

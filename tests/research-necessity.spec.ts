@@ -43,7 +43,7 @@ it('records a local research decision before author-defined fiction research and
   expect(fixture.service.listResearch(fixture.actor, fixture.novel.id).every(plan => plan.outcome === 'not-needed' && plan.reservedCalls.length === 0)).toBe(true)
 })
 
-it.each(['missing-fact', 'duplicate-question', 'mode-mismatch', 'text-budget'] as const)('stops invalid captured research necessity before retrieval: %s', async defect => {
+it.each(['missing-fact', 'duplicate-question', 'mode-mismatch', 'text-budget'] as const)('stops invalid captured research necessity before retrieval after one replacement planning capture: %s', async defect => {
   const fixture = await useWritingFixture({ maxReadChars: 8192, intervene(stage, output) {
     if (stage.kind !== 'research-planning') return output
     const question = { id: 'real-light', kind: 'external', question: 'What timing identifies the real navigation light?', reason: 'The requested accurate scene relies on this real signal.' }
@@ -57,8 +57,10 @@ it.each(['missing-fact', 'duplicate-question', 'mode-mismatch', 'text-budget'] a
   if (result.status === 'rejected') throw result.reason
   expect(result.value.status).toBe('failed')
   expect(result.value.error).toContain(defect === 'duplicate-question' ? 'Research question ids must be unique' : defect === 'text-budget' ? 'Research necessity decision exceeds the configured text limit' : 'Research scope must identify one required output decision and missing fact for every external question')
-  expect(result.value.attempts).toHaveLength(1)
-  expect(result.value.attempts[0]).toMatchObject({ key: 'settings/0/a1/research/planning', status: 'succeeded' })
+  expect(result.value.error).toContain('Research planning repair limit was exhausted: ')
+  // The fixture allows maxRepairAttempts 1: one replacement planning capture, then the run fails before any retrieval.
+  expect(result.value.attempts.map(({ key, status }) => ({ key, status }))).toEqual([
+    { key: 'settings/0/a1/research/planning', status: 'succeeded' }, { key: 'settings/0/a1/research/planning/1', status: 'succeeded' }])
   expect(fixture.service.listResearch(fixture.actor, fixture.novel.id)).toEqual([])
   expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
 })

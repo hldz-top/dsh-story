@@ -68,9 +68,12 @@ export const researchEvidenceContentSchema = z.union([
 /** @param questions - Caller-supplied planning input. @param limits - Per-plan bounds. @returns Detached validated questions. */
 export function researchQuestions(questions: readonly ResearchQuestion[], limits: ResearchLimits): ResearchQuestion[] {
   const parsed = z.array(researchQuestionSchema).nonempty().parse(questions)
-  if (parsed.length > limits.maxResearchQuestions
-    || parsed.reduce((sum, item) => sum + [...item.question].length + [...item.reason].length, 0) > limits.maxEvidenceChars) {
-    throw new WritingError('research-budget', 'Research questions exceed the configured limits')
+  if (parsed.length > limits.maxResearchQuestions) {
+    throw new WritingError('research-budget', `Research questions exceed the configured limits: ${parsed.length} questions, at most ${limits.maxResearchQuestions} per plan counting internal, creative and external questions together`)
+  }
+  const chars = parsed.reduce((sum, item) => sum + [...item.question].length + [...item.reason].length, 0)
+  if (chars > limits.maxEvidenceChars) {
+    throw new WritingError('research-budget', `Research questions exceed the configured limits: ${chars} Unicode characters of question and reason text, at most ${limits.maxEvidenceChars}`)
   }
   if (new Set(parsed.map(item => item.id)).size !== parsed.length) throw new WritingError('invalid-input', 'Research question ids must be unique')
   return parsed

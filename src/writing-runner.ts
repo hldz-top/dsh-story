@@ -11,7 +11,7 @@ import { RunStoreError, type AttemptFailureKind, type RunStore, type BeginRunInp
 import { executeStage, StageExecutionError, type StageRequest, type StageResult } from './stage-executor.ts'
 import { buildStagePrompt, type StagePromptKind } from './stage-prompts.ts'
 import { buildResearchPrompt, validateResearchStageResult, RESEARCH_STAGE_OUTPUT_SCHEMA, researchStageTools, researchToolAuthorization } from './research-stage.ts'
-import { buildResearchPlanningPrompt, researchNecessity, RESEARCH_PLANNING_OUTPUT_SCHEMA } from './research-planning.ts'
+import { buildResearchPlanningPrompt, isResearchPlanningOutputError, researchNecessity, RESEARCH_PLANNING_OUTPUT_SCHEMA, type ResearchNecessity } from './research-planning.ts'
 import { planSettings } from './settings-plan.ts'
 import { settingsCatalog, type SettingsDimensionKind } from './settings-catalog.ts'
 import { StageOutputError, StageOutputSchemas, type BodyOutput, type ReviewCategory, type StageInputRef } from './stage-output.ts'
@@ -386,11 +386,28 @@ export class WritingRunner {
       requestId: requestId(inv.run, key), parentSessionId: inv.actor.sessionId }
     const attempts = this.runs.get(inv.actor, inv.run.id).attempts
     const legacy = attempts.some(attempt => attempt.key === key) && !attempts.some(attempt => attempt.key === `${key}/planning`)
-    const necessity = legacy ? undefined : researchNecessity((await this.capture(inv, `${key}/planning`,
-      buildResearchPlanningPrompt({ ...request, outputTarget }, this.service.researchLimits), refs, RESEARCH_PLANNING_OUTPUT_SCHEMA, ['story_read_artifact'])).structured, this.service.researchLimits)
+    const necessity = legacy ? undefined : await this.planResearch(inv, key, { ...request, outputTarget }, refs)
     const scoped = necessity === undefined ? request : { ...request, necessity }
     const result = await this.capture(inv, key, buildResearchPrompt(scoped), refs, RESEARCH_STAGE_OUTPUT_SCHEMA, researchStageTools(scoped), researchToolAuthorization(this.ctx, this.service, scoped))
     return validateResearchStageResult(this.ctx, inv.exec, this.service, { ...scoped, parentSessionId: result.attempt.parentSessionId }, result)
+  }
+
+  /** Local planning capture with output-admission repair: a rejected decision (for example too many questions) is replaced under `${key}/planning/<n>` with the host's message, within maxRepairAttempts. */
+  private async planResearch(inv: Invocation, key: string, request: Parameters<typeof buildResearchPlanningPrompt>[0], refs: readonly ArtifactRef[]): Promise<ResearchNecessity> {
+    const limits = this.service.researchLimits
+    let validationError: string | null = null
+    let code: 'research-budget' | 'invalid-input' = 'invalid-input'
+    for (let repair = 0; repair <= inv.run.executionLimits.maxRepairAttempts; repair++) {
+      const stageKey = repair === 0 ? `${key}/planning` : `${key}/planning/${repair}`
+      const result = await this.capture(inv, stageKey, buildResearchPlanningPrompt(request, limits, validationError), refs, RESEARCH_PLANNING_OUTPUT_SCHEMA, ['story_read_artifact'])
+      try { return researchNecessity(result.structured, limits) }
+      catch (cause) {
+        if (!isResearchPlanningOutputError(cause)) throw cause
+        code = cause instanceof WritingError && cause.code === 'research-budget' ? 'research-budget' : 'invalid-input'
+        validationError = cause instanceof z.ZodError ? `The decision does not match the planning schema: ${cause.issues.map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}` : cause.message
+      }
+    }
+    throw new WritingError(code, `Research planning repair limit was exhausted: ${validationError}`)
   }
 
   private async stage(inv: Invocation, key: string, kind: StagePromptKind, refs: readonly ArtifactRef[], task: object, feedback: readonly ArtifactRef[],

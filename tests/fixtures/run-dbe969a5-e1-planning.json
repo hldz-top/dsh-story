@@ -1,0 +1,97 @@
+{
+  "description": "Stored research/planning capture for settings/0/e1/research/planning of live run run_dbe969a5-ce1c-4357-8ec1-13996d94ce90 (Bailian deepseek-v4.1-flash, dsh-story main@34bec92), rejected with \"Research questions exceed the configured limits\". serviceLimits are the run's retained snapshot.",
+  "serviceLimits": {
+    "maxArtifactBytes": 1048576,
+    "maxReadChars": 4096,
+    "maxResearchQuestions": 12,
+    "maxResearchCalls": 12,
+    "maxResearchSources": 96,
+    "maxEvidenceChars": 16000,
+    "maxResearchLogEvents": 2048
+  },
+  "decision": {
+    "mode": "input-only",
+    "reason": "All three inputs were read from offset 0 to eof and match the immutable references (creative brief ~233 chars; a1 悬疑/推理 1528 chars; a2 悬疑(主)>推理(并列核心)>社会派推理(辅) 2175 chars; revisions and sha256 identical). The creative brief plus the accepted dependencies a1 and a2 fix the protagonist's identity anchors (灯塔技师林岑, 调查三年前失踪父亲留下的维护记录), the three-chapter evidence-chain arc, and the hard constraints (无超自然能力、只能依据亲眼目睹与实际获得的信息推理、动机与认知一致). What remains to specify e1 is a set of deliberate fictional choices (age, temperament, personal stake, the chapter-3 far-reaching personal decision, relationships, flaw, inner conflict) that must be authored, not looked up. Because the near-future island is explicitly an atmosphere/situation device rather than a sci-fi worldbuilding mandate and the author declares a realistic, non-supernatural story, defining this fictional character requires no verifiable real-world fact. Hence mode=input-only with no external requirements.",
+    "questions": [
+      {
+        "id": "e1-i1",
+        "kind": "internal",
+        "question": "创意简报中关于主角不可更改的身份事实有哪些？（姓名林岑、职业灯塔技师、调查三年前失踪父亲留下的维护记录、并决定留在岛上）",
+        "reason": "e1 必须以简报已确定的姓名、职业与核心目标为锚点，避免与权威输入冲突。"
+      },
+      {
+        "id": "e1-i2",
+        "kind": "internal",
+        "question": "主角在故事开始时的信息与认知状态是什么？她已知什么、未知什么，尤其是父亲失踪与那份被篡改的维护日志之间的关系？",
+        "reason": "a1/a2 要求人物只能依据实际获得的信息推理，主角的初始知识边界直接决定其认知与动机的合法性。"
+      },
+      {
+        "id": "e1-i3",
+        "kind": "internal",
+        "question": "a1 与 a2 对主角设定下达了哪些必须遵守的约束？（无任何超自然能力；只能依据亲眼目睹的事件与实际获得的信息推理；动机与认知前后一致；线索与物证矛盾须公平地服务于推理内核；近未来海岛仅作氛围与情境装置）",
+        "reason": "e1 依赖 a1、a2，必须显式继承并落实这些已接受的约束，否则维度间会冲突。"
+      },
+      {
+        "id": "e1-i4",
+        "kind": "internal",
+        "question": "简报警报规定的三章主角行动弧线是什么？（第1章发现被篡改的维护日志并决定留在岛上；第2章核实关键物证矛盾并与知晓部分往事的渡船经营者对质；第3章查明人为事故及其掩盖真相、解开核心谜团并做出影响深远的个人抉择）",
+        "reason": "主角设定必须能支撑这三章的递进行动，弧线端点是 e1 必须覆盖的既定事实。"
+      },
+      {
+        "id": "e1-i5",
+        "kind": "internal",
+        "question": "简报对主角所处环境与关系网络提供了哪些已定事实？（近未来海岛、灯塔、渡船经营者知晓部分往事、父亲失踪已三年）",
+        "reason": "这些是 e1 描写主角处境与关系时唯一可直接引用的权威背景，避免自行发明与输入矛盾的世界事实。"
+      },
+      {
+        "id": "e1-c1",
+        "kind": "creative",
+        "question": "林岑的年龄、外貌特征与整体气质应如何设定，才能既贴合写实悬疑/推理的质感，又使她成为可信的灯塔技师与调查者？",
+        "reason": "年龄与形象属于需作者裁定的虚构选择，输入未规定，必须由本维度做出明确决定。"
+      },
+      {
+        "id": "e1-c2",
+        "kind": "creative",
+        "question": "她的性格与职业作风如何设定——例如冷静细致、执着、怀疑倾向、对规则与权威的态度——以及这些特质如何体现灯塔技师的专业能力，同时不违背「仅凭实际信息推理」的约束？",
+        "reason": "性格与工作方式是推理内核能否成立的关键虚构选择，需与 a1/a2 的写实推理约束协调。"
+      },
+      {
+        "id": "e1-c3",
+        "kind": "creative",
+        "question": "她与失踪父亲的感情与个人利害关系应如何设定，是什么私人动机让她非留在岛上查下去不可？",
+        "reason": "私人利害是主角动机的虚构来源，输入只给出父亲失踪这一事实，未规定其情感与动机内容。"
+      },
+      {
+        "id": "e1-c4",
+        "kind": "creative",
+        "question": "第3章「影响深远的个人抉择」具体应是什么选择、指向何种结果（例如公开真相、背负代价、留下或离开、保护或追责），从而完成主角的成长弧？",
+        "reason": "这是简报要求但刻意留白的关键虚构抉择，e1 必须为其确立方向以保证后续写作一致。"
+      },
+      {
+        "id": "e1-c5",
+        "kind": "creative",
+        "question": "她的核心缺陷或认知盲点是什么，该缺陷如何在前两章造成误判或代价，并在第3章被克服或接受？",
+        "reason": "一致的动机与认知需要一条内在缺陷—成长线，这是输入未规定、必须裁定的虚构选择。"
+      },
+      {
+        "id": "e1-c6",
+        "kind": "creative",
+        "question": "她与渡船经营者及其他岛上人物的关系如何设定——信任、对立还是旧识——以及她是否拥有盟友或阻力？",
+        "reason": "第2章对质需要既定的关系基础，关系设定属于虚构创作选择，输入仅给出对方知晓部分往事。"
+      },
+      {
+        "id": "e1-c7",
+        "kind": "creative",
+        "question": "叙事视角与内心声音如何设定（第一人称还是第三人称限制视角、语气基调），以呈现她逐步逼近真相的推理过程？",
+        "reason": "视角与语气影响主角设定的呈现方式，属作者裁定的虚构选择。"
+      },
+      {
+        "id": "e1-c8",
+        "kind": "creative",
+        "question": "近未来海岛的一日生活与职业细节应如何用于塑造她的人物特色，同时确保这些氛围元素只服务情境、不演变成科幻设定？",
+        "reason": "a1/a2 规定近未来仅作氛围装置，e1 需要把它转化为刻画主角的虚构细节而不引入技术驱动的类型期待。"
+      }
+    ],
+    "externalRequirements": []
+  }
+}
