@@ -30,7 +30,7 @@ it.each([
   await expect(useRunStorage('json', invalid).then(() => 'opened')).rejects.toMatchObject({ code: 'invalid-input' })
 })
 
-it.each(['text-digest', 'reference-digest', 'missing-output', 'duplicate-attempt', 'duplicate-run', 'wrong-novel', 'wrong-output-key', 'unsupported-schema', 'unknown-field'] as const)('refuses durable run corruption before recovery rewrites: %s', async corruption => {
+it.each(['text-digest', 'reference-digest', 'missing-output', 'duplicate-attempt', 'duplicate-run', 'wrong-novel', 'wrong-output-key', 'unsupported-schema', 'unknown-field', 'classified-success', 'unknown-failure-kind'] as const)('refuses durable run corruption before recovery rewrites: %s', async corruption => {
   const h = await useRunStorage('json', limits)
   const run = await h.store.begin(owner, input)
   const attempt = await h.store.prepareAttempt(owner, run.id, stage)
@@ -57,6 +57,8 @@ it.each(['text-digest', 'reference-digest', 'missing-output', 'duplicate-attempt
     Object.assign(savedAttempt, rawAttempt)
   }
   if (corruption === 'unknown-field') Object.assign(savedRun, { approved: true })
+  if (corruption === 'classified-success') Object.assign(savedAttempt, { failureKind: 'truncated' })
+  if (corruption === 'unknown-failure-kind') Object.assign(savedAttempt, { status: 'failed', output: null, error: 'Empty result', failureKind: 'empty' })
   const corrupted = JSON.stringify(stored)
   await writeFile(file, corrupted)
   await expect(h.restart().then(() => 'opened')).rejects.toThrow()
@@ -142,6 +144,36 @@ describe.each(['json', 'sqlite'] as const)('%s durable writing runs', backend =>
     await expect(h.store.prepareAttempt(owner, run.id, stage)).rejects.toMatchObject({ code: 'attempt-budget' })
     expect(await h.store.finish(owner, run.id, 'failed', 'Attempt budget exhausted')).toMatchObject({ status: 'failed', error: 'Attempt budget exhausted' })
     expect(h.store.get(owner, run.id).attempts).toHaveLength(2)
+  })
+
+  it('records provider refusals and length cut-offs as explicitly classified failed attempts that survive restart', async () => {
+    const h = await useRunStorage(backend, limits)
+    const run = await h.store.begin(owner, input)
+    const refused = await h.store.prepareAttempt(owner, run.id, stage)
+    await h.store.associateChild(owner, run.id, refused.id, childId)
+    expect(await h.store.failAttempt(owner, run.id, refused.id, { outcome: 'failed', message: 'Writing stage was refused by the model provider (refusal)', kind: 'refused' }))
+      .toMatchObject({ status: 'failed', output: null, failureKind: 'refused' })
+    const truncated = await h.store.prepareAttempt(owner, run.id, stage)
+    await h.store.associateChild(owner, run.id, truncated.id, brandString<SessionId>('child-session-2'))
+    await h.store.failAttempt(owner, run.id, truncated.id, { outcome: 'failed', message: 'Writing stage output was truncated', kind: 'truncated' })
+    const plain = await h.store.prepareAttempt(owner, run.id, stage)
+    await h.store.failAttempt(owner, run.id, plain.id, { outcome: 'failed', message: 'Provider rejected before streaming' })
+    await expect(h.store.finish(owner, run.id, 'completed')).rejects.toMatchObject({ code: 'attempt-state' })
+    await h.store.finish(owner, run.id, 'failed', 'Writing stage output was truncated')
+    await h.restart()
+    const readback = h.store.get(owner, run.id)
+    expect(readback.attempts.map(attempt => [attempt.status, attempt.failureKind])).toEqual([['failed', 'refused'], ['failed', 'truncated'], ['failed', undefined]])
+    expect('failureKind' in readback.attempts[2]!).toBe(false)
+    expect(readback.attempts.every(attempt => attempt.output === null)).toBe(true)
+  })
+
+  it('refuses to classify an uncertain or unknown attempt outcome as a refusal or truncation', async () => {
+    const h = await useRunStorage(backend, limits)
+    const run = await h.store.begin(owner, input)
+    const attempt = await h.store.prepareAttempt(owner, run.id, stage)
+    await expect(h.store.failAttempt(owner, run.id, attempt.id, { outcome: 'unknown', message: 'Lost connection', kind: 'truncated' })).rejects.toMatchObject({ code: 'invalid-input' })
+    await expect(h.store.failAttempt(owner, run.id, attempt.id, { outcome: 'failed', message: 'Odd', kind: 'empty' as 'refused' })).rejects.toMatchObject({ code: 'invalid-input' })
+    expect(h.store.get(owner, run.id).attempts[0]).toMatchObject({ status: 'prepared' })
   })
 
   it('rejects completing a run whose latest attempt for a key is a known failure rather than a success', async () => {

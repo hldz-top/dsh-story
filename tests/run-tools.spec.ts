@@ -86,6 +86,28 @@ it('returns exact run history through the real tool loop without exposing stored
   expect(h.ctx.tools.get('story_get_run')).toBeUndefined()
 })
 
+it('reports explicit refused and truncated attempt classifications through the real tool loop', async () => {
+  let run: WritingRun
+  const model = new ScriptedModel((_request, index) => index === 0 ? call('story_get_run', { runId: run.id }) : stop())
+  const h = await setup(model)
+  run = await h.runs.begin(h.actor, h.input)
+  const stage = { prompt: 'Private full stage prompt', inputRefs: [{ artifactId: h.novel.brief.id, sha256: h.novel.brief.sha256 }], outputSchema: { type: 'object', properties: {}, additionalProperties: false } }
+  const refused = await h.runs.prepareAttempt(h.actor, run.id, { ...stage, key: 'refused-stage' })
+  await h.runs.failAttempt(h.actor, run.id, refused.id, { outcome: 'failed', message: 'Writing stage was refused (refusal)', kind: 'refused' })
+  const truncated = await h.runs.prepareAttempt(h.actor, run.id, { ...stage, key: 'truncated-stage' })
+  await h.runs.failAttempt(h.actor, run.id, truncated.id, { outcome: 'failed', message: 'Writing stage output was truncated', kind: 'truncated' })
+  const plain = await h.runs.prepareAttempt(h.actor, run.id, { ...stage, key: 'plain-stage' })
+  await h.runs.failAttempt(h.actor, run.id, plain.id, { outcome: 'failed', message: 'Provider rejected before streaming' })
+  await h.runs.finish(h.actor, run.id, 'failed', 'Writing stage was refused (refusal)')
+  beginConversation(h.agent)
+  await h.agent.whenIdle()
+  const value = jsonResult(recordedResults(model)[0]) as { attempts: Record<string, unknown>[] }
+  expect(value.attempts.map(attempt => [attempt['key'], attempt['status'], attempt['failureKind']])).toEqual([
+    ['refused-stage', 'failed', 'refused'], ['truncated-stage', 'failed', 'truncated'], ['plain-stage', 'failed', undefined],
+  ])
+  expect('failureKind' in value.attempts[2]!).toBe(false)
+})
+
 const pageSchema = z.strictObject({ runId: z.string(), attemptId: z.string(), sha256: z.string(), bytes: z.number(), totalChars: z.number(), offset: z.number(), limit: z.number(), text: z.string(), nextOffset: z.number(), eof: z.boolean() })
 async function saveRawOutput(h: Awaited<ReturnType<typeof setup>>, run: WritingRun) {
   const attempt = await h.runs.prepareAttempt(h.actor, run.id, { key: 'raw-fixture', prompt: 'Retained private stage prompt', inputRefs: [{ artifactId: h.novel.brief.id, sha256: h.novel.brief.sha256 }], outputSchema: { type: 'object', properties: {}, additionalProperties: false } })

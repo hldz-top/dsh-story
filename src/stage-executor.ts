@@ -38,6 +38,16 @@ const STRUCTURED_OUTPUT_TOOL = 'structured_output'
 // ToolRuntime's reserved programmatic-calling transport. It only sub-dispatches tools that are themselves visible to the
 // caller, and each nested call passes through the same per-child execution admission below.
 const RUN_CODE_TOOL = 'run_code'
+// Provider-neutral failure codes an adapter may use for a declined or safety-filtered response.
+const REFUSAL_CODES: ReadonlySet<string> = new Set(['REFUSAL', 'CONTENT_FILTER'])
+// The DSH 0.2.0-rc.2 DeepSeek Messages adapter has no refusal finish reason: a provider `refusal` (or `content_filter`)
+// stop reason reaches the loop as MALFORMED_RESPONSE "unsupported stop reason <reason>", which is not a decoding defect.
+const UNSUPPORTED_REFUSAL_STOP = /\bunsupported stop reason (?:refusal|content_filter)\b/
+/** @param failure - The child's terminal turn failure, when any. @returns Whether the provider declined to answer. */
+function isProviderRefusal(failure: LlmFailure | undefined): boolean {
+  if (failure === undefined) return false
+  return REFUSAL_CODES.has(failure.code) || (failure.code === MALFORMED_RESPONSE_CODE && UNSUPPORTED_REFUSAL_STOP.test(failure.message))
+}
 /** Provider failure text embedded in a stage-malformed message is capped at this many Unicode code points. */
 const MAX_MALFORMED_MESSAGE_CHARS = 300
 
@@ -50,7 +60,7 @@ function boundedProviderMessage(text: string): string {
 /** A stage failure that remains distinct from ordinary child output. */
 export class StageExecutionError extends Error {
   /** @param code - Stable failure classification. @param message - Failure summary without private task text. @param options - Original failure cause when available. */
-  constructor(readonly code: 'stage-budget' | 'stage-timeout' | 'stage-incomplete' | 'stage-config' | 'stage-provider' | 'stage-malformed' | 'stage-tool-scope' | 'stage-missing-result', message: string, options?: ErrorOptions) {
+  constructor(readonly code: 'stage-budget' | 'stage-timeout' | 'stage-incomplete' | 'stage-config' | 'stage-provider' | 'stage-malformed' | 'stage-tool-scope' | 'stage-missing-result' | 'stage-refused' | 'stage-truncated', message: string, options?: ErrorOptions) {
     super(message, options)
     this.name = 'StageExecutionError'
   }
@@ -96,6 +106,8 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
   let turnFailure: LlmFailure | undefined
   // Whether the child's turn ended normally; the in-process driver reports a normal end without a capture as 'error'.
   let turnCompleted = false
+  // An output-token cut-off is recorded on the turn even when a plugin continued the turn afterwards.
+  let truncated = false
   // Native spawn publishes its descriptor before the first request, but may run before start() returns.
   const stopObserving = ctx.on('session/event', (session, event) => {
     if (event.type === 'subagent/descriptor' && event.data.mode === 'one-shot'
@@ -104,6 +116,7 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
     else if (event.type === 'turn/end' && childId !== undefined && session.id === childId) {
       turnCompleted = event.data.reason.kind === 'completed'
       if (event.data.reason.kind === 'error') turnFailure = event.data.reason.error
+      if (event.data.reason.kind === 'max-tokens') truncated = true
     }
   }, { global: true })
   // Admission follows durable association; llm/stream includes provider retries within a single loop step.
@@ -155,6 +168,15 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
         const [result] = await pendingResult
         if (result.status === 'rejected') throw result.reason
         signal.throwIfAborted()
+        // A refusal or a length cut-off is its own explicit failure, never a success, an empty value or a generic incomplete stage,
+        // even when a structured value was captured before the cut-off.
+        if (result.value.stopReason === 'refusal' || isProviderRefusal(turnFailure)) {
+          const detail = turnFailure === undefined ? result.value.stopReason : `${turnFailure.code}: ${boundedProviderMessage(turnFailure.message)}`
+          throw new StageExecutionError('stage-refused', `Writing stage was refused (${detail})`)
+        }
+        if (result.value.stopReason === 'max-tokens' || truncated) {
+          throw new StageExecutionError('stage-truncated', "Writing stage output was truncated at the model's output-token limit before a complete structured result")
+        }
         if (result.value.stopReason !== 'completed' || result.value.structured === undefined) {
           // A captured structured value alongside a later-step error is not a malformed response: keep it stage-incomplete/unknown rather than discarding a valid capture to retry.
           if (result.value.stopReason === 'error' && result.value.structured === undefined && turnFailure?.code === MALFORMED_RESPONSE_CODE) {
