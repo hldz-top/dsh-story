@@ -291,7 +291,6 @@ it('keeps simultaneous child admissions and budgets independent within one paren
 
 it.each<FinishReason>([
   { kind: 'error', failure: { code: 'UNKNOWN', message: 'Fixture model failure' } },
-  { kind: 'max-tokens' },
 ])('rejects incomplete native model finishes without publishing partial prose: %j', async reason => {
   const fixture = await useStageFixture(() => [{ type: 'finish', reason }])
   const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
@@ -464,4 +463,49 @@ it('keeps the allowed artifact tools and structured capture visible to a writing
     attemptId: 'attempt-allowed-tools', prompt: 'Read and write.', outputSchema, onStarted: async () => {},
   }, { ...config, allowedTools: ['guarded_read'] }))
   expect(outcome).toMatchObject({ status: 'fulfilled', value: { structured: { prose: 'Read, then wrote.' } } })
+})
+
+it('classifies an output-length cut-off as an explicit truncation, never as a missing or empty result', async () => {
+  const fixture = await useStageFixture(() => [{ type: 'finish', reason: { kind: 'max-tokens' } }])
+  const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
+    attemptId: 'attempt-truncated', prompt: 'Require a complete result.', outputSchema, onStarted: async () => {},
+  }, config))
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-truncated', message: "Writing stage output was truncated at the model's output-token limit before a complete structured result" } })
+  expect(fixture.childRequests).toHaveLength(1)
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
+})
+
+it('rejects a structured value captured in a response that was cut off at the output-token limit', async () => {
+  const fixture = await useStageFixture(() => [...call('structured_output', { prose: 'A cut-off chapter' }).slice(0, 2), { type: 'finish', reason: { kind: 'max-tokens' } }])
+  const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
+    attemptId: 'attempt-truncated-capture', prompt: 'Require a complete result.', outputSchema, onStarted: async () => {},
+  }, config))
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-truncated' } })
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
+})
+
+it.each([
+  { code: 'MALFORMED_RESPONSE', message: 'DeepSeek Messages stream: unsupported stop reason refusal' },
+  { code: 'MALFORMED_RESPONSE', message: 'DeepSeek Messages stream: unsupported stop reason content_filter' },
+  { code: 'REFUSAL', message: 'The provider declined this request.' },
+  { code: 'CONTENT_FILTER', message: 'The response was withheld by a content filter.' },
+])('classifies a provider refusal as an explicit refused stage, not a decoding failure: %j', async failure => {
+  const fixture = await useStageFixture(() => [{ type: 'finish', reason: { kind: 'error', failure } }])
+  const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
+    attemptId: 'attempt-refused', prompt: 'Require a complete result.', outputSchema, onStarted: async () => {},
+  }, config))
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-refused', message: `Writing stage was refused (${failure.code}: ${failure.message})` } })
+  expect(fixture.childRequests).toHaveLength(1)
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
+})
+
+it('classifies a turn blocked before its model step as an explicit refused stage', async () => {
+  const fixture = await useStageFixture(() => call('structured_output', { prose: 'Must not run.' }))
+  fixture.ctx.on('agent/pre-step', async (payload, next) => payload.agent.session.header.parentSession === fixture.parent.session.id ? { kind: 'reject' } : next(), { global: true })
+  const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
+    attemptId: 'attempt-blocked', prompt: 'Require a complete result.', outputSchema, onStarted: async () => {},
+  }, config))
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-refused', message: 'Writing stage was refused (refusal)' } })
+  expect(fixture.childRequests).toHaveLength(0)
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
 })

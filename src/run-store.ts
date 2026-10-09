@@ -65,10 +65,16 @@ export interface PrepareAttemptInput {
 const outputRefSchema = z.strictObject({ attemptId: attemptIdSchema, sha256: digestSchema, bytes: z.number().int().nonnegative(), chars: z.number().int().nonnegative() })
 /** Durable raw text identity; the default progress view contains no text. */
 export type RunOutputRef = z.infer<typeof outputRefSchema>
+/** Explicit classification of a known failed attempt whose model response arrived but was declined or cut off. */
+const attemptFailureKindSchema = z.enum(['refused', 'truncated'])
+/** Why a failed attempt's model response is unusable: the provider refused it, or output stopped at the length limit. */
+export type AttemptFailureKind = z.infer<typeof attemptFailureKindSchema>
 const attemptSchema = z.strictObject({
   id: attemptIdSchema, parentSessionId: sessionIdSchema, request: attemptRequestSchema,
   status: z.enum(['prepared', 'running', 'succeeded', 'failed', 'unknown']), childSessionId: sessionIdSchema.nullable(),
   output: outputRefSchema.nullable(), error: z.string().nullable(), retryAuthorized: z.boolean(),
+  // Absent for every other attempt, so records written before this field existed remain valid unchanged.
+  failureKind: attemptFailureKindSchema.optional(),
 })
 type AttemptRecord = z.infer<typeof attemptSchema>
 /** Detached execution progress, excluding the stored prompt and response schema. */
@@ -234,15 +240,17 @@ export class RunStore {
     return structuredClone(output)
   }
 
-  /** @param actor - Workspace owner after native work settles. @param runId - Running request. @param attemptId - Exact active attempt. @param failure - Known failure or explicitly uncertain outcome. @returns Persisted failure metadata without discarding prior attempts. */
-  async failAttempt(actor: Actor, runId: RunId, attemptId: AttemptId, failure: { outcome: 'failed' | 'unknown'; message: string }): Promise<WritingAttempt> {
+  /** @param actor - Workspace owner after native work settles. @param runId - Running request. @param attemptId - Exact active attempt. @param failure - Known failure or explicitly uncertain outcome; `kind` classifies a known refusal or length cut-off. @returns Persisted failure metadata without discarding prior attempts. */
+  async failAttempt(actor: Actor, runId: RunId, attemptId: AttemptId, failure: { outcome: 'failed' | 'unknown'; message: string; kind?: AttemptFailureKind }): Promise<WritingAttempt> {
     if (failure.message.trim().length === 0) fail('invalid-input', 'Failed or unknown attempts require a nonblank failure reason')
+    if (failure.kind !== undefined && failure.outcome !== 'failed') fail('invalid-input', 'Only a known failed attempt can be classified as refused or truncated')
+    if (failure.kind !== undefined && !attemptFailureKindSchema.safeParse(failure.kind).success) fail('invalid-input', 'Unknown attempt failure classification')
     const run = await this.change(actor, runId, current => {
       this.requireRunning(current)
       return replaceAttempt(current, attemptId, attempt => {
-        if (attempt.status === failure.outcome && attempt.error === failure.message) return attempt
+        if (attempt.status === failure.outcome && attempt.error === failure.message && attempt.failureKind === failure.kind) return attempt
         if (attempt.status !== 'prepared' && attempt.status !== 'running') fail('attempt-state', 'Terminal attempt outcomes cannot be rewritten')
-        return { ...attempt, status: failure.outcome, error: failure.message, retryAuthorized: false }
+        return { ...attempt, status: failure.outcome, error: failure.message, retryAuthorized: false, ...(failure.kind === undefined ? {} : { failureKind: failure.kind }) }
       })
     })
     return attemptView(findAttempt(run, attemptId))
@@ -376,6 +384,7 @@ function admitDomain(domain: Domain<typeof runDomain>): void {
           if (attempt.error === null || attempt.error.trim().length === 0) fail('corrupt-run', 'Unsuccessful attempt lacks its failure reason')
         } else if (attempt.error !== null) fail('corrupt-run', 'Successful or active attempt carries a failure reason')
         if (attempt.retryAuthorized && attempt.status !== 'unknown') fail('corrupt-run', 'Retry permission does not belong to an unknown attempt')
+        if (attempt.failureKind !== undefined && attempt.status !== 'failed') fail('corrupt-run', 'Only a failed attempt can be classified as refused or truncated')
         if (run.status !== 'running' && (attempt.status === 'prepared' || attempt.status === 'running')) fail('corrupt-run', 'Non-running run contains an active attempt')
         if (attempt.output !== null) {
           const output = domain.table('outputs').get(attempt.id)

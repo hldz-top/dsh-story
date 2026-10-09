@@ -654,3 +654,39 @@ it('does not retry a missing structured result when the repair budget is zero', 
   expect(outcome.value.error).toContain('failed after 0 automatic retries')
   expect(outcome.value.attempts.filter(item => item.key === 'settings/0/a1/candidate/0')).toEqual([expect.objectContaining({ status: 'failed' })])
 })
+
+it('fails the run with an explicit truncated attempt when a chapter body is cut off at the output-token limit', async () => {
+  const fixture = await useWritingFixture({ injectFinish(stage) {
+    return stage.kind === 'body' ? { kind: 'max-tokens' } : undefined
+  } })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.status).toBe('failed')
+  expect(outcome.value.error).toBe("Writing stage output was truncated at the model's output-token limit before a complete structured result")
+  const attempts = outcome.value.attempts.filter(item => item.key === 'body/1/candidate/0')
+  expect(attempts).toEqual([expect.objectContaining({ status: 'failed', output: null, failureKind: 'truncated' })])
+  expect(outcome.value.attempts.filter(item => item.failureKind !== undefined)).toHaveLength(1)
+  const manuscript = fixture.service.getManuscript(fixture.actor, fixture.novel.id)
+  expect(manuscript.history.some(candidate => candidate.target.kind === 'body')).toBe(false)
+  expect(manuscript.appliedChapters).toEqual([])
+  // Durable readback from the reopened run store keeps the explicit classification.
+  const reopened = await fixture.run(exec => fixture.runner.resume(exec, outcome.value.id, false))
+  if (reopened.status === 'rejected') throw reopened.reason
+  expect(reopened.value.attempts.filter(item => item.key === 'body/1/candidate/0').map(item => item.failureKind)).toEqual(['truncated', 'truncated'])
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
+})
+
+it('records a provider refusal as an explicit refused attempt instead of retrying it as a malformed response', async () => {
+  const fixture = await useWritingFixture({ injectFinish(stage) {
+    return stage.kind === 'settings' ? { kind: 'error', failure: { code: 'MALFORMED_RESPONSE', message: 'DeepSeek Messages stream: unsupported stop reason refusal' } } : undefined
+  } })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.status).toBe('failed')
+  expect(outcome.value.error).toContain('Writing stage was refused (MALFORMED_RESPONSE: DeepSeek Messages stream: unsupported stop reason refusal)')
+  const attempts = outcome.value.attempts.filter(item => item.key === 'settings/0/a1/candidate/0')
+  expect(attempts).toEqual([expect.objectContaining({ status: 'failed', output: null, failureKind: 'refused' })])
+  expect(attempts[0]!.error).not.toContain('could not be decoded')
+  expect(fixture.service.getSettings(fixture.actor, fixture.novel.id).history).toEqual([])
+})
+

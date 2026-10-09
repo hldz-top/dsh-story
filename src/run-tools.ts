@@ -38,6 +38,7 @@ const runSchema = {
       id: text, parentSessionId: text, key: text, inputRefs, status: { ...text, enum: ['prepared', 'running', 'succeeded', 'failed', 'unknown'] },
       childSessionId: nullableText, error: nullableText, retryAuthorized: boolean,
       output: { required: true, oneOf: [outputRef, { type: 'null' }] },
+      failureKind: { type: 'string', enum: ['refused', 'truncated'] },
     } } },
   },
 } as const
@@ -78,7 +79,8 @@ function manuscriptValue(candidate: ManuscriptCandidateView) {
 
 function renderJson<T>(_args: object, value: T) { return [{ type: 'text' as const, text: JSON.stringify(value) }] }
 function runValue(run: WritingRun) {
-  return { ...run, settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(attempt => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })) })) }
+  return { ...run, settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(({ failureKind, ...attempt }) => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })),
+    ...(failureKind === undefined ? {} : { failureKind }) })) }
 }
 
 /**

@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { nativeStageOutputSchema } from './native-stage-schema.ts'
 import { WritingError, parseArtifactId, parseRequestId, type Actor, type ArtifactRef } from './contracts.ts'
 import type { WritingService } from './service.ts'
-import { RunStoreError, type RunStore, type BeginRunInput, type RunExecutionLimits, type RunServiceLimits, type RunId, type WritingRun, type WritingAttempt } from './run-store.ts'
+import { RunStoreError, type AttemptFailureKind, type RunStore, type BeginRunInput, type RunExecutionLimits, type RunServiceLimits, type RunId, type WritingRun, type WritingAttempt } from './run-store.ts'
 import { executeStage, StageExecutionError, type StageRequest, type StageResult } from './stage-executor.ts'
 import { buildStagePrompt, type StagePromptKind } from './stage-prompts.ts'
 import { buildResearchPrompt, validateResearchStageResult, RESEARCH_STAGE_OUTPUT_SCHEMA, researchStageTools, researchToolAuthorization } from './research-stage.ts'
@@ -446,9 +446,12 @@ export class WritingRunner {
         const retryable = cause instanceof StageExecutionError && (cause.code === 'stage-malformed' || cause.code === 'stage-missing-result')
         // A tool-scope refusal is a deterministic stage-boundary decision with no stage output, not an uncertain model outcome.
         const toolScope = cause instanceof StageExecutionError && cause.code === 'stage-tool-scope'
+        // A provider refusal or an output-length cut-off is also a completed model call with a known, unusable result.
+        // It is recorded with its explicit classification and not retried: an identical request would meet the same limit or policy.
+        const kind = cause instanceof StageExecutionError ? failureKind(cause.code) : undefined
         const latest = this.runs.get(withoutSignal(inv.actor), inv.run.id).attempts.find(item => item.id === attempt.id)
         if (latest?.status === 'prepared' || latest?.status === 'running') {
-          try { await this.runs.failAttempt(withoutSignal(inv.actor), inv.run.id, attempt.id, { outcome: retryable || toolScope || !published ? 'failed' : 'unknown', message: message(cause) }) }
+          try { await this.runs.failAttempt(withoutSignal(inv.actor), inv.run.id, attempt.id, { outcome: retryable || toolScope || kind !== undefined || !published ? 'failed' : 'unknown', message: message(cause), ...(kind === undefined ? {} : { kind }) }) }
           catch (storageCause) { throw new AggregateError([cause, storageCause], 'Native stage failed and its outcome could not be recorded', { cause }) }
         }
         if (!retryable) throw cause
@@ -505,6 +508,12 @@ function uniqueRefs(refs: readonly ArtifactRef[]): ArtifactRef[] {
   return [...new Map(refs.map(({ id, kind, revision, sha256, chars, bytes }) => [id, { id, kind, revision, sha256, chars, bytes }])).values()]
 }
 
+/** @param code - Stage execution failure code. @returns The durable attempt classification for a refusal or a length cut-off. */
+function failureKind(code: StageExecutionError['code']): AttemptFailureKind | undefined {
+  if (code === 'stage-refused') return 'refused'
+  if (code === 'stage-truncated') return 'truncated'
+  return undefined
+}
 function isOutputError(cause: unknown): cause is Error { return cause instanceof StageOutputError || cause instanceof z.ZodError }
 /** Every selected dimension's catalog kind, in catalog (code) order, for the assembled settings collection review. */
 function collectionDimensionKinds(selectedCodes: readonly string[]): Readonly<Record<string, SettingsDimensionKind>> {
