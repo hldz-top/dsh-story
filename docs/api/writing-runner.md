@@ -81,7 +81,7 @@ The run store migrates plugin-owned version-1 novel-run records to version 2 wit
 | `maxDelegationDepth` | `2` | Positive absolute native child depth cap. |
 | `maxStageRequests` | `96` | Positive model-dispatch allowance per native child, including retries. |
 | `stageTimeoutMs` | `600000` | Stage deadline in milliseconds, including startup and cleanup; cancellation still waits for owned work to settle. Maximum `2147483647`. |
-| `maxRepairAttempts` | `2` | Nonnegative replacements per local repair loop. |
+| `maxRepairAttempts` | `2` | Nonnegative replacements per local repair loop. The same budget covers output-admission repair: a review or candidate the parser rejects (for example one misquoted citation) is regenerated with the parser's message as `validationError`. With `0`, a single rejected quote fails the run. |
 | `maxParallelStages` | `3` | Positive cap for independent settings dimensions within one dependency layer. |
 | `maxRunAttempts` | `512` | Positive retained attempt cap per run. |
 | `minChapterWords` | `3000` | Inclusive assembled-body minimum using the [Story counter](body-text.md#counting). |

@@ -1,0 +1,128 @@
+{
+  "description": "Stored settings review (attempt settings/0/a4/candidate/0/review/0) of live run run_2a372815-4038-4531-8114-a9cca8ff30e6 on Bailian deepseek-v4.1-flash, rejected with \"Evidence quote does not occur in its declared source\". Sources are the exact host-verified artifact texts (sha256 checked).",
+  "review": {
+    "version": 1,
+    "inputRefs": [
+      {
+        "artifactId": "artifact_d251903d-89fe-4735-8d44-06a1a299ade3",
+        "sha256": "fb5e9fb2327ee934c6df7dca53bb113f8515cacaf89ee80b05ee47cb7d9f5562"
+      },
+      {
+        "artifactId": "artifact_9c61b00e-7a60-48e8-839a-4b63088787bf",
+        "sha256": "aec6ffc2f267b9524a8301ec77c2d4f4c81ea7f91185fcd5be3575bc33bfba43"
+      },
+      {
+        "artifactId": "artifact_5ac63d48-dcb9-4c43-a109-62c5dc6c48a2",
+        "sha256": "5b915d1a50d84a79bf79ad5f0efb8564eb063cda2bca85b6fc8d2997e11e82b4"
+      },
+      {
+        "artifactId": "artifact_5475bcad-48ba-4ee1-9e77-682b238eba15",
+        "sha256": "e1ffb400793449cd8212ad1a506e23aae2af1011eb94c64020a318354e28260a"
+      }
+    ],
+    "reviewed": {
+      "artifactId": "artifact_5dfdd056-f257-4566-82a2-e73ff491466d",
+      "sha256": "c1409c857d928f56da5330bb0c787eb5ef01cefac4df24860426cb3a5ae3743b"
+    },
+    "checks": [
+      {
+        "category": "completeness",
+        "summary": "The enum_multi dimension carries a valid multi-label value with explicit tiering (two dominant, one co-dominant secondary, two subordinate, one atmospheric, one pervasive style tag) and states grounds for each tier; every cited ground maps to a read research finding or accepted dependency, so the label-plus-grounds requirement is met.",
+        "evidence": [
+          {
+            "artifactId": "artifact_5dfdd056-f257-4566-82a2-e73ff491466d",
+            "quote": "**标签（enum_multi）：写实冷峻（主导）· 悬疑紧张/悬念递进（主导）· 沉郁压抑（并列次主导）· 亲情温情·克制（从属）· 社会写实/冷峻社会派（从属）· 孤岛孤绝·海雾潮湿（氛围点缀）· 克制简洁·贴身限知视角·对话推进（贯穿性文体）**"
+          },
+          {
+            "artifactId": "artifact_5dfdd056-f257-4566-82a2-e73ff491466d",
+            "quote": "- 以「现实向悬疑推理」为基座（依赖 a1）：调查与推理的紧张感、可解谜逻辑是主导基调；基调应冷峻、紧凑、悬念密度高，而非轻松日常或冒险奇观（研究证据 a4-q1、a4-q2）。"
+          },
+          {
+            "artifactId": "artifact_9c61b00e-7a60-48e8-839a-4b63088787bf",
+            "quote": "主导标签 M1「写实冷峻」（现实向推理的底色）、M2「悬疑紧张/悬念递进」（调查与对质张力）"
+          }
+        ]
+      },
+      {
+        "category": "consistency",
+        "summary": "No contradiction found: the candidate's dominant type, exclusions, 7:3 cold/tender ratio, secondary emotional layers and ending constraint all trace to the brief, the research findings, and the accepted a1/a3 dimensions, and it introduces no unsupported world facts or contrary tonal premise.",
+        "evidence": [
+          {
+            "artifactId": "artifact_d251903d-89fe-4735-8d44-06a1a299ade3",
+            "quote": "没有任何超自然能力"
+          },
+          {
+            "artifactId": "artifact_5dfdd056-f257-4566-82a2-e73ff491466d",
+            "quote": "严禁恐怖、灵异、超自然或纯科幻/推想科技基调"
+          },
+          {
+            "artifactId": "artifact_5ac63d48-dcb9-4c43-a109-62c5dc6c48a2",
+            "quote": "主导类型标签：现实向悬疑推理（现实向调查/推理），而非科幻悬疑。"
+          },
+          {
+            "artifactId": "artifact_5dfdd056-f257-4566-82a2-e73ff491466d",
+            "quote": "冷峻—温情配比约 7:3，以冷峻为主"
+          },
+          {
+            "artifactId": "artifact_9c61b00e-7a60-48e8-839a-4b63088787bf",
+            "quote": "冷峻—温情配比取约 7:3、以冷峻为主"
+          },
+          {
+            "artifactId": "artifact_5475bcad-48ba-4ee1-9e77-682b238eba15",
+            "quote": "受众标签：现实向悬疑推理读者（成年人向的现实调查/推理阅读群）"
+          },
+          {
+            "artifactId": "artifact_5dfdd056-f257-4566-82a2-e73ff491466d",
+            "quote": "进一步确认受众维持现实向悬疑推理读者（依赖 a3）"
+          },
+          {
+            "artifactId": "artifact_9c61b00e-7a60-48e8-839a-4b63088787bf",
+            "quote": "基调标签维持「沉郁压抑」不撤销"
+          }
+        ]
+      }
+    ],
+    "issues": [
+      {
+        "id": "a4-style-label-flat-chain",
+        "severity": "advisory",
+        "category": "style",
+        "location": "artifact_5dfdd056-f257-4566-82a2-e73ff491466d contentMarkdown, 标签（enum_multi）行",
+        "message": "The headline presents all seven labels as one flat dot-separated chain; the parenthetical tier annotations already distinguish 主导/并列次主导/从属/氛围点缀/贯穿性文体, but a skimming downstream stage could read 孤岛孤绝·海雾潮湿 and the style tag as co-equal tonal labels. Advisory only: consider rendering the tier groups as separate clauses so the 主导 > 并列 > 从属 > 点缀 weighting is unambiguous. No defect against the brief or accepted evidence.",
+        "evidence": [
+          {
+            "artifactId": "artifact_5dfdd056-f257-4566-82a2-e73ff491466d",
+            "quote": "写实冷峻（主导）· 悬疑紧张/悬念递进（主导）· 沉郁压抑（并列次主导）· 亲情温情·克制（从属）· 社会写实/冷峻社会派（从属）· 孤岛孤绝·海雾潮湿（氛围点缀）· 克制简洁·贴身限知视角·对话推进（贯穿性文体）"
+          }
+        ]
+      }
+    ]
+  },
+  "evidenceSources": [
+    {
+      "artifactId": "artifact_5dfdd056-f257-4566-82a2-e73ff491466d",
+      "kind": "settings-dimension",
+      "text": "{\"version\":1,\"inputRefs\":[{\"artifactId\":\"artifact_d251903d-89fe-4735-8d44-06a1a299ade3\",\"sha256\":\"fb5e9fb2327ee934c6df7dca53bb113f8515cacaf89ee80b05ee47cb7d9f5562\"},{\"artifactId\":\"artifact_9c61b00e-7a60-48e8-839a-4b63088787bf\",\"sha256\":\"aec6ffc2f267b9524a8301ec77c2d4f4c81ea7f91185fcd5be3575bc33bfba43\"},{\"artifactId\":\"artifact_5ac63d48-dcb9-4c43-a109-62c5dc6c48a2\",\"sha256\":\"5b915d1a50d84a79bf79ad5f0efb8564eb063cda2bca85b6fc8d2997e11e82b4\"},{\"artifactId\":\"artifact_5475bcad-48ba-4ee1-9e77-682b238eba15\",\"sha256\":\"e1ffb400793449cd8212ad1a506e23aae2af1011eb94c64020a318354e28260a\"}],\"dimensionCode\":\"a4\",\"facts\":[{\"id\":\"a4-f1\",\"statement\":\"主导基调标签：写实冷峻——现实向推理的底色（研究证据 a4-q1、a4-q3）。\"},{\"id\":\"a4-f2\",\"statement\":\"主导基调标签：悬疑紧张/悬念递进——调查与对质的张力来源（研究证据 a4-q2、a4-q3）。\"},{\"id\":\"a4-f3\",\"statement\":\"并列次主导标签：沉郁压抑——失踪与掩盖主题的情绪底色，权重略低于前两项但不撤销（研究证据 a4-q3、a4-q6）。\"},{\"id\":\"a4-f4\",\"statement\":\"从属标签：亲情温情（克制）——女儿寻父动机以细节、动作与克制对话流露（研究证据 a4-q3、a4-q4）。\"},{\"id\":\"a4-f5\",\"statement\":\"从属标签：社会写实/冷峻社会派——掩盖真相与个人抉择的写实层次（研究证据 a4-q3、a4-q4）。\"},{\"id\":\"a4-f6\",\"statement\":\"氛围点缀标签：孤岛孤绝·海雾潮湿——近未来海岛与灯塔仅提供孤绝、潮湿、疏离的场景质感，不构成主导基调（研究证据 a4-q5）。\"},{\"id\":\"a4-f7\",\"statement\":\"贯穿性文体标签：克制简洁·贴身限知视角·对话推进——白描为主、少修饰、对话与可观察物证承载场景（研究证据 a4-q7）。\"},{\"id\":\"a4-f8\",\"statement\":\"冷峻—温情配比约 7:3，以冷峻为主：温情不得稀释悬念节奏或反客为主取代类型核心（研究证据 a4-q4）。\"},{\"id\":\"a4-f9\",\"statement\":\"排除项：严禁恐怖、灵异、超自然或纯科幻/推想科技基调（研究证据 a4-q1；依赖 a1）。\"},{\"id\":\"a4-f10\",\"statement\":\"结局基调约束：第 3 章真相以冷光式揭示与清算收束，维持沉郁冷峻，仅含克制微光，不转为圆满救赎或明亮励志，也不新增独立「救赎/希望」主导标签（研究证据 a4-q6）。\"}],\"contentMarkdown\":\"## a4 风格基调\\n\\n**标签（enum_multi）：写实冷峻（主导）· 悬疑紧张/悬念递进（主导）· 沉郁压抑（并列次主导）· 亲情温情·克制（从属）· 社会写实/冷峻社会派（从属）· 孤岛孤绝·海雾潮湿（氛围点缀）· 克制简洁·贴身限知视角·对话推进（贯穿性文体）**\\n\\n### 判定依据\\n- 以「现实向悬疑推理」为基座（依赖 a1）：调查与推理的紧张感、可解谜逻辑是主导基调；基调应冷峻、紧凑、悬念密度高，而非轻松日常或冒险奇观（研究证据 a4-q1、a4-q2）。\\n- 三章节拍（篡改日志→物证矛盾对质→人为事故与掩盖）要求单线索紧凑推进、章末留钩、高信息密度（研究证据 a4-q2）。\\n- 冷峻—温情配比约 7:3，冷峻为主；亲情与社会写实为被压低的暗流，经细节、动作与克制对话流露，不得反客为主（研究证据 a4-q4）。\\n- 近未来海岛与灯塔仅贡献孤绝、潮湿、疏离的氛围色彩，权重低于类型与情绪标签，不升格为科幻或奇观基调（研究证据 a4-q5）。\\n- 第 3 章真相为冷光式揭示与清算，结局维持沉郁冷峻，仅存克制微光，不走圆满救赎（研究证据 a4-q6）。\\n\\n### 后续阶段必须遵守的约束\\n1. 基调不得依赖巧合或不解释的惊奇感；叙述须贴合人物实际获得的信息与内部一致认知（依赖 a1、a3）。\\n2. 严禁恐怖、灵异、超自然或纯科幻/推想科技基调。\\n3. 情感与写实层次不得稀释悬念节奏，也不得取代类型核心。\\n4. 文体取贴身限知视角、白描为主、对话推进；句式短促，情绪以克制留白传达。\\n5. 本分类不臆造具体世界事实（日期、距离、测量值、坐标、时间表、具名组织或装备等），交由专门的世界观维度处理。\\n6. 受众维持现实向悬疑推理读者（依赖 a3），不因次要情感/写实层次改变受众归属。\"}"
+    },
+    {
+      "artifactId": "artifact_d251903d-89fe-4735-8d44-06a1a299ade3",
+      "kind": "creative-brief",
+      "text": "原创中文小说，背景设定在近未来的一座海岛。灯塔技师林岑调查三年前失踪的父亲留下的维护记录。没有任何超自然能力。人物只能根据亲眼目睹的事件和实际获得的信息进行推理，动机和认知保持一致。共三章，每章 3000–5000 字，场景完整、有对话。第 1 章：林岑发现一份被篡改的维护日志，并决定留在岛上。第 2 章：她核实了一处关键的物证矛盾，并与一位知晓部分往事的渡船经营者对质。第 3 章：她查明了一起人为事故及其掩盖的真相，解开核心谜团，并做出一个影响深远的个人抉择。"
+    },
+    {
+      "artifactId": "artifact_9c61b00e-7a60-48e8-839a-4b63088787bf",
+      "kind": "research-evidence",
+      "text": "{\"version\":3,\"novelId\":\"novel_b1a7278d-1f9f-44a8-ac8e-47c612c632ab\",\"planId\":\"artifact_0b8b54a0-756c-4852-8a32-a3b63086911a\",\"briefArtifactId\":\"artifact_d251903d-89fe-4735-8d44-06a1a299ade3\",\"sessionId\":\"6a109c7c-fb06-46d2-a914-7eeabf30edaf\",\"startSeq\":24,\"findings\":[{\"questionId\":\"a4-q1\",\"callIds\":[],\"conclusion\":\"a1/a3 对 a4 的不可违背约束：风格基调必须以「现实向悬疑推理」为基座，调查/推理的紧张感与可解谜逻辑是主导基调；严禁恐怖、超自然、灵异或纯科幻/推想科技基调（简报明示无超自然能力，a1 f2；a1 f4 限定近未来仅为次要氛围，不改变类型归属）；亲情（女儿寻父）与社会写实（掩盖真相、个人抉择）只能作为克制的次要把味，不得反客为主形成煽情向或纯社会派基调（a1 f6、a1 f3；a3 f4、a3 f8）；叙述须贴合人物实际获得信息与内部一致认知，基调不得依赖巧合或不解释的惊奇感（a1 f3、a1 约束1）；受众为现实向悬疑推理读者，故基调应冷峻、紧凑、有悬念密度而非轻松日常或冒险奇观（a3 f1、a3 f3）。\",\"adequate\":true,\"selections\":[],\"outcome\":\"not-needed\"},{\"questionId\":\"a4-q2\",\"callIds\":[],\"conclusion\":\"三章、每章 3000–5000 字、场景完整有对话、三章节拍（篡改日志→物证矛盾对质→人为事故与掩盖）要求基调在节奏与密度上为：单线索紧凑推进、每章一个完整调查节拍且以关键发现或抉择收束（悬念递进、章末留钩）；文笔节制经济，不铺陈闲笔；高信息密度、推理闭环可核验；对质与对话场景承载张力（a1 f5；a3 f3、a3 约束3）。因此 tone 标签须体现「紧凑悬念」「写实推理」而非抒情铺陈或慢节奏文学氛围。\",\"adequate\":true,\"selections\":[],\"outcome\":\"not-needed\"},{\"questionId\":\"a4-q3\",\"callIds\":[],\"conclusion\":\"a4 enum_multi 标签集合（无预置选项，由作者依据简报与已接受依赖裁定）建议取：主导标签 M1「写实冷峻」（现实向推理的底色）、M2「悬疑紧张/悬念递进」（调查与对质张力）；并列次主导 M3「沉郁压抑」（失踪与掩盖主题的情绪底色）；从属标签 M4「亲情温情（克制）」、M5「社会写实/冷峻社会派」；氛围点缀 M6「孤岛孤绝·海雾潮湿」；文体标签 M7「克制简洁·贴身限知视角·对话推进」。主次顺序：M1、M2 为先，M3 与之并列但略低，M4/M5 从属，M6 为次要氛围、M7 为贯穿性文体约束。该集合不引入恐怖/超自然/科幻基调。\",\"adequate\":true,\"selections\":[],\"outcome\":\"not-needed\"},{\"questionId\":\"a4-q4\",\"callIds\":[],\"conclusion\":\"冷峻—温情配比取约 7:3、以冷峻为主：调查主线与冷峻的物证/推理张力始终是主导色调，亲情与写实温情为被压低的暗流，通过细节、动作与克制对话流露而非抒情独白；温情不得稀释悬念节奏，也不得让情感基调反客为主取代类型核心（a1 f6、a3 f4）。主次顺序明确为「冷峻调查 > 沉郁社会写实 > 克制的亲情温情」。\",\"adequate\":true,\"selections\":[],\"outcome\":\"not-needed\"},{\"questionId\":\"a4-q5\",\"callIds\":[],\"conclusion\":\"近未来海岛与灯塔背景贡献孤绝、海雾潮湿、潮声与时代疏离的氛围色彩，可列为一项次要氛围基调标签（如「孤岛孤绝·海雾潮湿」），用于场景质感与人物孤立感，但不构成主导基调，不承载驱动情节的推想科技前提（a1 f4）；权重低于类型与情绪标签，仅在场景层着色，不升格为科幻或奇观基调。\",\"adequate\":true,\"selections\":[],\"outcome\":\"not-needed\"},{\"questionId\":\"a4-q6\",\"callIds\":[],\"conclusion\":\"第 3 章揭开人为事故与掩盖并作出重大个人抉择后，整体基调保持沉郁与冷峻为底色，不转为圆满救赎或明亮励志：真相对读者是冷光式的揭示与清算，而非和解；希望在结尾以克制的微光存在（真相被查明、人物的道德抉择带来清醒与担当），但伴随不可逆的代价与余痛；避免彻底黑暗虚无，也避免廉价圆满。故基调标签维持「沉郁压抑」不撤销，可内含极淡的「冷峻中的克制微光」，但不新增独立的「救赎/希望」主导标签。\",\"adequate\":true,\"selections\":[],\"outcome\":\"not-needed\"},{\"questionId\":\"a4-q7\",\"callIds\":[],\"conclusion\":\"中文文体质感取克制简洁的写实叙事：贴身限知视角（基本锁定林岑的所见所知与内部一致认知，契合简报的推理约束）、白描为主、少修饰与抒情；对话主导场景推进，对质与询问由对话与可观察物证承载；句式短促、信息密度高，情绪以克制留白传达。该文体取向作为贯穿性基调标签「克制简洁·贴身限知视角·对话推进」纳入 a4 集合。\",\"adequate\":true,\"selections\":[],\"outcome\":\"not-needed\"}],\"outcome\":\"not-needed\",\"observations\":[]}"
+    },
+    {
+      "artifactId": "artifact_5ac63d48-dcb9-4c43-a109-62c5dc6c48a2",
+      "kind": "settings-dimension",
+      "text": "{\"version\":1,\"inputRefs\":[{\"artifactId\":\"artifact_d251903d-89fe-4735-8d44-06a1a299ade3\",\"sha256\":\"fb5e9fb2327ee934c6df7dca53bb113f8515cacaf89ee80b05ee47cb7d9f5562\"},{\"artifactId\":\"artifact_7f3b4f35-c512-4ac0-9f6a-2d0173e2e31b\",\"sha256\":\"66415383de3b15d558b4ee4dfbd7a1a90d2dfc5cec9e83560daa26ac52bf98f9\"}],\"dimensionCode\":\"a1\",\"facts\":[{\"id\":\"f1\",\"statement\":\"主导类型标签：现实向悬疑推理（现实向调查/推理），而非科幻悬疑。\"},{\"id\":\"f2\",\"statement\":\"创意简报明示“没有任何超自然能力”，超自然元素被排除于类型之外。\"},{\"id\":\"f3\",\"statement\":\"侦探机制为现实调查型：人物只能依据亲眼目睹的事件与实际获得的信息进行推理（创意简报）。\"},{\"id\":\"f4\",\"statement\":\"近未来海岛设定属于次要氛围与背景，不提供驱动情节的推想性科技前提；不改变类型归属。\"},{\"id\":\"f5\",\"statement\":\"三章节拍全部由调查推进：篡改的维护日志、可核实的物证矛盾、人为事故与掩盖真相（创意简报；研究证据 q1、q2）。\"},{\"id\":\"f6\",\"statement\":\"亲情动机（女儿寻找失踪父亲）与社会写实维度（掩盖真相、个人抉择）是情感底色与调查动机，不取代主导类型（研究证据 q2）。\"},{\"id\":\"f7\",\"statement\":\"enum_single 只允许一个主导侧重，故不使用并列或多重类型标签。\"}],\"contentMarkdown\":\"## a1 类型 / 题材\\n\\n**标签：现实向悬疑推理**\\n\\n### 判定依据\\n- 创意简报为原创中文近未来海岛故事，但明确声明“没有任何超自然能力”，并规定人物“只能根据亲眼目睹的事件和实际获得的信息进行推理”——情节机制完全扎根于现实调查。\\n- 三章均由调查推动：第1章发现被篡改的维护日志并决定留岛；第2章核实关键物证矛盾并与知情的渡船经营者对质；第3章查明人为事故及其掩盖、作出重大个人抉择。核心类型信号是调查与推理。\\n- 研究证据 q1 结论：主类型应取现实悬疑/推理，近未来仅作世界观次要风味，不改变类型归属；研究证据 q2 结论：情感引擎（女儿寻找失踪父亲）与社会写实维度（掩盖真相、个人抉择）是驱动调查动机、赋予结局分量的次要层次，不取代主类型。\\n- 本维度为 enum_single，只记录一个主导标签，不作并列。\\n\\n### 后续阶段必须遵守的约束\\n1. 全篇保持现实向悬疑推理的可解谜逻辑：线索、物证矛盾与推论均来自可观察事实与角色实际获得的信息，不引入超自然能力或不解释的巧合。\\n2. 无超自然设定；近未来仅作氛围与背景，不引入驱动情节的推想性科技前提，不因背景设定扩容而改变类型归属。\\n3. 调查/推理为叙事主导；亲情动机与社会写实主题作为情感底色与动机来源，不得反客为主替代类型核心。\\n4. 维持创意简报的结构承诺：共三章，每章 3000–5000 字，场景完整、有对话；动机与认知在人物内部保持一致。\\n5. 未经创意简报或已接受研究证据支持的具体世界事实（时间日期、距离、测量值、坐标、时间表、具名组织或装备等）不得在本分类中臆造，交由专门的世界观维度处理。\"}"
+    },
+    {
+      "artifactId": "artifact_5475bcad-48ba-4ee1-9e77-682b238eba15",
+      "kind": "settings-dimension",
+      "text": "{\"version\":1,\"inputRefs\":[{\"artifactId\":\"artifact_d251903d-89fe-4735-8d44-06a1a299ade3\",\"sha256\":\"fb5e9fb2327ee934c6df7dca53bb113f8515cacaf89ee80b05ee47cb7d9f5562\"},{\"artifactId\":\"artifact_eebcc8f6-1cc3-4ddb-a7f5-ae4e461f6858\",\"sha256\":\"c5ddefc3ff4f255b16aa406958a3b74df089f51cd09098b597155fe3419a1f68\"},{\"artifactId\":\"artifact_5ac63d48-dcb9-4c43-a109-62c5dc6c48a2\",\"sha256\":\"5b915d1a50d84a79bf79ad5f0efb8564eb063cda2bca85b6fc8d2997e11e82b4\"}],\"dimensionCode\":\"a3\",\"facts\":[{\"id\":\"a3-f1\",\"statement\":\"受众标签：现实向悬疑推理读者（成年人向的现实调查/推理阅读群），单一 enum_single 标签，不作并列。\"},{\"id\":\"a3-f2\",\"statement\":\"以类型阅读偏好为主轴确定受众，而非以年龄段或市场细分人群为轴（研究证据 q1）。\"},{\"id\":\"a3-f3\",\"statement\":\"受众画像核心为愿意跟随完整推理闭环、偏好节奏紧凑与单线索推进的悬念读者；三章、每章 3000–5000 字的中短篇形态作为阅读场景说明（研究证据 q5）。\"},{\"id\":\"a3-f4\",\"statement\":\"女儿寻找失踪父亲的亲情动机与掩盖真相、个人抉择的社会写实维度，是该读者群可预期的情感与主题深度，但不构成「亲情向」或「社会派写实」的并列受众（研究证据 q2；a1 f6）。\"},{\"id\":\"a3-f5\",\"statement\":\"不面向科幻读者群体；近未来海岛仅作背景风味，不纳入核心受众定位（研究证据 q3；a1 f4）。\"},{\"id\":\"a3-f6\",\"statement\":\"创意简报未限定受众年龄段或内容分级，故不得臆造年龄限制或分级标签（研究证据 q4）。\"},{\"id\":\"a3-f7\",\"statement\":\"继承 a1 f7：enum_single 只允许一个主导侧重，不新增并列或第三类受众。\"},{\"id\":\"a3-f8\",\"statement\":\"后续阶段须保持调查/推理为叙事主导，亲情与写实层次不得反客为主取代类型核心（a1）。\"},{\"id\":\"a3-f9\",\"statement\":\"未经创意简报或已接受研究证据支持的具体世界事实（日期、距离、测量值、坐标、时间表、具名组织或装备等）不得在本分类中臆造，交由专门的世界观维度处理（a1）。\"}],\"contentMarkdown\":\"## a3 受众\\n\\n**标签：现实向悬疑推理读者**\\n\\n### 判定依据\\n- 以类型阅读偏好为主轴：唯一标签锁定现实向悬疑推理读者（成年人向的现实调查/推理阅读群），不以年龄段或市场细分人群为轴（研究证据 q1）。\\n- 主导类型已由 a1 冻结为现实向悬疑推理，且 enum_single 只取一个主导侧重（a1 f1、f7），故受众归属是该类型读者的直接映射。\\n- 阅读形态：共三章、每章 3000–5000 字、场景完整有对话，形成紧凑、可一次或数日读完的完整调查弧线，契合愿意跟随完整推理闭环、偏好单线索推进的悬念读者（研究证据 q5）。\\n- 情感与写实层次：女儿寻找失踪父亲的亲情动机与掩盖真相、个人抉择的社会写实维度，是该读者群可预期的情感与主题深度，但不另立「亲情向」或「社会派写实」受众（研究证据 q2；a1 f6）。\\n- 非科幻受众：简报明示「没有任何超自然能力」，近未来海岛仅作背景风味，不把科幻读者纳入核心受众（研究证据 q3；a1 f4）。\\n- 简报未限定年龄或内容分级，故不作年龄/分级限定（研究证据 q4）。\\n\\n### 后续阶段必须遵守的约束\\n1. 全篇面向单一受众：现实向悬疑推理读者，不并列类型受众，不因次要情感/写实层次改变受众归属（a1 f7）。\\n2. 保持调查/推理为叙事主导，情感与写实主题不得反客为主替代类型核心（a1）。\\n3. 维持三章、每章 3000–5000 字、场景完整有对话的阅读形态；人物动机与认知内部一致。\\n4. 不面向科幻受众，不引入超自然能力，不因近未来背景把类型升格为独立科幻定位（a1 f2、f4）。\\n5. 不作年龄或内容分级限定；具体世界事实（日期、距离、测量值、坐标、时间表、具名组织或装备等）不得在本分类臆造，交由专门的世界观维度处理。\"}"
+    }
+  ]
+}
