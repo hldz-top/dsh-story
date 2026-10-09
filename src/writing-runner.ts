@@ -441,9 +441,11 @@ export class WritingRunner {
       } catch (cause) {
         // A malformed structured_output call is a completed model call with a known, invalid result, not an uncertain outcome.
         const malformed = cause instanceof StageExecutionError && cause.code === 'stage-malformed'
+        // A tool-scope refusal is a deterministic stage-boundary decision with no stage output, not an uncertain model outcome.
+        const toolScope = cause instanceof StageExecutionError && cause.code === 'stage-tool-scope'
         const latest = this.runs.get(withoutSignal(inv.actor), inv.run.id).attempts.find(item => item.id === attempt.id)
         if (latest?.status === 'prepared' || latest?.status === 'running') {
-          try { await this.runs.failAttempt(withoutSignal(inv.actor), inv.run.id, attempt.id, { outcome: malformed || !published ? 'failed' : 'unknown', message: message(cause) }) }
+          try { await this.runs.failAttempt(withoutSignal(inv.actor), inv.run.id, attempt.id, { outcome: malformed || toolScope || !published ? 'failed' : 'unknown', message: message(cause) }) }
           catch (storageCause) { throw new AggregateError([cause, storageCause], 'Native stage failed and its outcome could not be recorded', { cause }) }
         }
         if (malformed && malformedRetry < inv.run.executionLimits.maxRepairAttempts) continue

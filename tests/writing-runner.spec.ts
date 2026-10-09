@@ -3,6 +3,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { artifactMarkdown } from '../src/artifact-markdown.ts'
 import { countStoryWords } from '../src/body-text.ts'
 import { parseArtifactId } from '../src/contracts.ts'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import { expect, it } from 'vitest'
 import { StageOutputSchemas } from '../src/stage-output.ts'
 import { WritingRunner } from '../src/writing-runner.ts'
@@ -574,4 +575,28 @@ it('replays a length repair on resume from the saved counts, preparing no differ
   expect(resumed.value.error).toBeNull()
   expect(resumed.value.status).toBe('completed')
   expect([...fixture.stages.values()].filter(stage => stage.kind === 'body')).toHaveLength(bodiesBefore)
+})
+
+it('fails a writing run clearly when a stage child could see a subagent dispatch tool, without dispatching it', async () => {
+  const fixture = await useWritingFixture()
+  const dispatched: string[] = []
+  fixture.ctx.on('agent/created', ({ agent }) => {
+    if (agent.session.header.parentSession !== fixture.parent.session.id) return
+    // A per-Agent delegation tool lands in the child's own scope, where the inherited-tool allow list cannot remove it.
+    agent.ctx.effect(() => agent.ctx.tools.register(defineTool({
+      name: 'subagent', description: 'Delegate a self-contained task to a subagent.',
+      parameters: { prompt: { type: 'string', required: true } }, isConcurrencySafe: () => true,
+      output: { schema: { type: 'boolean' }, render: () => [{ type: 'text', text: 'Delegated.' }] },
+      execute: async args => { dispatched.push(args.prompt); return true },
+    })))
+  }, { global: true })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.status).toBe('failed')
+  expect(outcome.value.error).toContain('can see tools outside its allow list (subagent)')
+  expect(outcome.value.attempts).toHaveLength(1)
+  expect(outcome.value.attempts[0]).toMatchObject({ status: 'failed', output: null })
+  expect(fixture.childRequests).toHaveLength(0)
+  expect(dispatched).toEqual([])
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
 })

@@ -33,6 +33,11 @@ export interface StageResult {
 // The DSH 0.2.0-rc.2 DeepSeek adapter's LlmError code for a completed model call whose output could not be
 // decoded (invalid structured_output JSON, invalid SSE JSON, a stream protocol violation, or bad tool arguments).
 const MALFORMED_RESPONSE_CODE = 'MALFORMED_RESPONSE'
+// The in-process driver registers the child's structured capture tool under this name in the child's own scope.
+const STRUCTURED_OUTPUT_TOOL = 'structured_output'
+// ToolRuntime's reserved programmatic-calling transport. It only sub-dispatches tools that are themselves visible to the
+// caller, and each nested call passes through the same per-child execution admission below.
+const RUN_CODE_TOOL = 'run_code'
 /** Provider failure text embedded in a stage-malformed message is capped at this many Unicode code points. */
 const MAX_MALFORMED_MESSAGE_CHARS = 300
 
@@ -45,7 +50,7 @@ function boundedProviderMessage(text: string): string {
 /** A stage failure that remains distinct from ordinary child output. */
 export class StageExecutionError extends Error {
   /** @param code - Stable failure classification. @param message - Failure summary without private task text. @param options - Original failure cause when available. */
-  constructor(readonly code: 'stage-budget' | 'stage-timeout' | 'stage-incomplete' | 'stage-config' | 'stage-provider' | 'stage-malformed', message: string, options?: ErrorOptions) {
+  constructor(readonly code: 'stage-budget' | 'stage-timeout' | 'stage-incomplete' | 'stage-config' | 'stage-provider' | 'stage-malformed' | 'stage-tool-scope', message: string, options?: ErrorOptions) {
     super(message, options)
     this.name = 'StageExecutionError'
   }
@@ -81,7 +86,12 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
   signal.addEventListener('abort', onAbort, { once: true })
   const deadline = setTimeout(() => controller.abort(new StageExecutionError('stage-timeout', 'Writing stage exceeded its execution deadline')), config.stageTimeoutMs)
   let childId: SessionId | undefined
+  let childAgent: ToolExecution['agent']
   let requests = 0
+  // The exact tool surface a stage child may use. The host's inherited-tool restriction cannot filter registrations in
+  // the child's OWN scope (for example a per-Agent delegation tool installed when the child is created), so the stage
+  // boundary re-checks visibility before every model request and admission before every tool execution.
+  const permittedTools = new Set([...config.allowedTools, STRUCTURED_OUTPUT_TOOL])
   // The child's own turn/end reason carries the exact model failure; the run's coarse stopReason discards it.
   let turnFailure: LlmFailure | undefined
   // Native spawn publishes its descriptor before the first request, but may run before start() returns.
@@ -96,6 +106,12 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
     if (childId !== undefined && options.sessionId === childId) {
       await admission.promise
       signal.throwIfAborted()
+      const exposed = childAgent === undefined ? [] : ctx.tools.schemas(childAgent).map(tool => tool.name).filter(name => !permittedTools.has(name) && name !== RUN_CODE_TOOL)
+      if (exposed.length > 0) {
+        const error = new StageExecutionError('stage-tool-scope', `Writing stage child can see tools outside its allow list (${exposed.join(', ')}); no model request was sent. Writing stages must not see or call tools that dispatch further subagents.`)
+        controller.abort(error)
+        throw error
+      }
       if (requests >= config.maxStageRequests) {
         const error = new StageExecutionError('stage-budget', 'Writing stage exhausted its model request budget')
         controller.abort(error)
@@ -109,6 +125,11 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
     if (childId !== undefined && execution.agent?.session.id === childId) {
       await admission.promise
       signal.throwIfAborted()
+      if (!permittedTools.has(execution.name) && !(execution.name === RUN_CODE_TOOL && execution.parent === undefined)) {
+        const error = new StageExecutionError('stage-tool-scope', `Writing stage child is not permitted to call ${execution.name}; writing stages must not dispatch further subagents or use tools outside their allow list.`)
+        controller.abort(error)
+        throw error
+      }
       await request.authorizeTool?.(execution)
     }
     return next()
@@ -119,6 +140,7 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
       outputSchema: request.outputSchema, toolFilter: { allow: [...config.allowedTools] }, maxDepth: config.maxDelegationDepth,
     })
     childId = run.id
+    childAgent = run.localAgent
     const pendingResult = Promise.allSettled([run.result])
     const [execution] = await Promise.allSettled([(async (): Promise<StageResult> => {
       try {
