@@ -104,11 +104,64 @@ function matchingObligations(actual: readonly string[], expected: readonly strin
   if (actual.length !== expected.length || actual.some(id => !expected.includes(id))) throw new StageOutputError('Stage obligations do not match the requested obligations')
 }
 
+/** Code points of a rejected quote echoed back in the repair message. */
+const QUOTE_ECHO_CHARS = 120
+/** Separates decoded JSON string values so a normalized quote cannot silently span two fields. */
+const FIELD_BREAK = '\u0000'
+
+/**
+ * Comparison key for quotation membership. It discards only representation differences a faithful copy can introduce:
+ * Unicode compatibility forms (full-width/half-width, NFKC), whitespace and line breaks, typographic versus straight
+ * quote marks, and Markdown emphasis/code markers. Wording, order and all other punctuation stay exact, so an added,
+ * dropped or reworded character still fails.
+ */
+export function evidenceQuoteKey(value: string): string {
+  return value.normalize('NFKC')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032]/gu, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033]/gu, '"')
+    .replace(/[*`]/gu, '')
+    .replace(/\s+/gu, '')
+}
+
+function jsonStrings(value: unknown, into: string[]): void {
+  if (typeof value === 'string') into.push(value)
+  else if (Array.isArray(value)) for (const item of value) jsonStrings(item, into)
+  else if (value !== null && typeof value === 'object') for (const item of Object.values(value)) jsonStrings(item, into)
+}
+
+/** Stored structured artifacts are JSON, which the model reads with escaped line breaks and quote marks; also match against their decoded string values. */
+function sourceKeys(text: string): readonly string[] {
+  const keys = [evidenceQuoteKey(text)]
+  if (/^\s*[[{]/u.test(text)) {
+    let parsed: unknown
+    try { parsed = JSON.parse(text) } catch { return keys }
+    const strings: string[] = []
+    jsonStrings(parsed, strings)
+    if (strings.length > 0) keys.push(strings.map(evidenceQuoteKey).join(FIELD_BREAK))
+  }
+  return keys
+}
+
+/** @param quote - Model-cited excerpt. @param text - Host-verified source text. @returns Whether the excerpt occurs in the source up to representation-only differences. */
+export function evidenceQuoteOccurs(quote: string, text: string): boolean {
+  if (text.includes(quote)) return true
+  const key = evidenceQuoteKey(quote)
+  return key.length > 0 && sourceKeys(text).some(source => source.includes(key))
+}
+
+function quoteEcho(quote: string): string {
+  const chars = [...quote]
+  return JSON.stringify(chars.length <= QUOTE_ECHO_CHARS ? quote : `${chars.slice(0, QUOTE_ECHO_CHARS).join('')}…`)
+}
+
 function checkEvidence(citations: readonly EvidenceCitation[], sources: readonly EvidenceSource[], admitted: readonly ArtifactId[]): void {
   for (const citation of citations) {
     if (!admitted.includes(citation.artifactId)) throw new StageOutputError('Evidence names an artifact outside the stage inputs')
     const source = sources.find(item => item.artifactId === citation.artifactId)
-    if (source === undefined || !source.text.includes(citation.quote)) throw new StageOutputError('Evidence quote does not occur in its declared source')
+    if (source === undefined || !evidenceQuoteOccurs(citation.quote, source.text)) {
+      throw new StageOutputError(`Evidence quote does not occur in its declared source ${citation.artifactId}: ${quoteEcho(citation.quote)}. `
+        + 'Copy each quote character for character as one contiguous excerpt of that artifact; do not add lead-in words, paraphrase, or join separate passages.')
+    }
   }
 }
 

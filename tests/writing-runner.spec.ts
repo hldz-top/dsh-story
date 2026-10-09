@@ -380,6 +380,27 @@ it('regenerates an over-bound classification settings candidate and carries its 
   expect(repairedChild?.task?.validationError).toContain('A classification dimension allows at most 10 facts')
 })
 
+it('repairs a settings review whose quote adds words to its source and names that citation in the repair prompt', async () => {
+  // Mirrors live run run_2a372815: the model prefixed "进一步确认" to an exact a4 excerpt.
+  let misquoted = false
+  const fixture = await useWritingFixture({ intervene(stage, output) {
+    if (stage.kind !== 'review' || misquoted) return output
+    misquoted = true
+    const review = StageOutputSchemas.review.parse(output)
+    const [check, ...rest] = review.checks
+    return { ...review, checks: [{ ...check!, evidence: [{ ...check!.evidence[0]!, quote: `进一步确认${check!.evidence[0]!.quote}` }, ...check!.evidence.slice(1)] }, ...rest] }
+  } })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.error).toBeNull()
+  expect(outcome.value.status).toBe('completed')
+  expect(outcome.value.attempts.filter(item => /^settings\/0\/a1\/candidate\/0\/review\/\d+$/.test(item.key)).map(item => item.key))
+    .toEqual(['settings/0/a1/candidate/0/review/0', 'settings/0/a1/candidate/0/review/1'])
+  const repairedChild = [...fixture.stages.values()].find(stage => stage.kind === 'review' && stage.task?.validationError != null)
+  expect(repairedChild?.task?.validationError).toMatch(/^Evidence quote does not occur in its declared source artifact_[0-9a-f-]+: "进一步确认/)
+  expect(repairedChild?.task?.validationError).toContain('character for character')
+})
+
 it('retries a malformed settings-dimension review response under the same review key and completes the run', async () => {
   let injected = false
   const fixture = await useWritingFixture({ injectFinish(stage) {

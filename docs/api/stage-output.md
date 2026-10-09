@@ -19,7 +19,7 @@ Each parser accepts a decoded `unknown` value. It does not decode a JSON string,
 | `inputRefs` | Nonempty array of `StageInputRef` values. Artifact IDs must be unique. The array must match the host's exact expected ID/hash pairs; reference order does not affect equality. |
 | `StageInputRef.artifactId` | Existing branded writing-artifact ID, validated with the writing identifier parser. |
 | `StageInputRef.sha256` | Required 64-character lowercase hexadecimal digest of the exact upstream artifact. The host obtains it from verified storage. |
-| `EvidenceCitation` | `{ artifactId, quote }`, with a nonblank quote that must occur verbatim in the declared admitted source. |
+| `EvidenceCitation` | `{ artifactId, quote }`, with a nonblank quote that must occur verbatim in the declared admitted source. Matching ignores only representation differences: Unicode compatibility forms (NFKC, so full-width and half-width forms match), whitespace and line breaks, typographic versus straight quote marks, and Markdown `*`/`` ` `` markers. For a JSON-stored source, the quote may also match its decoded string values, so a line break the model saw as a `\n` escape matches a real newline; a quote cannot span two JSON fields. Added, dropped or reworded characters, ellipses and joined passages still fail. |
 | `EvidenceSource` | Host-supplied `{ artifactId, text }`. The host verifies the stored version before supplying its text; the parser checks quotation membership and admitted IDs. Source IDs must be unique. |
 
 Quoting a real source does not establish that a model's interpretation is correct. Semantic review, mechanical chapter checks, input freshness at publication, cancellation, storage ownership, and final adoption remain host responsibilities.
@@ -99,7 +99,7 @@ Every fulfilled obligation requires at least one citation quoting the actual rev
 
 ## Failures and focused validation
 
-Invalid fields raise Zod validation errors. Wrong versions, missing required checks, invalid quotations, or inconsistent scene and obligation references raise descriptive errors. No failure returns an approved or applied value.
+Invalid fields raise Zod validation errors. Wrong versions, missing required checks, invalid quotations, or inconsistent scene and obligation references raise descriptive errors. A rejected quotation names the cited artifact and echoes the quote (truncated to 120 code points), so the runner's repair prompt identifies exactly which citation to correct. No failure returns an approved or applied value.
 
 The public parser suite is `tests/stage-output.spec.ts`. Run it with the installed toolchain:
 
