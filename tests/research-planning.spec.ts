@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { buildResearchPlanningPrompt, isResearchPlanningOutputError, researchNecessity, type ResearchPlanningRequest } from '../src/research-planning.ts'
-import { parseArtifactId, parseNovelId, parseRequestId, WritingError, type ResearchLimits } from '../src/contracts.ts'
+import { buildResearchPlanningPrompt, researchNecessity, type ResearchPlanningRequest } from '../src/research-planning.ts'
+import { StageValidationRejection } from '../src/stage-rejection.ts'
+import { parseArtifactId, parseNovelId, parseRequestId, type ResearchLimits } from '../src/contracts.ts'
 import { testResearchLimits } from './support/storage.ts'
 
 const request: Omit<ResearchPlanningRequest, 'outputTarget'> = {
@@ -49,10 +50,8 @@ describe('real e1 planning capture from live run run_dbe969a5', () => {
   it('rejects the stored capture with a repairable error that states the count and the limit', () => {
     let error: unknown
     try { researchNecessity(fixture.decision, limits) } catch (cause) { error = cause }
-    expect(error).toBeInstanceOf(WritingError)
-    expect((error as WritingError).code).toBe('research-budget')
+    expect(error).toBeInstanceOf(StageValidationRejection)
     expect((error as Error).message).toBe('Research questions exceed the configured limits: 13 questions, at most 12 per plan counting internal, creative and external questions together')
-    expect(isResearchPlanningOutputError(error)).toBe(true)
   })
 
   it('keeps the first planning prompt byte-identical and adds the rejection and limit only to a replacement capture', () => {

@@ -68,15 +68,29 @@ export const researchEvidenceContentSchema = z.union([
 /** @param questions - Caller-supplied planning input. @param limits - Per-plan bounds. @returns Detached validated questions. */
 export function researchQuestions(questions: readonly ResearchQuestion[], limits: ResearchLimits): ResearchQuestion[] {
   const parsed = z.array(researchQuestionSchema).nonempty().parse(questions)
-  if (parsed.length > limits.maxResearchQuestions) {
-    throw new WritingError('research-budget', `Research questions exceed the configured limits: ${parsed.length} questions, at most ${limits.maxResearchQuestions} per plan counting internal, creative and external questions together`)
-  }
-  const chars = parsed.reduce((sum, item) => sum + [...item.question].length + [...item.reason].length, 0)
-  if (chars > limits.maxEvidenceChars) {
-    throw new WritingError('research-budget', `Research questions exceed the configured limits: ${chars} Unicode characters of question and reason text, at most ${limits.maxEvidenceChars}`)
-  }
-  if (new Set(parsed.map(item => item.id)).size !== parsed.length) throw new WritingError('invalid-input', 'Research question ids must be unique')
+  const violation = researchQuestionViolation(parsed, limits)
+  if (violation !== null) throw new WritingError(violation.code, violation.message)
   return parsed
+}
+
+/**
+ * Shared finite and identity rules for a question list, so the tool path and model-output admission report the same specific message.
+ * @param questions - Structurally valid questions. @param limits - Per-plan bounds. @returns The first violation, or null.
+ */
+export function researchQuestionViolation(questions: readonly ResearchQuestion[], limits: ResearchLimits): { code: 'research-budget' | 'invalid-input'; message: string } | null {
+  if (questions.length > limits.maxResearchQuestions) {
+    return { code: 'research-budget', message: `Research questions exceed the configured limits: ${questions.length} questions, at most ${limits.maxResearchQuestions} per plan counting internal, creative and external questions together` }
+  }
+  const chars = questions.reduce((sum, item) => sum + [...item.question].length + [...item.reason].length, 0)
+  if (chars > limits.maxEvidenceChars) {
+    return { code: 'research-budget', message: `Research questions exceed the configured limits: ${chars} Unicode characters of question and reason text, at most ${limits.maxEvidenceChars}` }
+  }
+  const seen = new Set<string>()
+  for (const item of questions) {
+    if (seen.has(item.id)) return { code: 'invalid-input', message: `Research question ids must be unique: ${JSON.stringify(item.id)} appears more than once` }
+    seen.add(item.id)
+  }
+  return null
 }
 
 /**

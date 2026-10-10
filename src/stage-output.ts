@@ -2,6 +2,7 @@
 import { z } from 'zod'
 import { artifactIdSchema, type ArtifactId } from './contracts.ts'
 import type { SettingsDimensionKind } from './settings-catalog.ts'
+import { echo, parseModelOutput, StageValidationRejection } from './stage-rejection.ts'
 
 /** A catalog classification dimension records a label and its grounds, not world-building detail. The single source for this set; stage-prompts.ts imports it rather than declaring its own copy. */
 export const ENUM_SETTINGS_KINDS: ReadonlySet<SettingsDimensionKind> = new Set(['enum_single', 'enum_multi'])
@@ -10,11 +11,10 @@ export const MAX_ENUM_SETTINGS_FACTS = 10
 /** Maximum Unicode code points of contentMarkdown for a classification (enum) settings dimension. */
 export const MAX_ENUM_SETTINGS_CONTENT_CHARS = 2500
 
-/** A generated value violates the requested stage's mechanical requirements. */
-export class StageOutputError extends Error {
-  /** @param message - The concrete requirement a repaired output must satisfy. */
-  constructor(message: string) { super(message); this.name = 'StageOutputError' }
-}
+/** Former name of {@link StageValidationRejection}, kept as the same class so existing imports and instanceof checks keep working. */
+export const StageOutputError = StageValidationRejection
+/** Former name of {@link StageValidationRejection}. */
+export type StageOutputError = StageValidationRejection
 
 const text = z.string().min(1).refine(value => value.trim().length > 0, 'Text must not be blank')
 const inputRefSchema = z.strictObject({ artifactId: artifactIdSchema, sha256: z.string().regex(/^[a-f0-9]{64}$/) })
@@ -87,21 +87,32 @@ export const StageOutputSchemas = {
 } as const
 
 function unique(values: readonly string[], label: string): void {
-  if (new Set(values).size !== values.length) throw new StageOutputError(`Duplicate ${label}`)
+  const seen = new Set<string>()
+  for (const value of values) {
+    if (seen.has(value)) throw new StageValidationRejection(`Duplicate ${label}: ${echo(value)} appears more than once; each must be unique`)
+    seen.add(value)
+  }
 }
+
+function list(values: readonly string[]): string { return values.length === 0 ? 'none' : values.map(value => echo(value)).join(', ') }
 
 function matchingInputs(actual: readonly StageInputRef[], expected: readonly StageInputRef[]): void {
   unique(actual.map(ref => ref.artifactId), 'input artifact')
   unique(expected.map(ref => ref.artifactId), 'expected input artifact')
-  if (actual.length !== expected.length || actual.some(ref => !expected.some(input => input.artifactId === ref.artifactId && input.sha256 === ref.sha256))) {
-    throw new StageOutputError('Stage input references do not match the requested versions')
+  const matches = (ref: StageInputRef, refs: readonly StageInputRef[]) => refs.some(input => input.artifactId === ref.artifactId && input.sha256 === ref.sha256)
+  const unexpected = actual.filter(ref => !matches(ref, expected)).map(ref => `${ref.artifactId}@${ref.sha256.slice(0, 12)}`)
+  const missing = expected.filter(ref => !matches(ref, actual)).map(ref => `${ref.artifactId}@${ref.sha256.slice(0, 12)}`)
+  if (unexpected.length > 0 || missing.length > 0) {
+    throw new StageValidationRejection(`Stage input references do not match the requested versions: missing ${list(missing)}; unexpected ${list(unexpected)}. Copy TASK_DATA inputRefs exactly (artifactId and sha256)`)
   }
 }
 
 function matchingObligations(actual: readonly string[], expected: readonly string[]): void {
   unique(actual, 'obligation ID')
   unique(expected, 'expected obligation ID')
-  if (actual.length !== expected.length || actual.some(id => !expected.includes(id))) throw new StageOutputError('Stage obligations do not match the requested obligations')
+  const missing = expected.filter(id => !actual.includes(id))
+  const unexpected = actual.filter(id => !expected.includes(id))
+  if (missing.length > 0 || unexpected.length > 0) throw new StageValidationRejection(`Stage obligations do not match the requested obligations: missing ${list(missing)}; unexpected ${list(unexpected)}`)
 }
 
 /** Code points of a rejected quote echoed back in the repair message. */
@@ -156,10 +167,10 @@ function quoteEcho(quote: string): string {
 
 function checkEvidence(citations: readonly EvidenceCitation[], sources: readonly EvidenceSource[], admitted: readonly ArtifactId[]): void {
   for (const citation of citations) {
-    if (!admitted.includes(citation.artifactId)) throw new StageOutputError('Evidence names an artifact outside the stage inputs')
+    if (!admitted.includes(citation.artifactId)) throw new StageValidationRejection(`Evidence names an artifact outside the stage inputs: ${echo(citation.artifactId)}; cite only ${list(admitted)}`)
     const source = sources.find(item => item.artifactId === citation.artifactId)
     if (source === undefined || !evidenceQuoteOccurs(citation.quote, source.text)) {
-      throw new StageOutputError(`Evidence quote does not occur in its declared source ${citation.artifactId}: ${quoteEcho(citation.quote)}. `
+      throw new StageValidationRejection(`Evidence quote does not occur in its declared source ${citation.artifactId}: ${quoteEcho(citation.quote)}. `
         + 'Copy each quote character for character as one contiguous excerpt of that artifact; do not add lead-in words, paraphrase, or join separate passages.')
     }
   }
@@ -167,9 +178,9 @@ function checkEvidence(citations: readonly EvidenceCitation[], sources: readonly
 
 /** @param value - Model JSON value. @param expected - Requested dimension and exact upstream versions. @returns A detached validated settings candidate; structural only — a persisted or replayed candidate must always still parse. */
 export function parseSettingsDimensionOutput(value: unknown, expected: { dimensionCode: string; inputRefs: readonly StageInputRef[] }): SettingsDimensionOutput {
-  const output = settingsSchema.parse(value)
+  const output = parseModelOutput(settingsSchema, value, 'Settings dimension output')
   matchingInputs(output.inputRefs, expected.inputRefs)
-  if (output.dimensionCode !== expected.dimensionCode) throw new StageOutputError('Settings dimension differs from the requested dimension')
+  if (output.dimensionCode !== expected.dimensionCode) throw new StageValidationRejection(`Settings dimension differs from the requested dimension: got ${echo(output.dimensionCode)}, expected ${echo(expected.dimensionCode)}`)
   unique(output.facts.map(fact => fact.id), 'settings fact ID')
   return output
 }
@@ -183,11 +194,11 @@ export function parseSettingsDimensionOutput(value: unknown, expected: { dimensi
 export function checkSettingsDimensionScope(output: SettingsDimensionOutput, kind: SettingsDimensionKind): void {
   if (!ENUM_SETTINGS_KINDS.has(kind)) return
   if (output.facts.length > MAX_ENUM_SETTINGS_FACTS) {
-    throw new StageOutputError(`A classification dimension allows at most ${MAX_ENUM_SETTINGS_FACTS} facts; this candidate has ${output.facts.length}`)
+    throw new StageValidationRejection(`A classification dimension allows at most ${MAX_ENUM_SETTINGS_FACTS} facts; this candidate has ${output.facts.length}`)
   }
   const contentChars = [...output.contentMarkdown].length
   if (contentChars > MAX_ENUM_SETTINGS_CONTENT_CHARS) {
-    throw new StageOutputError(`A classification dimension allows at most ${MAX_ENUM_SETTINGS_CONTENT_CHARS} characters of contentMarkdown; this candidate has ${contentChars}`)
+    throw new StageValidationRejection(`A classification dimension allows at most ${MAX_ENUM_SETTINGS_CONTENT_CHARS} characters of contentMarkdown; this candidate has ${contentChars}`)
   }
 }
 
@@ -195,20 +206,21 @@ export function checkSettingsDimensionScope(output: SettingsDimensionOutput, kin
 export function parseReviewOutput(value: unknown, expected: {
   reviewed: StageInputRef; inputRefs: readonly StageInputRef[]; requiredChecks: readonly ReviewCategory[]; evidenceSources: readonly EvidenceSource[]
 }): ReviewOutput {
-  const output = reviewSchema.parse(value)
+  const output = parseModelOutput(reviewSchema, value, 'Review output')
   matchingInputs(output.inputRefs, expected.inputRefs)
   if (output.reviewed.artifactId !== expected.reviewed.artifactId || output.reviewed.sha256 !== expected.reviewed.sha256) {
-    throw new StageOutputError('Reviewed artifact differs from the requested candidate version')
+    throw new StageValidationRejection(`Reviewed artifact differs from the requested candidate version: got ${output.reviewed.artifactId}@${output.reviewed.sha256.slice(0, 12)}, expected ${expected.reviewed.artifactId}@${expected.reviewed.sha256.slice(0, 12)}`)
   }
   unique(output.checks.map(check => check.category), 'review check category')
   unique(output.issues.map(issue => issue.id), 'review issue ID')
   unique(expected.evidenceSources.map(source => source.artifactId), 'evidence source')
-  if (expected.requiredChecks.some(category => !output.checks.some(check => check.category === category))) throw new StageOutputError('Review is missing a required check')
+  const missingChecks = expected.requiredChecks.filter(category => !output.checks.some(check => check.category === category))
+  if (missingChecks.length > 0) throw new StageValidationRejection(`Review is missing a required check: ${missingChecks.join(', ')} (required: ${expected.requiredChecks.join(', ')})`)
   const admitted = [output.reviewed.artifactId, ...output.inputRefs.map(ref => ref.artifactId)]
   for (const check of output.checks) checkEvidence(check.evidence, expected.evidenceSources, admitted)
   for (const issue of output.issues) {
-    if (issue.category === 'style' && issue.severity !== 'advisory') throw new StageOutputError('Style suggestions must remain advisory')
-    if (issue.category !== 'style' && issue.severity !== 'blocking') throw new StageOutputError(`${issue.category} issues must be blocking`)
+    if (issue.category === 'style' && issue.severity !== 'advisory') throw new StageValidationRejection(`Style suggestions must remain advisory: issue ${echo(issue.id)} is ${issue.severity}`)
+    if (issue.category !== 'style' && issue.severity !== 'blocking') throw new StageValidationRejection(`${issue.category} issues must be blocking: issue ${echo(issue.id)} is ${issue.severity}`)
     checkEvidence(issue.evidence, expected.evidenceSources, admitted)
   }
   return output
@@ -216,10 +228,10 @@ export function parseReviewOutput(value: unknown, expected: {
 
 /** @param value - Model book outline JSON. @param expected - Exact inputs and requested total chapter count. @returns A complete ordered book plan with unique obligation IDs. */
 export function parseBookOutlineOutput(value: unknown, expected: { inputRefs: readonly StageInputRef[]; chapterCount: number }): BookOutlineOutput {
-  const output = bookOutlineSchema.parse(value)
+  const output = parseModelOutput(bookOutlineSchema, value, 'Book outline output')
   matchingInputs(output.inputRefs, expected.inputRefs)
   if (output.chapters.length !== expected.chapterCount || output.chapters.some((chapter, index) => chapter.chapterNumber !== index + 1)) {
-    throw new StageOutputError('Book chapters must cover the requested count in order from chapter 1')
+    throw new StageValidationRejection(`Book chapters must cover the requested count in order from chapter 1: expected chapters 1–${expected.chapterCount}, got [${output.chapters.map(chapter => chapter.chapterNumber).join(', ')}]`)
   }
   unique(output.chapters.flatMap(chapter => chapter.obligations.map(obligation => obligation.id)), 'book obligation ID')
   unique(output.characterArcs.map(arc => arc.character), 'character arc')
@@ -230,20 +242,21 @@ export function parseBookOutlineOutput(value: unknown, expected: { inputRefs: re
 export function parseChapterOutlineOutput(value: unknown, expected: {
   inputRefs: readonly StageInputRef[]; chapterNumber: number; obligationIds: readonly string[]
 }): ChapterOutlineOutput {
-  const output = chapterOutlineSchema.parse(value)
+  const output = parseModelOutput(chapterOutlineSchema, value, 'Chapter outline output')
   matchingInputs(output.inputRefs, expected.inputRefs)
-  if (output.chapterNumber !== expected.chapterNumber) throw new StageOutputError('Chapter outline does not match the requested chapter')
+  if (output.chapterNumber !== expected.chapterNumber) throw new StageValidationRejection(`Chapter outline does not match the requested chapter: got ${output.chapterNumber}, expected ${expected.chapterNumber}`)
   matchingObligations(output.obligations.map(obligation => obligation.id), expected.obligationIds)
   unique(output.scenes.map(scene => scene.id), 'scene ID')
   const covered = new Set<string>()
   for (const scene of output.scenes) {
     unique(scene.obligationIds, 'scene obligation ID')
     for (const id of scene.obligationIds) {
-      if (!expected.obligationIds.includes(id)) throw new StageOutputError('Scene names an unknown obligation')
+      if (!expected.obligationIds.includes(id)) throw new StageValidationRejection(`Scene names an unknown obligation: scene ${echo(scene.id)} cites ${echo(id)}; known obligations are ${list(expected.obligationIds)}`)
       covered.add(id)
     }
   }
-  if (expected.obligationIds.some(id => !covered.has(id))) throw new StageOutputError('A required obligation has no assigned scene')
+  const uncovered = expected.obligationIds.filter(id => !covered.has(id))
+  if (uncovered.length > 0) throw new StageValidationRejection(`A required obligation has no assigned scene: ${list(uncovered)}; list each in some scene's obligationIds`)
   return output
 }
 
@@ -251,13 +264,13 @@ export function parseChapterOutlineOutput(value: unknown, expected: {
 export function parseBodyOutput(value: unknown, expected: {
   inputRefs: readonly StageInputRef[]; chapterNumber: number; sceneIds: readonly string[]
 }): BodyOutput {
-  const output = bodySchema.parse(value)
+  const output = parseModelOutput(bodySchema, value, 'Body output')
   matchingInputs(output.inputRefs, expected.inputRefs)
-  if (output.chapterNumber !== expected.chapterNumber) throw new StageOutputError('Body does not match the requested chapter')
+  if (output.chapterNumber !== expected.chapterNumber) throw new StageValidationRejection(`Body does not match the requested chapter: got ${output.chapterNumber}, expected ${expected.chapterNumber}`)
   unique(output.scenes.map(scene => scene.sceneId), 'body scene ID')
   unique(expected.sceneIds, 'expected scene ID')
   if (output.scenes.length !== expected.sceneIds.length || output.scenes.some((scene, index) => scene.sceneId !== expected.sceneIds[index])) {
-    throw new StageOutputError('Body must contain every planned scene in the requested order')
+    throw new StageValidationRejection(`Body must contain every planned scene in the requested order: expected [${list(expected.sceneIds)}], got [${list(output.scenes.map(scene => scene.sceneId))}]`)
   }
   return output
 }
@@ -267,20 +280,20 @@ export function parseContinuityOutput(value: unknown, expected: {
   inputRefs: readonly StageInputRef[]; chapterNumber: number; obligationIds: readonly string[];
   evidenceSources: readonly EvidenceSource[]; reviewedBodyId: ArtifactId
 }): ContinuityOutput {
-  const output = continuitySchema.parse(value)
+  const output = parseModelOutput(continuitySchema, value, 'Continuity output')
   matchingInputs(output.inputRefs, expected.inputRefs)
-  if (output.chapterNumber !== expected.chapterNumber) throw new StageOutputError('Continuity does not match the requested chapter')
+  if (output.chapterNumber !== expected.chapterNumber) throw new StageValidationRejection(`Continuity does not match the requested chapter: got ${output.chapterNumber}, expected ${expected.chapterNumber}`)
   matchingObligations(output.obligations.map(obligation => obligation.id), expected.obligationIds)
   unique(output.characters.map(character => character.name), 'continuity character')
   unique(expected.evidenceSources.map(source => source.artifactId), 'evidence source')
   const admitted = output.inputRefs.map(ref => ref.artifactId)
   if (!admitted.includes(expected.reviewedBodyId) || !expected.evidenceSources.some(source => source.artifactId === expected.reviewedBodyId)) {
-    throw new StageOutputError('Reviewed body must be a declared input with source text')
+    throw new StageValidationRejection(`Reviewed body must be a declared input with source text: include ${expected.reviewedBodyId} in inputRefs`)
   }
   for (const event of output.timeline) checkEvidence(event.evidence, expected.evidenceSources, admitted)
   for (const obligation of output.obligations) {
     if (obligation.status === 'fulfilled' && !obligation.evidence.some(citation => citation.artifactId === expected.reviewedBodyId)) {
-      throw new StageOutputError('A fulfilled obligation requires evidence from the actual reviewed body')
+      throw new StageValidationRejection(`A fulfilled obligation requires evidence from the actual reviewed body: obligation ${echo(obligation.id)} cites no quote from ${expected.reviewedBodyId}`)
     }
     checkEvidence(obligation.evidence, expected.evidenceSources, admitted)
   }

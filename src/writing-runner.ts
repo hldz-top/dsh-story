@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
-import { z } from 'zod'
 import { nativeStageOutputSchema } from './native-stage-schema.ts'
 import { WritingError, parseArtifactId, parseRequestId, type Actor, type ArtifactRef } from './contracts.ts'
 import type { WritingService } from './service.ts'
@@ -11,10 +10,11 @@ import { RunStoreError, type AttemptFailureKind, type RunStore, type BeginRunInp
 import { executeStage, StageExecutionError, type StageRequest, type StageResult } from './stage-executor.ts'
 import { buildStagePrompt, type StagePromptKind } from './stage-prompts.ts'
 import { buildResearchPrompt, validateResearchStageResult, RESEARCH_STAGE_OUTPUT_SCHEMA, researchStageTools, researchToolAuthorization } from './research-stage.ts'
-import { buildResearchPlanningPrompt, isResearchPlanningOutputError, researchNecessity, RESEARCH_PLANNING_OUTPUT_SCHEMA, type ResearchNecessity } from './research-planning.ts'
+import { buildResearchPlanningPrompt, researchNecessity, RESEARCH_PLANNING_OUTPUT_SCHEMA, type ResearchNecessity } from './research-planning.ts'
+import { StageValidationRejection } from './stage-rejection.ts'
 import { planSettings } from './settings-plan.ts'
 import { settingsCatalog, type SettingsDimensionKind } from './settings-catalog.ts'
-import { StageOutputError, StageOutputSchemas, type BodyOutput, type ReviewCategory, type StageInputRef } from './stage-output.ts'
+import { StageOutputSchemas, type BodyOutput, type ReviewCategory, type StageInputRef } from './stage-output.ts'
 import { countStoryWords } from './body-text.ts'
 import type { GeneratedManuscriptTarget, ManuscriptCandidateView, ManuscriptTarget } from './manuscript.ts'
 import type { SettingsCandidateView } from './settings.ts'
@@ -297,7 +297,7 @@ export class WritingRunner {
       }
       feedback = [...crossFeedback, ...this.feedback(candidate)]
     }
-    throw new WritingError('review-blocked', `Settings repair limit was exhausted for ${code}`)
+    throw new WritingError('review-blocked', `Settings repair limit was exhausted for ${code}${validationError === null ? '' : `: ${validationError}`}`)
   }
 
   private async standalone(inv: Invocation, target: Extract<GeneratedManuscriptTarget, { kind: 'book-outline' | 'chapter-outline' }>): Promise<void> {
@@ -339,7 +339,7 @@ export class WritingRunner {
       else { validationError = 'Resolve the blocking issues in the exact supplied review.'; repairMode = 'review' }
       feedback = this.feedback(reviewed)
     }
-    throw new WritingError('review-blocked', `Repair limit was exhausted for ${key}`)
+    throw new WritingError('review-blocked', `Repair limit was exhausted for ${key}${validationError === null ? '' : `: ${validationError}`}`)
   }
 
   private async reviewManuscript(inv: Invocation, key: string, candidate: ManuscriptCandidateView, requiredChecks: readonly ReviewCategory[]): Promise<ManuscriptCandidateView> {
@@ -386,28 +386,32 @@ export class WritingRunner {
       requestId: requestId(inv.run, key), parentSessionId: inv.actor.sessionId }
     const attempts = this.runs.get(inv.actor, inv.run.id).attempts
     const legacy = attempts.some(attempt => attempt.key === key) && !attempts.some(attempt => attempt.key === `${key}/planning`)
-    const necessity = legacy ? undefined : await this.planResearch(inv, key, { ...request, outputTarget }, refs)
-    const scoped = necessity === undefined ? request : { ...request, necessity }
-    const result = await this.capture(inv, key, buildResearchPrompt(scoped), refs, RESEARCH_STAGE_OUTPUT_SCHEMA, researchStageTools(scoped), researchToolAuthorization(this.ctx, this.service, scoped))
-    return validateResearchStageResult(this.ctx, inv.exec, this.service, { ...scoped, parentSessionId: result.attempt.parentSessionId }, result)
+    const limits = this.service.researchLimits
+    const necessity: ResearchNecessity | undefined = legacy ? undefined : await this.admitted(inv, 'Research planning', repair => repair === 0 ? `${key}/planning` : `${key}/planning/${repair}`,
+      async (stageKey, validationError) => researchNecessity((await this.capture(inv, stageKey, buildResearchPlanningPrompt({ ...request, outputTarget }, limits, validationError), refs, RESEARCH_PLANNING_OUTPUT_SCHEMA, ['story_read_artifact'])).structured, limits))
+    return this.admitted(inv, 'Research stage', repair => repair === 0 ? key : `${key}/repair/${repair}`, async (stageKey, validationError) => {
+      const attempt = { ...request, requestId: requestId(inv.run, stageKey) }
+      const scoped = necessity === undefined ? attempt : { ...attempt, necessity }
+      const result = await this.capture(inv, stageKey, buildResearchPrompt(scoped, validationError), refs, RESEARCH_STAGE_OUTPUT_SCHEMA, researchStageTools(scoped), researchToolAuthorization(this.ctx, this.service, scoped))
+      return validateResearchStageResult(this.ctx, inv.exec, this.service, { ...scoped, parentSessionId: result.attempt.parentSessionId }, result)
+    })
   }
 
-  /** Local planning capture with output-admission repair: a rejected decision (for example too many questions) is replaced under `${key}/planning/<n>` with the host's message, within maxRepairAttempts. */
-  private async planResearch(inv: Invocation, key: string, request: Parameters<typeof buildResearchPlanningPrompt>[0], refs: readonly ArtifactRef[]): Promise<ResearchNecessity> {
-    const limits = this.service.researchLimits
+  /**
+   * The output-admission repair loop for a stage with no business review: attempt n runs under keyOf(n) with the previous
+   * rejection message, and only a {@link StageValidationRejection} is retried, within maxRepairAttempts. Attempt 0 receives
+   * null, so its prompt stays byte-identical to the unrepaired stage and retained runs replay.
+   */
+  private async admitted<T>(inv: Invocation, label: string, keyOf: (repair: number) => string, attempt: (key: string, validationError: string | null) => Promise<T>): Promise<T> {
     let validationError: string | null = null
-    let code: 'research-budget' | 'invalid-input' = 'invalid-input'
     for (let repair = 0; repair <= inv.run.executionLimits.maxRepairAttempts; repair++) {
-      const stageKey = repair === 0 ? `${key}/planning` : `${key}/planning/${repair}`
-      const result = await this.capture(inv, stageKey, buildResearchPlanningPrompt(request, limits, validationError), refs, RESEARCH_PLANNING_OUTPUT_SCHEMA, ['story_read_artifact'])
-      try { return researchNecessity(result.structured, limits) }
+      try { return await attempt(keyOf(repair), validationError) }
       catch (cause) {
-        if (!isResearchPlanningOutputError(cause)) throw cause
-        code = cause instanceof WritingError && cause.code === 'research-budget' ? 'research-budget' : 'invalid-input'
-        validationError = cause instanceof z.ZodError ? `The decision does not match the planning schema: ${cause.issues.map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')}` : cause.message
+        if (!isOutputError(cause)) throw cause
+        validationError = cause.message
       }
     }
-    throw new WritingError(code, `Research planning repair limit was exhausted: ${validationError}`)
+    throw new WritingError('review-blocked', `${label} repair limit was exhausted: ${validationError}`)
   }
 
   private async stage(inv: Invocation, key: string, kind: StagePromptKind, refs: readonly ArtifactRef[], task: object, feedback: readonly ArtifactRef[],
@@ -531,7 +535,8 @@ function failureKind(code: StageExecutionError['code']): AttemptFailureKind | un
   if (code === 'stage-truncated') return 'truncated'
   return undefined
 }
-function isOutputError(cause: unknown): cause is Error { return cause instanceof StageOutputError || cause instanceof z.ZodError }
+/** Only a host rejection of a model-produced value is repairable; provider, refusal, truncation, cancellation, store and integrity failures are not. */
+function isOutputError(cause: unknown): cause is StageValidationRejection { return cause instanceof StageValidationRejection }
 /** Every selected dimension's catalog kind, in catalog (code) order, for the assembled settings collection review. */
 function collectionDimensionKinds(selectedCodes: readonly string[]): Readonly<Record<string, SettingsDimensionKind>> {
   return Object.fromEntries(selectedCodes.map(code => [code, settingsCatalog.find(item => item.code === code)?.kind]).filter((entry): entry is [string, SettingsDimensionKind] => entry[1] !== undefined))

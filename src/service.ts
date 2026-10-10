@@ -8,6 +8,7 @@ import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { researchSelectedConclusions, selectedFindingSchema, type ResearchSelection, type ResearchSelectedFinding, type SelectedResearchObservation } from './research-selection.ts'
 import type { Actor, Artifact, ArtifactId, ArtifactKind, ArtifactRef, ArtifactRequest, ArtifactSlice, CreateNovelRequest, NovelId, NovelView, ReadArtifactRequest, ResearchCall, ResearchLimits, ResearchObservation, ResearchRequest, ResearchView, SaveBriefRequest, StartResearchRequest, WritingLimits } from './contracts.ts'
 import { WritingError } from './contracts.ts'
+import { checkModelArtifactBytes } from './stage-rejection.ts'
 import { writingDomain, type NovelRecord, type ResearchRecord, type SettingsRecord } from './records.ts'
 import { researchEvidenceContentSchema, researchPlanContentSchema, researchQuestions } from './research.ts'
 
@@ -444,6 +445,7 @@ export class WritingService {
       this.validateSettings(actor, novel, replay)
       return this.settingsView(novel, replay)
     }
+    checkModelArtifactBytes(text, this.limits.maxArtifactBytes, 'Settings dimension output')
     const artifact = this.artifact(novel.id, 1, text, 'settings-dimension')
     await this.domain.table('artifacts').put(artifact.id, artifact)
     actor.signal?.throwIfAborted()
@@ -489,6 +491,7 @@ export class WritingService {
     if ((candidate.reviewHistory.at(-1)?.artifact.id ?? null) !== request.expectedReviewId) throw new WritingError('revision-conflict', 'A newer settings review already exists')
     if (candidate.applied) throw new WritingError('review-blocked', 'Create a new candidate before changing an applied settings review')
     if (this.settingsStale(novel, candidate)) throw new WritingError('revision-conflict', 'Settings candidate has stale inputs')
+    checkModelArtifactBytes(JSON.stringify(output), this.limits.maxArtifactBytes, 'Review output')
     const artifact = this.artifact(novel.id, 1, JSON.stringify(output), 'review')
     await this.domain.table('artifacts').put(artifact.id, artifact)
     actor.signal?.throwIfAborted()

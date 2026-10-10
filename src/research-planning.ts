@@ -1,7 +1,8 @@
 /** Local research necessity decisions captured before retrieval tools are admitted. */
 import { z } from 'zod'
-import { WritingError, type ResearchLimits } from './contracts.ts'
-import { researchQuestionSchema, researchQuestions } from './research.ts'
+import type { ResearchLimits } from './contracts.ts'
+import { researchQuestionSchema, researchQuestionViolation } from './research.ts'
+import { parseModelOutput, StageValidationRejection } from './stage-rejection.ts'
 import type { ResearchStageRequest } from './research-stage.ts'
 
 const nonblank = z.string().refine(value => value.trim().length > 0 && value.isWellFormed())
@@ -34,28 +35,25 @@ export const RESEARCH_PLANNING_OUTPUT_SCHEMA = {
 
 /** @param value - Durable native planning capture. @param limits - Finite plan bounds. @returns A validated, detached decision. */
 export function researchNecessity(value: unknown, limits: ResearchLimits): ResearchNecessity {
-  const decision = researchNecessitySchema.parse(value)
-  researchQuestions(decision.questions, limits)
+  const decision = parseModelOutput(researchNecessitySchema, value, 'Research planning decision')
+  const violation = researchQuestionViolation(decision.questions, limits)
+  if (violation !== null) throw new StageValidationRejection(violation.message)
   const external = decision.questions.filter(question => question.kind === 'external').map(question => question.id)
-  if ((decision.mode === 'input-only') !== (external.length === 0)
-    || decision.externalRequirements.length !== external.length
-    || new Set(decision.externalRequirements.map(item => item.questionId)).size !== external.length
-    || decision.externalRequirements.some(item => !external.includes(item.questionId))) {
-    throw new WritingError('invalid-input', 'Research scope must identify one required output decision and missing fact for every external question')
+  const required = decision.externalRequirements.map(item => item.questionId)
+  const scope = 'Research scope must identify one required output decision and missing fact for every external question'
+  if ((decision.mode === 'input-only') !== (external.length === 0)) {
+    throw new StageValidationRejection(`${scope}: mode is ${decision.mode} but there ${external.length === 1 ? 'is' : 'are'} ${external.length} external question${external.length === 1 ? '' : 's'}; use external-required exactly when some question is external`)
+  }
+  const missing = external.filter(id => !required.includes(id))
+  const unknown = required.filter(id => !external.includes(id))
+  const repeated = required.filter((id, index) => required.indexOf(id) !== index)
+  if (missing.length > 0 || unknown.length > 0 || repeated.length > 0) {
+    throw new StageValidationRejection(`${scope}: external questions without a requirement [${missing.join(', ')}]; requirements naming no external question [${unknown.join(', ')}]; repeated requirements [${[...new Set(repeated)].join(', ')}]`)
   }
   const chars = [...decision.reason].length + decision.questions.reduce((sum, question) => sum + [...question.id + question.question + question.reason].length, 0)
     + decision.externalRequirements.reduce((sum, requirement) => sum + [...requirement.questionId + requirement.outputDecision + requirement.missingFact].length, 0)
-  if (chars > limits.maxEvidenceChars) throw new WritingError('research-budget', `Research necessity decision exceeds the configured text limit: ${chars} Unicode characters, at most ${limits.maxEvidenceChars}`)
+  if (chars > limits.maxEvidenceChars) throw new StageValidationRejection(`Research necessity decision exceeds the configured text limit: ${chars} Unicode characters, at most ${limits.maxEvidenceChars}`)
   return decision
-}
-
-/**
- * Whether a planning admission failure is a defect of the captured model value, so a replacement planning capture can correct it.
- * {@link researchNecessity} only inspects that value, so every failure it raises qualifies.
- * @param cause - Error raised by {@link researchNecessity}.
- */
-export function isResearchPlanningOutputError(cause: unknown): cause is Error {
-  return cause instanceof z.ZodError || (cause instanceof WritingError && (cause.code === 'research-budget' || cause.code === 'invalid-input'))
 }
 
 /** Instruction appended only to a replacement planning capture; the first capture's prompt bytes stay unchanged so retained runs replay. */

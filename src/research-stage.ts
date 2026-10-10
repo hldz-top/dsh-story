@@ -7,6 +7,7 @@ import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { artifactIdSchema, novelIdSchema, requestIdSchema, WritingError, type ArtifactId, type ArtifactRef, type NovelId, type RequestId, type ResearchView } from './contracts.ts'
 import { writingActor } from './tools.ts'
+import { parseModelOutput, StageValidationRejection } from './stage-rejection.ts'
 import { researchSelectedConclusions } from './research-selection.ts'
 import { researchConclusions, researchEvidenceContentSchema, researchQuestionSchema } from './research.ts'
 import type { WritingService } from './service.ts'
@@ -40,7 +41,7 @@ export interface ResearchStageResult {
  * @param request - Exact source references, author intent and idempotency identity.
  * @returns A self-contained prompt with JSON-quoted TASK_DATA.
  */
-export function buildResearchPrompt(request: ResearchStageRequest): string {
+export function buildResearchPrompt(request: ResearchStageRequest, validationError: string | null = null): string {
   const { parentSessionId: _parentSessionId, ...taskData } = request
   return [
     'Perform one bounded research stage for the assigned novel-writing purpose. The parent owns stage persistence and acceptance; return only the plan identity through native structured_output after completing the plan.',
@@ -52,6 +53,7 @@ export function buildResearchPrompt(request: ResearchStageRequest): string {
     request.necessity === undefined ? 'Read story_research_results for the exact plan before completing it. Map each external finding only to actual returned callIds and recorded excerpts; never invent a URL, call, quote or source record. Internal and creative findings have no external callIds. A missing, failed, empty or insufficient source cannot support an adequate finding.' : 'Read story_research_results for the exact plan to inspect its source index. Use story_read_research_source with exact planId, callId, sourceIndex, offset and limit to read bounded pages from the recorded results; this does not fetch again. Select exact useful source-body ranges for completion within the evidence limit; every finding includes selections with {callId,sourceIndex,offset,limit}. Each external finding names only actual callIds and selected usable evidence. Internal and creative findings have empty callIds and selections. A failed, empty, non-2xx, undecodable or insufficient source cannot support an adequate finding. Never invent a URL, call, quote or source record.',
     'Use story_complete_research with the same novelId, planId and TASK_DATA.requestId, answering every planned question exactly once. Supply an honest conclusion and adequate flag. If the available evidence cannot resolve a question, preserve that failure instead of retrying unchanged calls, expanding a budget or asserting success. The host derives the outcome from the logged evidence.',
     'Read story_get_research for the completed plan and emit only {"planId": the exact returned planId} through structured_output. A recorded failed or insufficient plan remains a failed stage at host admission; do not replace it with a success claim or silently create another plan.',
+    ...(validationError === null ? [] : [`The host rejected the previous research stage for this exact purpose: ${validationError}. This is a replacement stage with its own TASK_DATA.requestId; start one new plan with it and correct that failure.`]),
     'TASK_DATA', JSON.stringify({ kind: 'research', ...taskData }, null, 2),
   ].join('\n\n')
 }
@@ -67,18 +69,24 @@ export function buildResearchPrompt(request: ResearchStageRequest): string {
  */
 export async function validateResearchStageResult(ctx: Context, exec: ToolExecution, service: WritingService, request: ResearchStageRequest, result: StageResult): Promise<ResearchStageResult> {
   exec.signal.throwIfAborted()
-  const parsed = z.strictObject({ planId: artifactIdSchema }).parse(result.structured)
+  const parsed = parseModelOutput(z.strictObject({ planId: artifactIdSchema }), result.structured, 'Research stage output')
   const actor = await writingActor(ctx, exec)
+  const own = 'return the planId that your own story_start_research call returned'
+  if (!service.listResearch(actor, request.novelId).some(plan => plan.planId === parsed.planId)) {
+    throw new StageValidationRejection(`Research stage output names no research plan of this novel: ${parsed.planId}; ${own}`)
+  }
   const initial = service.getResearch(actor, { novelId: request.novelId, planId: parsed.planId })
-  if (initial.sessionId !== result.childSessionId) throw new WritingError('session-mismatch', 'Research plan belongs to another child Session')
+  if (initial.sessionId !== result.childSessionId) throw new StageValidationRejection(`Research plan belongs to another child Session: ${parsed.planId}; ${own}`)
   await verifyStartedPlan(ctx, exec, request, initial, service.researchLimits.maxResearchLogEvents)
   exec.signal.throwIfAborted()
   const plan = service.getResearch(actor, { novelId: request.novelId, planId: parsed.planId })
   if (plan.sessionId !== result.childSessionId) throw new WritingError('session-mismatch', 'Research plan belongs to another child Session')
-  if (request.necessity !== undefined && !isDeepStrictEqual(plan.questions, request.necessity.questions)) throw new WritingError('research-incomplete', 'Research questions differ from the frozen necessity decision')
+  if (request.necessity !== undefined && !isDeepStrictEqual(plan.questions, request.necessity.questions)) {
+    throw new StageValidationRejection(`Research questions differ from the frozen necessity decision: plan has [${plan.questions.map(item => item.id).join(', ')}], frozen decision has [${request.necessity.questions.map(item => item.id).join(', ')}]; start research with exactly TASK_DATA.necessity.questions`)
+  }
   if (plan.stale || plan.briefArtifactId !== request.briefArtifactId) throw new WritingError('revision-conflict', 'Research stage no longer matches the current creative brief')
   if (plan.result === null || (plan.outcome !== 'succeeded' && plan.outcome !== 'not-needed')) {
-    throw new WritingError('research-incomplete', 'Research stage requires completed adequate evidence')
+    throw new StageValidationRejection(`Research stage requires completed adequate evidence: plan ${plan.planId} is ${plan.result === null ? 'not completed' : `completed with outcome ${plan.outcome}`}; complete it with story_complete_research and an honest adequate finding for every question`)
   }
   if (!request.inputs.some(input => input.id === request.briefArtifactId && input.kind === 'creative-brief')) {
     throw new WritingError('invalid-input', 'Research stage inputs must include the exact creative brief')
@@ -92,7 +100,8 @@ export async function validateResearchStageResult(ctx: Context, exec: ToolExecut
     ? researchSelectedConclusions(plan.questions, evidence.findings.map(({ outcome: _outcome, ...finding }) => finding), evidence.observations, service.researchLimits)
     : researchConclusions(plan.questions, evidence.findings.map(({ outcome: _outcome, ...finding }) => finding), evidence.observations, service.researchLimits)
   if (evidence.findings.some(finding => !finding.adequate) || !isDeepStrictEqual(classified, { findings: evidence.findings, outcome: evidence.outcome })) {
-    throw new WritingError('research-incomplete', 'Research findings do not establish adequate evidence for every planned question')
+    const inadequate = evidence.findings.filter(finding => !finding.adequate).map(finding => finding.questionId)
+    throw new StageValidationRejection(`Research findings do not establish adequate evidence for every planned question: inadequate [${inadequate.join(', ')}]${inadequate.length === 0 ? '; recorded outcome differs from the host classification of the cited evidence' : ''}`)
   }
   return { childSessionId: result.childSessionId, planId: plan.planId, evidence: plan.result }
 }
@@ -139,7 +148,7 @@ async function verifyStartedPlan(ctx: Context, exec: ToolExecution, request: Res
         && isDeepStrictEqual(args.questions, plan.questions) && value.novelId === request.novelId && value.planId === plan.planId
         && value.briefArtifactId === request.briefArtifactId && value.sessionId === plan.sessionId && value.startSeq === plan.startSeq) receipts += 1
     }
-    if (receipts !== 1) throw new WritingError('research-incomplete', 'Research plan has no exact successful native start receipt for this request')
+    if (receipts !== 1) throw new StageValidationRejection(`Research plan has no exact successful native start receipt for this request: found ${receipts} matching story_start_research results; call it once with TASK_DATA.novelId, briefArtifactId, requestId ${request.requestId} and the exact questions`)
   } finally { await handle.close() }
 }
 
