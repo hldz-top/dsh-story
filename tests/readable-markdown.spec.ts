@@ -108,6 +108,13 @@ describe('host preview grammar (GFM + math)', () => {
     }
   })
 
+  it('links a www address directly after an underscore with its exact text and destination', () => {
+    const text = 'a_www.evil.com/?a=1&b=2'
+    const tree = parseLikeHost(readableText(text))
+    expect(visibleText(tree)).toBe(text)
+    expect(links(tree)).toEqual([{ url: 'http://www.evil.com/?a=1&b=2', text: 'www.evil.com/?a=1&b=2' }])
+  })
+
   it('links e-mail addresses to their exact text', () => {
     expect(links(parseLikeHost(readableText('联系 keeper_1@example.test。')))).toEqual([{ url: 'mailto:keeper_1@example.test', text: 'keeper_1@example.test' }])
   })

@@ -20,7 +20,7 @@
  */
 const SYNTAX_CHARACTERS = /[\\`*~[\]<>&$|#]|(?<![\p{L}\p{N}])_|_(?![\p{L}\p{N}])/gu
 /** GFM autolink-literal triggers: the `:` of `scheme://`, the `.` after `www`, and every `@`. */
-const AUTOLINK_TRIGGERS = /:(?=\/\/)|(?<=(?<![\p{L}\p{N}_])www)\.|@/giu
+const AUTOLINK_TRIGGERS = /:(?=\/\/)|(?<=(?<![\p{L}\p{N}])www)\.|@/giu
 /** Line-start bullet-list and setext-underline markers that are inert elsewhere in a line. */
 const LINE_START_MARKER = /^[-+=]/
 /** Line-start ordered-list marker: up to nine digits followed by `.` or `)`. */
