@@ -1,7 +1,9 @@
 /** Shared helpers for asserting how generated preview Markdown reads. */
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fromMarkdown } from 'mdast-util-from-markdown'
+import { gfmFromMarkdown } from 'mdast-util-gfm'
+import { mathFromMarkdown } from 'mdast-util-math'
+import { gfm } from 'micromark-extension-gfm'
+import { math } from 'micromark-extension-math'
 
 /** @param markdown - Generated Markdown. @returns Its visible text: character references and hard breaks decoded. */
 export function rendered(markdown: string): string {
@@ -12,20 +14,13 @@ export function rendered(markdown: string): string {
 export interface MdNode { readonly type: string, readonly value?: string, readonly url?: string, readonly children?: readonly MdNode[] }
 
 /**
- * Directory holding the Markdown libraries the DSH preview parses with (mdast-util-from-markdown 2, micromark-extension-gfm 3,
- * mdast-util-gfm 3, micromark-extension-math 3, mdast-util-math 3). They are not project dependencies; the host-grammar
- * tests run only when this scratch installation exists.
+ * Parses like the DSH 0.2.0-rc.2 settled preview (`parseGfmWithMath` in `@deepseek-ai/dsh-client-ui-primitives`), using the
+ * parser versions bundled into that release. The host's extra CJK strong-emphasis and `\(`/`\[` math delimiters only
+ * react to raw `*` and `\`, which readable Markdown always encodes.
+ * @param markdown - Generated Markdown.
+ * @returns Its mdast tree.
  */
-export const hostMarkdownDirectory = process.env.DSH_STORY_MDCHECK ?? '/tmp/mdcheck'
-/** Whether {@link parseLikeHost} can run. */
-export const hostMarkdownAvailable = existsSync(join(hostMarkdownDirectory, 'node_modules', 'mdast-util-from-markdown'))
-
-/** @param markdown - Generated Markdown. @returns Its mdast tree under the preview's GFM and math grammar. */
-export async function parseLikeHost(markdown: string): Promise<MdNode> {
-  const load = (name: string) => import(pathToFileURL(join(hostMarkdownDirectory, 'node_modules', name, 'index.js')).href)
-  const [{ fromMarkdown }, { gfm }, { gfmFromMarkdown }, { math }, { mathFromMarkdown }] = await Promise.all([
-    load('mdast-util-from-markdown'), load('micromark-extension-gfm'), load('mdast-util-gfm'), load('micromark-extension-math'), load('mdast-util-math'),
-  ])
+export function parseLikeHost(markdown: string): MdNode {
   return fromMarkdown(markdown, { extensions: [gfm(), math()], mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()] }) as MdNode
 }
 

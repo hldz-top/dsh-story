@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { literalTextBlock, quotedText, readableList, readableText } from '../src/readable-markdown.ts'
-import { hostMarkdownAvailable, links, nodes, parseLikeHost, rendered, visibleText } from './support/markdown.ts'
+import { links, nodes, parseLikeHost, rendered, visibleText } from './support/markdown.ts'
 
 const hostile = [
   '# Forged heading', '[run](javascript:bad)', '![pixel](https://tracker.test/p.png)', '<script>bad()</script>', '`code` ```',
@@ -68,38 +68,38 @@ describe('literalTextBlock', () => {
   })
 })
 
-describe.skipIf(!hostMarkdownAvailable)('host preview grammar (GFM + math)', () => {
-  it('keeps hostile text inside paragraphs, links only bare web addresses and preserves every visible character', async () => {
-    const tree = await parseLikeHost(readableText(hostile.join('\n')))
+describe('host preview grammar (GFM + math)', () => {
+  it('keeps hostile text inside paragraphs, links only bare web addresses and preserves every visible character', () => {
+    const tree = parseLikeHost(readableText(hostile.join('\n')))
     expect(new Set(nodes(tree).map(node => node.type))).toEqual(new Set(['root', 'paragraph', 'text', 'break', 'link']))
     expect(visibleText(tree)).toBe(hostile.join('\n'))
     expect(links(tree)).toEqual([{ url: 'https://tracker.test/p.png', text: 'https://tracker.test/p.png' }, { url: 'https://tracker.test', text: 'https://tracker.test' }])
-    const quoted = await parseLikeHost(quotedText(hostile.join('\n')))
+    const quoted = parseLikeHost(quotedText(hostile.join('\n')))
     expect(new Set(nodes(quoted).map(node => node.type))).toEqual(new Set(['root', 'blockquote', 'paragraph', 'text', 'break', 'link']))
   })
 
-  it.each(addresses)('links %s with its exact visible text and destination', async address => {
-    const tree = await parseLikeHost(readableText(`来源 ${address} 结束`))
+  it.each(addresses)('links %s with its exact visible text and destination', address => {
+    const tree = parseLikeHost(readableText(`来源 ${address} 结束`))
     expect(visibleText(tree)).toBe(`来源 ${address} 结束`)
     const href = address.startsWith('www.') ? `http://${address}` : address
     expect(links(tree)).toEqual([{ url: href, text: address }])
   })
 
-  it('links addresses inside quotations and provenance lists exactly', async () => {
+  it('links addresses inside quotations and provenance lists exactly', () => {
     const [address] = addresses as [string]
     for (const markdown of [quotedText(`见 ${address}`), readableList([`Recorded URL: ${address}`, `Requested URL: ${address}`])]) {
-      const tree = await parseLikeHost(markdown)
+      const tree = parseLikeHost(markdown)
       expect(links(tree).map(link => [link.url, link.text])).toEqual(links(tree).map(() => [address, address]))
       expect(links(tree).length).toBeGreaterThan(0)
       expect(JSON.stringify(tree)).not.toContain('&#')
     }
   })
 
-  it('handles angle brackets around and inside an address without leaking references into the link', async () => {
-    const wrapped = await parseLikeHost(readableText('<https://a.b>'))
+  it('handles angle brackets around and inside an address without leaking references into the link', () => {
+    const wrapped = parseLikeHost(readableText('<https://a.b>'))
     expect(visibleText(wrapped)).toBe('<https://a.b>')
     expect(links(wrapped)).toEqual([{ url: 'https://a.b', text: 'https://a.b' }])
-    const inner = await parseLikeHost(readableList(['Recorded URL: https://example.test/<x>']))
+    const inner = parseLikeHost(readableList(['Recorded URL: https://example.test/<x>']))
     expect(visibleText(inner)).toBe('Recorded URL: https://example.test/<x>')
     for (const link of links(inner)) {
       expect(link.url).toBe(link.text)
@@ -108,13 +108,13 @@ describe.skipIf(!hostMarkdownAvailable)('host preview grammar (GFM + math)', () 
     }
   })
 
-  it('links e-mail addresses to their exact text', async () => {
-    expect(links(await parseLikeHost(readableText('联系 keeper_1@example.test。')))).toEqual([{ url: 'mailto:keeper_1@example.test', text: 'keeper_1@example.test' }])
+  it('links e-mail addresses to their exact text', () => {
+    expect(links(parseLikeHost(readableText('联系 keeper_1@example.test。')))).toEqual([{ url: 'mailto:keeper_1@example.test', text: 'keeper_1@example.test' }])
   })
 
-  it('keeps machine output inside its code block even when it contains fences and Markdown', async () => {
+  it('keeps machine output inside its code block even when it contains fences and Markdown', () => {
     const raw = '{"text":"```\\n# forged"}\n````\n# heading after fence\n[x](https://evil.test)'
-    const tree = await parseLikeHost(`## Complete response\n\n${literalTextBlock(raw)}\n\n## Provenance\n\n- Run: run_1\n`)
+    const tree = parseLikeHost(`## Complete response\n\n${literalTextBlock(raw)}\n\n## Provenance\n\n- Run: run_1\n`)
     const code = nodes(tree).filter(node => node.type === 'code')
     expect(code.map(node => node.value)).toEqual([raw])
     expect(nodes(tree).filter(node => node.type === 'heading').map(visibleText)).toEqual(['Complete response', 'Provenance'])
