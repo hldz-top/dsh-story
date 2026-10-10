@@ -3,9 +3,14 @@
  *
  * Recorded prose, model findings and quoted sources are data, not document structure. They must read as ordinary
  * paragraphs in the host preview without being able to add headings, lists, links, images, raw HTML, tables, math or
- * code. A bare web address may still be shown as a clickable copy of itself by GFM autolinking, as source URLs already are.
- * Backslash escapes are not used: the host preview grammar treats `\(` and `\[` as TeX math delimiters, so every
+ * code. Backslash escapes are not used: the host preview grammar treats `\(` and `\[` as TeX math delimiters, so every
  * syntax character is written as a numeric character reference, which CommonMark always decodes to literal text.
+ *
+ * Web addresses: GFM recognizes `http://`, `https://`, `www.` and e-mail literals while tokenizing the raw source, and a
+ * literal recognized there would swallow the character references after it into its text and destination. These
+ * triggers are therefore also encoded, so tokenizing never starts a literal. GFM's second pass then finds the address
+ * in the decoded text and links it with its exact visible characters, including `&`, `#`, `_` and parentheses. Only
+ * such web addresses become links; model text cannot choose a link's label or target.
  */
 
 /**
@@ -14,6 +19,8 @@
  * `artifact_…` stay searchable in the raw file.
  */
 const SYNTAX_CHARACTERS = /[\\`*~[\]<>&$|#]|(?<![\p{L}\p{N}])_|_(?![\p{L}\p{N}])/gu
+/** GFM autolink-literal triggers: the `:` of `scheme://`, the `.` after `www`, and every `@`. */
+const AUTOLINK_TRIGGERS = /:(?=\/\/)|(?<=(?<![\p{L}\p{N}_])www)\.|@/giu
 /** Line-start bullet-list and setext-underline markers that are inert elsewhere in a line. */
 const LINE_START_MARKER = /^[-+=]/
 /** Line-start ordered-list marker: up to nine digits followed by `.` or `)`. */
@@ -31,7 +38,7 @@ function reference(character: string): string {
 function inertLine(line: string): string {
   const trimmed = line.replace(/[ \t]+$/, '')
   const indent = /^[ \t]*/.exec(trimmed)![0]
-  const body = trimmed.slice(indent.length).replace(SYNTAX_CHARACTERS, reference)
+  const body = trimmed.slice(indent.length).replace(SYNTAX_CHARACTERS, reference).replace(AUTOLINK_TRIGGERS, reference)
     .replace(LINE_START_MARKER, reference)
     .replace(ORDERED_MARKER, (_match, digits: string, delimiter: string) => digits + reference(delimiter))
   return indent.replaceAll(' ', '\u00a0').replaceAll('\t', '\u00a0'.repeat(4)) + body
@@ -70,4 +77,17 @@ export function quotedText(text: string): string {
  */
 export function readableList(items: readonly string[]): string {
   return items.map(item => `- ${readableText(item).split('\n').map((line, index) => index === 0 || line === '' ? line : `  ${line}`).join('\n')}`).join('\n')
+}
+
+/**
+ * Machine output such as a raw model response, kept verbatim. The fence is longer than any backtick run in the text, so
+ * the content cannot close it early.
+ * @param text - Exact text.
+ * @returns The text inside a `text` code fence.
+ */
+export function literalTextBlock(text: string): string {
+  let length = 3
+  for (const match of text.matchAll(/`+/g)) length = Math.max(length, match[0].length + 1)
+  const fence = '`'.repeat(length)
+  return `${fence}text\n${text}\n${fence}`
 }

@@ -5,7 +5,7 @@ import { settingsCollectionSchema } from './manuscript-records.ts'
 import { WritingError, type Artifact, type ResearchOutcome } from './contracts.ts'
 import { researchEvidenceContentSchema, researchPlanContentSchema } from './research.ts'
 import { StageOutputSchemas, type EvidenceCitation, type ReviewCategory } from './stage-output.ts'
-import { quotedText, readableList, readableText } from './readable-markdown.ts'
+import { literalTextBlock, quotedText, readableList, readableText } from './readable-markdown.ts'
 
 /** How recorded text, quotations and provenance entries become Markdown blocks. */
 interface BlockStyle {
@@ -16,14 +16,6 @@ interface BlockStyle {
 
 /** Current previews: readable inert paragraphs, blockquotes and bullet lists. */
 const readableStyle: BlockStyle = { text: readableText, quote: quotedText, list: readableList }
-
-/** @param text - Recorded text. @returns The text in a `text` fence longer than any backtick run it contains. */
-export function literalTextBlock(text: string): string {
-  let length = 3
-  for (const match of text.matchAll(/`+/g)) length = Math.max(length, match[0].length + 1)
-  const fence = '`'.repeat(length)
-  return `${fence}text\n${text}\n${fence}`
-}
 
 /** Previews written before readable rendering: every recorded value inside a literal code fence. */
 const legacyStyle: BlockStyle = { text: literalTextBlock, quote: literalTextBlock, list: items => literalTextBlock(items.join('\n')) }

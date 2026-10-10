@@ -13,8 +13,7 @@ import { parseAttemptId, parseRunId, type AttemptId, type RunId, type RunStore }
 import type { WritingService } from './service.ts'
 import { projectArtifact, projectDocument } from './projection.ts'
 import { StageOutputSchemas } from './stage-output.ts'
-import { readableList, readableText } from './readable-markdown.ts'
-import { literalTextBlock } from './artifact-markdown.ts'
+import { literalTextBlock, readableList, readableText } from './readable-markdown.ts'
 import { writingActor } from './tools.ts'
 import { parseStoryStageDeliveries, type StoryStageDeliverySource, type StoryStageDeliveries } from './stage-delivery.ts'
 

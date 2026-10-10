@@ -1,16 +1,12 @@
 import { createHash } from 'node:crypto'
 import { expect, it } from 'vitest'
+import { rendered } from './support/markdown.ts'
 import { artifactMarkdown, legacyArtifactMarkdown } from '../src/artifact-markdown.ts'
 import { parseArtifactId, parseNovelId, type Artifact, type ArtifactKind } from '../src/contracts.ts'
 
 const novelId = parseNovelId('novel_00c38d7c-50d8-4a1b-93f0-188daf5a9859')
 const artifactId = parseArtifactId('artifact_00c38d7c-50d8-4a1b-93f0-188daf5a9859')
 const inputs = { version: 1, novelId, briefArtifactId: artifactId, sessionId: 'author', startSeq: 10 }
-
-/** @param markdown - Generated preview. @returns Its text with character references and hard breaks decoded, as a reader sees it. */
-function rendered(markdown: string): string {
-  return markdown.replace(/&#(\d+);/g, (_match, code: string) => String.fromCodePoint(Number(code))).replaceAll('  \n', '\n')
-}
 
 function artifact(kind: ArtifactKind, text: string): Artifact {
   return { id: artifactId, novelId, kind, revision: 1, text, chars: [...text].length,

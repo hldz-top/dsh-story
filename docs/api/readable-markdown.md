@@ -14,12 +14,19 @@ description: "Inert, readable Markdown for recorded prose, findings, quotations 
 | `readableText(text)` | Paragraphs. A blank line separates paragraphs and a single line break becomes a Markdown hard break. Blank input returns an empty string. |
 | `quotedText(text)` | The same content as a blockquote, used for cited evidence and source excerpts. |
 | `readableList(items)` | One bullet per entry, used for provenance. |
+| `literalTextBlock(text)` | Machine output, such as a raw rejected model response, verbatim inside a `text` fence longer than any backtick run in it. |
 
 ## Inertness
 
-Recorded text is data, not document structure. Every character that can start a Markdown, GFM, HTML or math construct is written as a numeric character reference such as `&#35;` for `#`. CommonMark always decodes these references to literal text. The encoded characters are `` \ ` * ~ [ ] < > & $ | # ``, an underscore at a word boundary, and a line-start `-`, `+`, `=` or ordered-list delimiter. Backslash escapes are not used. The Host preview grammar treats `\(` and `\[` as TeX math delimiters, so an escaped bracket would start math.
+Recorded text is data, not document structure. Every character that can start a Markdown, GFM, HTML or math construct is written as a numeric character reference such as `&#35;` for `#`. CommonMark always decodes these references to literal text. The encoded characters are `` \ ` * ~ [ ] < > & $ | # ``, an underscore at a word boundary, a line-start `-`, `+`, `=` or ordered-list delimiter, and the web-address triggers described below. Backslash escapes are not used. The Host preview grammar treats `\(` and `\[` as TeX math delimiters, so an escaped bracket would start math.
 
-Leading spaces and tabs become no-break spaces, so indentation stays visible without starting an indented code block. Trailing spaces are dropped, so they cannot form a line break. An underscore between letters or digits cannot open or close emphasis and is kept, so identifiers such as `artifact_…` stay searchable in the raw file. A bare web address may still be autolinked by GFM as a visible copy of itself, which is how source URLs are already shown.
+Leading spaces and tabs become no-break spaces, so indentation stays visible without starting an indented code block. Trailing spaces are dropped, so they cannot form a line break. An underscore between letters or digits cannot open or close emphasis and is kept, so identifiers such as `artifact_…` stay searchable in the raw file.
+
+### Web addresses
+
+GFM recognizes `http://`, `https://`, `www.` and e-mail literals in two places: while tokenizing the raw source, and again in the decoded text afterwards. A literal recognized during tokenization would absorb the character references that follow it. For example, `&#38;` would become part of both the visible address and its destination. The tokenizer triggers are therefore encoded too: the `:` in `://`, the `.` after `www` and every `@`. Tokenizing then never starts a literal, and GFM's second pass links the address in the decoded text with exactly its visible characters, including `&`, `#`, `_` and parentheses. Only such bare web and e-mail addresses become links, labelled with their own text. Model text cannot choose a link label or target, and it cannot produce an image.
+
+`tests/readable-markdown.spec.ts` checks these properties against the preview grammar (`mdast-util-from-markdown`, `micromark-extension-gfm`, `mdast-util-gfm`, `micromark-extension-math` and `mdast-util-math`). These libraries are not project dependencies, so the checks run only when a scratch installation exists at `DSH_STORY_MDCHECK` (default `/tmp/mdcheck`); otherwise they are skipped.
 
 Settings and outline `contentMarkdown` is model-written Markdown. It is shown with its markers as literal text rather than rendered, so a forged heading or link cannot alter the preview document.
 
