@@ -607,7 +607,7 @@ it('keeps the unmet-obligation message and the review repair line for a continui
   const continuities = [...fixture.stages.entries()].filter(([, stage]) => stage.kind === 'continuity')
   expect(continuities).toHaveLength(2)
   const [repairId, repair] = continuities[1]!
-  expect(repair.task?.validationError).toBe('Every required event for this chapter must be fulfilled by the actual reviewed prose.')
+  expect(repair.task?.validationError).toBe('Every required event for this chapter must be fulfilled by the actual reviewed prose: not fulfilled signal-1 (open).')
   const requirements = loggedRequirements(await loggedPrompt(fixture, repairId))
   expect(requirements).toContain(reviewRepairLine)
   expect(requirements).not.toContain(lengthRepairLine)

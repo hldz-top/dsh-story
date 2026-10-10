@@ -332,9 +332,10 @@ export class WritingRunner {
       }
       await this.deliver(inv, candidate.artifact)
       const reviewed = await this.reviewManuscript(inv, stageKey, candidate, context.requiredChecks)
-      const incomplete = target.kind === 'continuity' && StageOutputSchemas.continuity.parse(result.structured).obligations.some(item => item.status !== 'fulfilled')
+      const unfulfilled = target.kind === 'continuity' ? StageOutputSchemas.continuity.parse(result.structured).obligations.filter(item => item.status !== 'fulfilled') : []
+      const incomplete = unfulfilled.length > 0
       if (reviewed.status !== 'blocked' && reviewed.review !== null && reviewed.length?.blocking !== true && !incomplete) return reviewed
-      if (incomplete) { validationError = 'Every required event for this chapter must be fulfilled by the actual reviewed prose.'; repairMode = 'review' }
+      if (incomplete) { validationError = `Every required event for this chapter must be fulfilled by the actual reviewed prose: not fulfilled ${unfulfilled.map(item => `${item.id} (${item.status})`).join(', ')}.`; repairMode = 'review' }
       else if (reviewed.length?.blocking) { validationError = lengthRepairError(reviewed.wordCount, reviewed.length.status, StageOutputSchemas.body.parse(result.structured), inv.run.executionLimits); repairMode = 'length' }
       else { validationError = 'Resolve the blocking issues in the exact supplied review.'; repairMode = 'review' }
       feedback = this.feedback(reviewed)
