@@ -54,10 +54,14 @@ export interface WritingFixtureSource { readonly artifactId: ArtifactId; readonl
 export interface WritingFixtureStage {
   readonly sessionId: SessionId
   readonly kind: z.infer<typeof promptData>['kind']
+  /** Parsed TASK_DATA envelope, e.g. the research purpose or planning outputTarget. */
+  readonly data: z.infer<typeof promptData>
   readonly task: z.infer<typeof taskSchema> | null
   readonly sources: ReadonlyMap<ArtifactId, WritingFixtureSource>
   readonly requestCount: number
   readonly readPages: number
+  /** structured_output calls the native tool rejected in this child (schema-level), each followed by an in-turn corrected call. */
+  readonly nativeRejections: number
 }
 /** Optional deterministic interventions affect model output, never bypass native tools or stores. */
 export interface WritingFixtureOptions {
@@ -68,9 +72,11 @@ export interface WritingFixtureOptions {
   readonly onChildRequest?: (stage: WritingFixtureStage, request: GenerateOptions) => void
   /** Replace a generated candidate/review call with a native model finish, e.g. a malformed structured_output attempt. */
   readonly injectFinish?: (stage: WritingFixtureStage) => FinishReason | undefined
+  /** Like a model reading the tool error, resubmit the unmodified value after the native structured_output tool rejects an intervened one. Default: the child fails. */
+  readonly correctNativeRejections?: boolean
 }
 interface ChildState extends WritingFixtureStage {
-  readonly data: z.infer<typeof promptData>
+  nativeRejections: number
   readonly sources: Map<ArtifactId, WritingFixtureSource>
   requestCount: number
   readPages: number
@@ -109,8 +115,16 @@ function inputs(state: ChildState) {
     : state.data.inputs.map(ref => ({ ...ref, revision: null }))
 }
 
-function consume(state: ChildState, request: GenerateOptions): void {
+function consume(state: ChildState, request: GenerateOptions, correctNativeRejections: boolean): void {
   if (state.pending === null) return
+  if (state.pending.name === 'structured_output' && correctNativeRejections) {
+    // Only a native rejection continues the turn; like a model reading the tool error, resubmit the unmodified value in the same turn.
+    const result = request.messages.findLast(message => message.role === 'tool' && message.toolCallId === state.pending?.callId)
+    if (result?.role !== 'tool' || result.isError !== true) throw new Error('Structured output continued without a native rejection')
+    state.nativeRejections += 1
+    state.pending = null
+    return
+  }
   const value = pendingResult(request, state.pending.callId)
   if (state.pending.name === 'story_read_artifact') {
     const page = pageSchema.parse(value)
@@ -227,11 +241,11 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
     let state = stages.get(sessionId)
     if (state === undefined) {
       const data = readTask(request)
-      state = { sessionId, data, kind: data.kind, task: data.kind === 'research' || data.kind === 'research-planning' ? null : taskSchema.parse(JSON.parse(data.task)), sources: new Map(), requestCount: 0, readPages: 0, inputIndex: 0, offset: 0, text: '', researchPhase: 0, planId: null, pending: null }
+      state = { sessionId, data, kind: data.kind, task: data.kind === 'research' || data.kind === 'research-planning' ? null : taskSchema.parse(JSON.parse(data.task)), sources: new Map(), requestCount: 0, readPages: 0, inputIndex: 0, offset: 0, text: '', researchPhase: 0, planId: null, pending: null, nativeRejections: 0 }
       stages.set(sessionId, state)
     }
     state.requestCount += 1
-    consume(state, request)
+    consume(state, request, options.correctNativeRejections === true)
     options.onChildRequest?.(state, request)
     const emit = (name: string, args: object) => {
       const callId = `${name}-${state.requestCount}`
@@ -242,7 +256,7 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
     if (ref !== undefined) return emit('story_read_artifact', { novelId: state.data.novelId, artifactId: ref.artifactId, offset: state.offset, limit: maxReadChars })
     if (state.data.kind === 'research-planning') {
       const output = { mode: 'input-only', reason: 'The supplied premise defines this fictional output.', questions: [{ id: 'fixture-fiction', kind: 'creative', question: state.data.purpose, reason: 'This fixture is wholly fictional; its supplied story rules are authorial choices.' }], externalRequirements: [] }
-      return emit('structured_output', options.intervene === undefined ? output : options.intervene(state, output))
+      return emit('structured_output', options.intervene === undefined || state.nativeRejections > 0 ? output : options.intervene(state, output))
     }
     if (state.data.kind === 'research') {
       const data = state.data
@@ -252,12 +266,12 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
       if (state.researchPhase === 2) return emit('story_complete_research', { novelId: data.novelId, planId: state.planId, requestId: data.requestId, findings: [{ questionId: 'fixture-fiction', callIds: [], selections: [], conclusion: `Preserve the fictional premise: ${source(state, data.briefArtifactId).text}`, adequate: true }] })
       if (state.researchPhase === 3) return emit('story_get_research', { novelId: data.novelId, planId: state.planId })
       const output = { planId: state.planId }
-      return emit('structured_output', options.intervene === undefined ? output : options.intervene(state, output))
+      return emit('structured_output', options.intervene === undefined || state.nativeRejections > 0 ? output : options.intervene(state, output))
     }
     const injected = options.injectFinish?.(state)
     if (injected !== undefined) return [{ type: 'finish', reason: injected }]
     const output = generate(state)
-    return emit('structured_output', options.intervene === undefined ? output : options.intervene(state, output))
+    return emit('structured_output', options.intervene === undefined || state.nativeRejections > 0 ? output : options.intervene(state, output))
   })
   const backend = options.backend ?? 'json'
   await fixture.ctx.plugin(Storage)

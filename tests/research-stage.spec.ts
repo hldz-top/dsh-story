@@ -162,7 +162,7 @@ it('admits completed creative research after the native child is disposed', asyn
 it('refuses an otherwise adequate child plan started under a different request identity', async () => {
   const fixture = await researchFixture({ startRequestId: 'different-request' })
   const outcome = await fixture.runResearch()
-  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'research-incomplete' } })
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { name: 'StageValidationRejection' } })
   expect(fixture.capture()).toBeDefined()
   expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
 })
@@ -183,7 +183,7 @@ it('admits external research only through actual logged native fetch evidence', 
 it('refuses unresolved creative findings even when the service reports no external lookup needed', async () => {
   const fixture = await researchFixture({ adequate: false })
   const outcome = await fixture.runResearch()
-  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'research-incomplete' } })
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { name: 'StageValidationRejection' } })
   expect(fixture.service.listResearch(fixture.actor, fixture.novel.id)[0]).toMatchObject({ outcome: 'not-needed' })
 })
 
@@ -208,7 +208,7 @@ it('validates a saved raw result read back after native child disposal without r
 it('rejects an incomplete native plan even when the child captures its identity', async () => {
   const fixture = await researchFixture({ complete: false })
   const outcome = await fixture.runResearch()
-  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'research-incomplete' } })
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { name: 'StageValidationRejection' } })
   expect(fixture.service.listResearch(fixture.actor, fixture.novel.id)[0]).toMatchObject({ outcome: null, result: null })
 })
 
@@ -221,7 +221,7 @@ it.each(['failed', 'insufficient'] as const)('preserves %s native external resea
     },
   } })
   const outcome = await fixture.runResearch()
-  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'research-incomplete' } })
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { name: 'StageValidationRejection' } })
   expect(fixture.service.listResearch(fixture.actor, fixture.novel.id)[0]).toMatchObject({ outcome: kind, result: { kind: 'research-evidence' }, reservedCalls: [{ name: 'web_fetch', callId: 'lighthouse-fetch' }] })
 })
 
@@ -249,7 +249,7 @@ it.each(['failed', 'insufficient'] as const)('keeps %s research rejected when a 
     },
   } })
   const outcome = await fixture.runResearch()
-  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'research-incomplete' } })
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { name: 'StageValidationRejection' } })
   expect(fixture.service.listResearch(fixture.actor, fixture.novel.id)[0]).toMatchObject({ outcome: kind, result: { kind: 'research-evidence' }, reservedCalls: [{ callId: 'lighthouse-fetch' }, { callId: 'broken-fetch' }] })
 })
 
@@ -278,7 +278,7 @@ it('reads back, and still refuses to admit, a plan recorded failed under the ear
   expect(JSON.parse(reopened.getArtifact(fixture.actor, { novelId: fixture.novel.id, artifactId: admitted.value.evidence.id }).text)).toMatchObject({ outcome: 'failed', findings: [{ outcome: 'succeeded' }] })
   // Admission still requires a stored succeeded or not-needed outcome: a plan that was completed and recorded failed needs a new plan.
   const again = await fixture.run(exec => validateResearchStageResult(fixture.ctx, exec, reopened, fixture.input, fixture.capture()!))
-  expect(again).toMatchObject({ status: 'rejected', reason: { code: 'research-incomplete', message: 'Research stage requires completed adequate evidence' } })
+  expect(again).toMatchObject({ status: 'rejected', reason: { name: 'StageValidationRejection', message: expect.stringMatching(/^Research stage requires completed adequate evidence: plan \S+ is completed with outcome failed;/) } })
 })
 
 it('rejects a brief changed after the child completed and before its evidence is admitted', async () => {
@@ -294,7 +294,7 @@ it('rejects a brief changed after the child completed and before its evidence is
 it('rejects output attributed to a different Session before reading unrelated logs', async () => {
   const fixture = await researchFixture()
   const outcome = await fixture.runResearch(async result => ({ ...result, childSessionId: fixture.parent.session.id }))
-  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'session-mismatch' } })
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { name: 'StageValidationRejection', message: expect.stringContaining('Research plan belongs to another child Session') } })
 })
 
 it('bounds admission reads of the completed native child log', async () => {
@@ -307,7 +307,7 @@ it('bounds admission reads of the completed native child log', async () => {
 it.each([{ planId: 'invalid-plan' }, { planId: request.briefArtifactId, extra: true }])('rejects malformed recovered structured output: %j', async structured => {
   const fixture = await researchFixture()
   const outcome = await fixture.runResearch(async result => ({ ...result, structured }))
-  expect(outcome).toMatchObject({ status: 'rejected', reason: { name: 'ZodError' } })
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { name: 'StageValidationRejection', message: expect.stringMatching(/^Research stage output does not match its output schema: /) } })
 })
 
 it('refuses admission when the persisted stage inputs omit the creative brief', async () => {

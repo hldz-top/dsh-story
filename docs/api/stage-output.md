@@ -34,7 +34,7 @@ Quoting a real source does not establish that a model's interpretation is correc
 | `facts` | Nonempty array of `{ id, statement }`. Both strings are nonblank, and fact IDs are unique within the dimension. |
 | `contentMarkdown` | Complete nonblank readable candidate content. |
 
-This parser is structural, so stored candidates and replayed requests always parse under the rules that admitted them. `checkSettingsDimensionScope(output, kind)` adds the scope bound for a newly admitted [classification dimension](../specs/story-writing-plugin/CONTEXT.md). For `enum_single` and `enum_multi` it rejects more than 10 facts or more than 2,500 code points of `contentMarkdown` with a `StageOutputError` that states the actual counts. For `llm_free` it accepts any size that the configured artifact limit allows. The writing service applies it only when it admits a new candidate, never on readback or idempotent replay.
+This parser is structural, so stored candidates and replayed requests always parse under the rules that admitted them. `checkSettingsDimensionScope(output, kind)` adds the scope bound for a newly admitted [classification dimension](../specs/story-writing-plugin/CONTEXT.md). For `enum_single` and `enum_multi` it rejects more than 10 facts or more than 2,500 code points of `contentMarkdown` with a `StageValidationRejection` (formerly `StageOutputError`, still exported as an alias of the same class) that states the actual counts. For `llm_free` it accepts any size that the configured artifact limit allows. The writing service applies it only when it admits a new candidate, never on readback or idempotent replay.
 
 ## Review
 
@@ -99,7 +99,7 @@ Every fulfilled obligation requires at least one citation quoting the actual rev
 
 ## Failures and focused validation
 
-Invalid fields raise Zod validation errors. Wrong versions, missing required checks, invalid quotations, or inconsistent scene and obligation references raise descriptive errors. A rejected quotation names the cited artifact and echoes the quote (truncated to 120 code points), so the runner's repair prompt identifies exactly which citation to correct. No failure returns an approved or applied value.
+Every rejection is a `StageValidationRejection` from [`src/stage-rejection.ts`](../../src/stage-rejection.ts) that names the offending item and the actual versus allowed value. Invalid fields are summarized per path (`<label> does not match its output schema: path: message; …`, at most eight paths). Wrong versions list the missing and unexpected `artifactId@sha` prefixes; missing required checks list the categories; duplicate identifiers echo the value; chapter, scene and obligation mismatches state expected and received values. A rejected quotation names the cited artifact and echoes the quote (truncated to 120 code points), so the runner's repair prompt identifies exactly which citation to correct. No failure returns an approved or applied value.
 
 The public parser suite is `tests/stage-output.spec.ts`. Run it with the installed toolchain:
 

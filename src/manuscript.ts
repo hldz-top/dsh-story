@@ -6,6 +6,7 @@ import { planSettings } from './settings-plan.ts'
 import { manuscriptTargetSchema, settingsCollectionSchema, type ManuscriptRecord } from './manuscript-records.ts'
 import { parseBodyOutput, parseBookOutlineOutput, parseChapterOutlineOutput, parseContinuityOutput, parseReviewOutput, StageOutputSchemas } from './stage-output.ts'
 import { WritingError } from './contracts.ts'
+import { checkModelArtifactBytes, parseModelOutput } from './stage-rejection.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Domain } from '@deepseek-ai/dsh-storage-domain'
 import type { z } from 'zod'
@@ -126,6 +127,7 @@ export class ManuscriptStore {
     const replay = candidate.reviewHistory.find(item => item.request.requestId === request.requestId)
     if (replay !== undefined) { sameRequest(replay.request.hash, hash); return this.view(actor, novel, candidate) }
     this.admitReview(actor, novel, candidate, request.expectedReviewId)
+    checkModelArtifactBytes(JSON.stringify(output), this.owner.limits.maxArtifactBytes, 'Review output')
     const artifact = this.artifact(novel.id, 'review', JSON.stringify(output))
     await this.domain.table('artifacts').put(artifact.id, artifact)
     actor.signal?.throwIfAborted()
@@ -188,13 +190,14 @@ export class ManuscriptStore {
     const novel = this.record(actor, request.novelId)
     const target = manuscriptTargetSchema.parse(request.target)
     if (target.kind === 'settings') throw new WritingError('invalid-input', 'This manuscript stage output is not yet available')
-    const parsed = StageOutputSchemas[target.kind].parse(request.output)
+    const parsed = parseModelOutput(StageOutputSchemas[target.kind], request.output, `${target.kind} output`)
     const hash = digest([target, request.researchPlanId, request.childSessionId, { ...parsed, inputRefs: [...parsed.inputRefs].sort((a, b) => a.artifactId < b.artifactId ? -1 : a.artifactId > b.artifactId ? 1 : 0) }, ...(request.revisionOf === undefined ? [] : [request.revisionOf])])
     const replay = novel.manuscriptHistory.find(item => item.request.requestId === request.requestId)
     if (replay !== undefined) { sameRequest(replay.request.hash, hash); return this.view(actor, novel, replay) }
     const context = this.manuscriptInputs(actor, request)
     const refs = context.inputRefs.map(inputRef)
     const { output } = this.generatedOutput(actor, novel, target, refs, request.researchPlanId, parsed, request.revisionOf ?? null)
+    checkModelArtifactBytes(JSON.stringify(output), this.owner.limits.maxArtifactBytes, `${target.kind} output`)
     const artifact = this.artifact(novel.id, target.kind, JSON.stringify(output))
     await this.domain.table('artifacts').put(artifact.id, artifact)
     actor.signal?.throwIfAborted()
