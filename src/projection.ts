@@ -5,13 +5,13 @@ import { FsError, type FsTarget } from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import type { Actor, Artifact, NovelView } from './contracts.ts'
 import type { StoryArtifactPreview } from './preview-result.ts'
-import { artifactMarkdown } from './artifact-markdown.ts'
+import { artifactMarkdown, legacyArtifactMarkdown } from './artifact-markdown.ts'
 
-async function verifyProjection(ctx: Context, exec: ToolExecution, target: FsTarget, projected: Buffer): Promise<void> {
+async function verifyProjection(ctx: Context, exec: ToolExecution, target: FsTarget, accepted: readonly Buffer[]): Promise<void> {
   const info = await ctx.fs.stat(target, exec.signal)
   if (info === undefined || info.type !== 'file') throw new Error('Preview is not a regular file')
-  const bytes = await ctx.fs.readBytes(target, exec.signal, projected.byteLength)
-  if (!Buffer.from(bytes).equals(projected)) {
+  const bytes = Buffer.from(await ctx.fs.readBytes(target, exec.signal, Math.max(...accepted.map(candidate => candidate.byteLength))))
+  if (!accepted.some(candidate => bytes.equals(candidate))) {
     throw new Error('Preview differs from the stored artifact; the authoritative version is unchanged')
   }
   ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
@@ -30,7 +30,7 @@ async function verifyProjection(ctx: Context, exec: ToolExecution, target: FsTar
 export async function projectArtifact(
   ctx: Context, exec: ToolExecution, actor: Actor, novel: NovelView, artifact: Artifact, directory: string,
 ): Promise<StoryArtifactPreview> {
-  const path = await projectDocument(ctx, exec, actor, `${directory}/${novel.id}/${artifact.id}.md`, artifactMarkdown(artifact))
+  const path = await projectDocument(ctx, exec, actor, `${directory}/${novel.id}/${artifact.id}.md`, artifactMarkdown(artifact), [legacyArtifactMarkdown(artifact)])
   return {
     kind: 'story-artifact-preview', version: 1,
     novelId: novel.id, artifactId: artifact.id, revision: artifact.revision,
@@ -44,13 +44,16 @@ export async function projectArtifact(
  * @param exec - Calling Session and cancellation owner.
  * @param actor - Canonical Session workspace.
  * @param relativePath - Version-specific path within the configured preview directory.
- * @param markdown - Complete authoritative projection text, without truncation.
+ * @param markdown - Complete authoritative projection text, without truncation; a new file always receives it.
+ * @param previous - Exact earlier renderings of the same content that an existing, unmodified file may still hold.
  * @returns The verified existing or newly created file's display path.
  */
-export async function projectDocument(ctx: Context, exec: ToolExecution, actor: Actor, relativePath: string, markdown: string): Promise<string> {
+export async function projectDocument(
+  ctx: Context, exec: ToolExecution, actor: Actor, relativePath: string, markdown: string, previous: readonly string[] = [],
+): Promise<string> {
   const session = exec.agent?.session
   if (session === undefined) throw new Error('Preview requires a Session')
-  const projected = Buffer.from(markdown, 'utf8')
+  const accepted = [markdown, ...previous].map(text => Buffer.from(text, 'utf8'))
   const workspace = await ctx.fs.resolve('.', { cwd: actor.workspace, signal: exec.signal })
   const target = await ctx.fs.resolve(relativePath, { cwd: actor.workspace, signal: exec.signal })
   if (!ctx.fs.contains(workspace, target)) throw new Error('Preview path must remain inside the Session workspace')
@@ -61,14 +64,14 @@ export async function projectDocument(ctx: Context, exec: ToolExecution, actor: 
   const policy = policyOwner?.resolve({ session })
   exec.signal.throwIfAborted()
   if (await ctx.fs.stat(target, exec.signal) !== undefined) {
-    await verifyProjection(ctx, exec, target, projected)
+    await verifyProjection(ctx, exec, target, accepted)
   } else {
     try {
       const outcome = await ctx.fs.writeText(target, markdown, { kind: 'createIfAbsent' }, exec.signal, policy)
       ctx.emit('fs/observed', target, { kind: 'present', version: outcome.version }, exec)
     } catch (error) {
       if (!(error instanceof FsError) || error.code !== 'FS_NOT_OBSERVED') throw error
-      await verifyProjection(ctx, exec, target, projected)
+      await verifyProjection(ctx, exec, target, accepted)
     }
   }
   return target.displayPath

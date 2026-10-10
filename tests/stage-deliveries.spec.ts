@@ -114,11 +114,25 @@ it('publishes the complete rejected native output with an explicit source identi
     expect(delivery.description).toContain('Rejected')
     const markdown = await readFile(delivery.path, 'utf8')
     expect(markdown).toContain(text)
-    expect(markdown).toContain('Required body fields are missing.')
-    expect(markdown).toContain('````text\n')
+    expect(markdown).toContain('## Admission failure\n\nRequired body fields are missing.\n\n## Complete response\n\n````text\n')
+    expect(markdown).toContain(`## Provenance\n\n- Run: ${run.id}\n- Attempt: ${attempt.id}\n- Stage: body/1\n`)
     expect(markdown).toContain('OUTPUT END')
     expect(runs.readOutput(actor, run.id, attempt.id).text).toBe(text)
     expect(fixture.service.getNovel(actor, novel.id)).toEqual(novel)
+
+    const fence = (value: string) => {
+      const length = Math.max(3, ...[...value.matchAll(/`+/g)].map(match => match[0].length + 1))
+      return `${'`'.repeat(length)}text\n${value}\n${'`'.repeat(length)}`
+    }
+    const legacy = ['# Rejected stage output', 'This raw model response failed writing-stage admission. It is not an applied writing artifact.',
+      '## Admission failure', fence('Required body fields are missing.'), '## Complete response', fence(text), '## Provenance',
+      fence(`Run: ${run.id}\nAttempt: ${attempt.id}\nStage: body/1\nSHA-256: ${runs.readOutput(actor, run.id, attempt.id).sha256}\nUTF-8 bytes: ${Buffer.byteLength(text)}`),
+    ].join('\n\n') + '\n'
+    await writeFile(delivery.path, legacy, 'utf8')
+    await publisher.publishRejectedOutput(exec, run.id, attempt.id, 'Required body fields are missing.')
+    expect(await readFile(delivery.path, 'utf8')).toBe(legacy)
+    await writeFile(delivery.path, legacy.replace('Required body', 'Edited body'), 'utf8')
+    await expect(publisher.publishRejectedOutput(exec, run.id, attempt.id, 'Required body fields are missing.')).rejects.toThrow(/Preview differs/)
   })
   if (outcome.status === 'rejected') throw outcome.reason
 })

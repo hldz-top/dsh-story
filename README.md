@@ -64,4 +64,5 @@ The manifest declares a built DSH composition bundle. No verified fixed-version 
 
 - [Writing runner](docs/api/writing-runner.md): orchestration, configuration, cancellation and repair.
 - [Writing service](docs/api/writing-service.md), [manuscript](docs/api/manuscript.md) and [writing runs](docs/api/writing-runs.md): authoritative versions and durable state.
+- [Stage deliveries](docs/api/stage-deliveries.md) and [readable Markdown](docs/api/readable-markdown.md): versioned document previews.
 - [Domain terms](docs/specs/story-writing-plugin/CONTEXT.md) and [specification](docs/specs/story-writing-plugin/spec.md): requirements and acceptance criteria.

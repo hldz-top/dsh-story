@@ -106,7 +106,7 @@ it.each([false, true])('archives mixed native references and reopens the exact f
   const markdown = await readFile(preview.path, 'utf8')
   expect(markdown).toContain(failedFetch ? 'Outcome: Research failed' : 'Outcome: Insufficient evidence')
   expect(markdown).toContain('Rejected source reference')
-  expect(markdown).toContain('```text\n/hdd/signal.pdf#page=2\n```')
+  expect(markdown).toContain('Original reference (not usable as evidence)\n\n/hdd/signal.pdf&#35;page=2')
   expect(markdown).not.toContain('</hdd/')
 })
 
@@ -327,6 +327,6 @@ it('selects and previews a later literal source through native tools without rep
   const markdown = await readFile(preview.path, 'utf8')
   expect(markdown).toContain('HTTP status: 403')
   expect(markdown).toContain('Retention: unselected')
-  expect(markdown).toContain('```text\n潮🌊归航\n```')
+  expect(markdown).toContain('characters)\n\n> 潮🌊归航\n')
   expect(markdown).not.toContain('Security verification')
 })

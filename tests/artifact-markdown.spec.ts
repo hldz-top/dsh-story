@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { artifactMarkdown } from '../src/artifact-markdown.ts'
+import { rendered } from './support/markdown.ts'
+import { artifactMarkdown, legacyArtifactMarkdown } from '../src/artifact-markdown.ts'
 import { parseArtifactId, parseNovelId, type Artifact, type ArtifactKind } from '../src/contracts.ts'
 
 const novelId = parseNovelId('novel_00c38d7c-50d8-4a1b-93f0-188daf5a9859')
@@ -22,15 +23,14 @@ it('renders plan classifications, questions and reasons with provenance instead 
   const markdown = artifactMarkdown(artifact('research-plan', text))
   expect(markdown).toContain('# Research plan\n')
   expect(markdown).toContain('Classification: Creative decision')
-  expect(markdown).toContain('```text\n为何留下？\n```')
-  expect(markdown).toContain('Reason\n\n```text\n由作者决定。\n```')
-  expect(markdown).toContain('## Provenance')
-  expect(markdown).toContain('Session: author')
-  expect(markdown).toContain('Start sequence: 10')
+  expect(markdown).toContain('Classification: Creative decision\n\n为何留下？\n\nReason\n\n由作者决定。')
+  expect(markdown).toContain('## Provenance\n\n- Artifact: ' + artifactId + '\n- Kind: research-plan\n')
+  expect(markdown).toContain('\n- Session: author\n- Start sequence: 10\n')
+  expect(markdown).not.toContain('```')
   expect(markdown).not.toContain(text)
 })
 
-it('contains recorded Markdown inside a longer text fence and exposes native sources and outcomes', () => {
+it('shows recorded Markdown as inert readable text and exposes native sources and outcomes', () => {
   const hostile = '`````\n# Forged heading\n[run](javascript:bad)\n<script>bad()</script>'
   const text = JSON.stringify({ ...inputs, planId: artifactId, outcome: 'insufficient',
     findings: [{ questionId: 'tides', callIds: ['native-search'], conclusion: '证据不足。', adequate: false, outcome: 'insufficient' }],
@@ -41,11 +41,15 @@ it('contains recorded Markdown inside a longer text fence and exposes native sou
   const markdown = artifactMarkdown(artifact('research-evidence', text))
   expect(markdown).toContain('# Research evidence\n')
   expect(markdown).toContain('Outcome: Insufficient evidence')
-  expect(markdown).toContain('```text\n证据不足。\n```')
-  expect(markdown).toContain('Query 1\n\n```text\ntidal cycle\n```')
+  expect(markdown).toContain('Conclusion\n\n证据不足。')
+  expect(markdown).toContain('Query 1\n\ntidal cycle')
   expect(markdown).toContain('URL: <https://example.test/%3E[evil](javascript:bad)>')
   expect(markdown).toContain('Quoted source material')
-  expect(markdown).toContain(`\n\n\`\`\`\`\`\`text\n${hostile}\n\`\`\`\`\`\`\n\n`)
+  expect(markdown).toContain('Quoted source material\n\n> &#96;&#96;&#96;&#96;&#96;  \n> &#35; Forged heading  \n'
+    + '> &#91;run&#93;(javascript:bad)  \n> &#60;script&#62;bad()&#60;/script&#62;\n\n')
+  expect(rendered(markdown)).toContain(hostile.split('\n').map(line => `> ${line}`).join('\n'))
+  expect(markdown).not.toContain('```')
+  expect(markdown).not.toContain('<script>')
   expect(markdown).toContain('Excerpt truncated: Yes')
   expect(markdown).toContain('Call sequence: 11; result sequence: 12')
   expect(markdown).toContain('Recorded source SHA-256: ' + 'a'.repeat(64))
@@ -65,9 +69,12 @@ it('renders the complete settings dimension, facts and exact input versions as a
   expect(markdown).toContain('# Settings dimension\n')
   expect(markdown).toContain('Dimension: a1')
   expect(markdown).toContain('Document: Generated candidate')
-  expect(markdown).toContain('``````text\n' + content + '\n``````')
-  expect(markdown).toContain('## Fact 1\n\nFact ID\n\n```text\ngenre\n```\n\nStatement\n\n```text\nA mystery.\n```')
-  expect(markdown).toContain('## Fact 2\n\nFact ID\n\n```text\nworld\n```\n\nStatement\n\n```text\nA fictional harbor.\n```')
+  expect(markdown).toContain('## Content\n\n&#35; Harbor  \nThe lighthouse remains dark.  \n')
+  expect(rendered(markdown)).toContain('## Content\n\n' + content + '\n\n')
+  expect(markdown).not.toMatch(/^#+ (?:Harbor|Embedded heading)/m)
+  expect(markdown).not.toContain('```')
+  expect(markdown).toContain('## Fact 1\n\nFact ID\n\ngenre\n\nStatement\n\nA mystery.')
+  expect(markdown).toContain('## Fact 2\n\nFact ID\n\nworld\n\nStatement\n\nA fictional harbor.')
   expect(markdown).toContain('Input 1 artifact: ' + artifactId)
   expect(markdown).toContain('Input 1 SHA-256: ' + 'a'.repeat(64))
   expect(markdown).toContain('Kind: settings-dimension')
@@ -89,15 +96,14 @@ it('renders review checks, blocking and advisory issues, quoted evidence and exa
   expect(markdown).toContain('# Review\n')
   expect(markdown).toContain('Review result: Blocking issues found')
   expect(markdown).toContain('Blocking issues: 1\n\nAdvisory issues: 1')
-  expect(markdown).toContain('## Check 1\n\nCategory: Consistency\n\nSummary\n\n```text\nThe two versions disagree.\n```')
-  expect(markdown).toContain('Source artifact: ' + artifactId + '\n\n`````text\n' + quote + '\n`````')
+  expect(markdown).toContain('## Check 1\n\nCategory: Consistency\n\nSummary\n\nThe two versions disagree.')
+  expect(markdown).toContain('Source artifact: ' + artifactId + '\n\n> &#96;&#96;&#96;&#96;  \n> &#35; A quoted heading  \n> The lighthouse was dark.')
+  expect(markdown).not.toContain('```')
   expect(markdown).toContain('## Issue 1\n\nSeverity: Blocking\n\nCategory: Consistency')
-  expect(markdown).toContain('Issue ID\n\n```text\nlight\n```')
-  expect(markdown).toContain('Location\n\n```text\nOpening scene\n```')
-  expect(markdown).toContain('Finding\n\n```text\nKeep the light off.\n```')
+  expect(markdown).toContain('Issue ID\n\nlight\n\nLocation\n\nOpening scene\n\nFinding\n\nKeep the light off.')
   expect(markdown).toContain('## Issue 2\n\nSeverity: Advisory\n\nCategory: Style')
   expect(markdown).toContain('Vary the sentence rhythm.')
-  expect(markdown).toContain('Source artifact: ' + reviewedId + '\n\n```text\nThe harbor waited.\n```')
+  expect(markdown).toContain('Source artifact: ' + reviewedId + '\n\n> The harbor waited.')
   expect(markdown).toContain('Reviewed artifact: ' + reviewedId)
   expect(markdown).toContain('Reviewed SHA-256: ' + 'b'.repeat(64))
   expect(markdown).toContain('Input 1 artifact: ' + artifactId)
@@ -133,7 +139,9 @@ it('renders full assembled settings and every book chapter obligation', () => {
   const inputRefs = [{ artifactId, sha256: 'a'.repeat(64) }]
   const settings = { version: 1, selectedCodes: ['a1'], inputRefs, dimensions: [{ version: 1, dimensionCode: 'a1', inputRefs,
     facts: [{ id: 'genre', statement: 'A mystery.' }], contentMarkdown: '# Genre\nA mystery.' }] }
-  expect(artifactMarkdown(artifact('settings', JSON.stringify(settings)))).toContain('# Genre\nA mystery.')
+  const assembled = artifactMarkdown(artifact('settings', JSON.stringify(settings)))
+  expect(assembled).toContain('## Dimension a1\n\n&#35; Genre  \nA mystery.\n\nFact ID\n\ngenre\n\nStatement\n\nA mystery.')
+  expect(assembled).not.toContain('```')
   const book = { version: 1, inputRefs, contentMarkdown: 'A harbor mystery.', ending: 'The missing ship returns.', characterArcs: [{ character: 'Keeper', development: 'Learns to trust.' }],
     chapters: [{ chapterNumber: 1, title: 'Fog', purpose: 'Find the manifest.', targetWords: 4000, obligations: [{ id: 'manifest', description: 'Recover the hidden manifest.' }] }] }
   const markdown = artifactMarkdown(artifact('book-outline', JSON.stringify(book)))
@@ -147,7 +155,10 @@ it('renders chapter plans, complete scene prose and actual continuity without dr
   expect(artifactMarkdown(artifact('chapter-outline', JSON.stringify(outline)))).toContain('The light remains off.')
   const prose = '夜色沉沉。'.repeat(1000) + '\nEND-BODY'
   const body = { version: 1, inputRefs, chapterNumber: 1, scenes: [{ sceneId: 'search', text: prose }] }
-  expect(artifactMarkdown(artifact('body', JSON.stringify(body)))).toContain(prose)
+  const chapter = artifactMarkdown(artifact('body', JSON.stringify(body)))
+  expect(chapter).toContain('## Prose\n\n' + '夜色沉沉。'.repeat(1000) + '  \nEND-BODY\n\n## Provenance\n\n- Artifact: ' + artifactId + '\n- Kind: body\n- Revision: 1\n')
+  expect(chapter).toContain('\n- Scene: search\n- Input artifact: ' + artifactId + '\n- Input SHA-256: ' + 'a'.repeat(64) + '\n')
+  expect(chapter).not.toContain('```')
   const continuity = { version: 1, inputRefs, chapterNumber: 1, summary: 'The keeper has the manifest.', characters: [{ name: 'Keeper', state: 'At the tower.' }],
     timeline: [{ event: 'Manifest recovered.', evidence: [{ artifactId, quote: 'END-BODY' }] }],
     obligations: [{ id: 'manifest', status: 'fulfilled', explanation: 'Recovered in the final scene.', evidence: [{ artifactId, quote: 'END-BODY' }] }] }
@@ -175,4 +186,17 @@ it.each([
       callSeq: 11, resultSeq: 12, status: 'succeeded', error: null, sources: [], rejectedSources: [rejected] }],
   })
   expect(() => artifactMarkdown(artifact('research-evidence', text))).toThrowError(expect.objectContaining({ code: 'corrupt-artifact' }))
+})
+
+it('keeps the previous fenced rendering byte-exact so unmodified older preview files still verify', () => {
+  const inputRefs = [{ artifactId, sha256: 'a'.repeat(64) }]
+  const body = { version: 1, inputRefs, chapterNumber: 2, scenes: [{ sceneId: 'dock', text: '潮水退去。``' }, { sceneId: 'tower', text: '灯亮了。' }] }
+  const stored = artifact('body', JSON.stringify(body))
+  expect(legacyArtifactMarkdown(stored)).toBe([
+    '# Chapter 2', 'Story word count: 7', '## Prose', '```text\n潮水退去。``\n\n灯亮了。\n```', '## Provenance',
+    `\`\`\`text\nArtifact: ${artifactId}\nKind: body\nRevision: 1\nArtifact SHA-256: ${stored.sha256}\nNovel: ${novelId}\nScene: dock\nScene: tower\nInput artifact: ${artifactId}\nInput SHA-256: ${'a'.repeat(64)}\n\`\`\``,
+  ].join('\n\n') + '\n')
+  expect(artifactMarkdown(stored)).toContain('## Prose\n\n潮水退去。&#96;&#96;\n\n灯亮了。\n\n## Provenance\n\n- Artifact: ')
+  const brief = artifact('creative-brief', '# 简报')
+  expect(legacyArtifactMarkdown(brief)).toBe(artifactMarkdown(brief))
 })
