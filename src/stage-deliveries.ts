@@ -13,6 +13,8 @@ import { parseAttemptId, parseRunId, type AttemptId, type RunId, type RunStore }
 import type { WritingService } from './service.ts'
 import { projectArtifact, projectDocument } from './projection.ts'
 import { StageOutputSchemas } from './stage-output.ts'
+import { readableList, readableText } from './readable-markdown.ts'
+import { literalTextBlock } from './artifact-markdown.ts'
 import { writingActor } from './tools.ts'
 import { parseStoryStageDeliveries, type StoryStageDeliverySource, type StoryStageDeliveries } from './stage-delivery.ts'
 
@@ -105,13 +107,6 @@ function artifactDescription(service: WritingService, actor: Actor, artifact: Ar
   return `${label} · v${artifact.revision}`
 }
 
-function literal(text: string): string {
-  let length = 3
-  for (const match of text.matchAll(/`+/g)) length = Math.max(length, match[0].length + 1)
-  const fence = '`'.repeat(length)
-  return `${fence}text\n${text}\n${fence}`
-}
-
 /** Stage publication awaits native policy, its committed event, and Session durability. */
 export class StageDeliveries {
   private readonly pending = new Map<string, Promise<void>>()
@@ -140,12 +135,14 @@ export class StageDeliveries {
       const output = this.runs.readOutput(actor, runId, attemptId)
       const attempt = run.attempts.find(entry => entry.id === attemptId)
       if (attempt === undefined || error.trim().length === 0) throw new Error('Rejected output requires its exact attempt and admission failure')
-      const markdown = [
+      const provenance = [`Run: ${runId}`, `Attempt: ${attemptId}`, `Stage: ${attempt.key}`, `SHA-256: ${output.sha256}`, `UTF-8 bytes: ${output.bytes}`]
+      const document = (failure: string, metadata: string) => [
         '# Rejected stage output', 'This raw model response failed writing-stage admission. It is not an applied writing artifact.',
-        '## Admission failure', literal(error), '## Complete response', literal(output.text),
-        '## Provenance', literal(`Run: ${runId}\nAttempt: ${attemptId}\nStage: ${attempt.key}\nSHA-256: ${output.sha256}\nUTF-8 bytes: ${output.bytes}`),
+        '## Admission failure', failure, '## Complete response', literalTextBlock(output.text), '## Provenance', metadata,
       ].join('\n\n') + '\n'
-      const path = await projectDocument(this.ctx, exec, actor, `${this.directory}/${run.novelId}/rejected/${attemptId}.md`, markdown)
+      const markdown = document(readableText(error), readableList(provenance))
+      const legacy = document(literalTextBlock(error), literalTextBlock(provenance.join('\n')))
+      const path = await projectDocument(this.ctx, exec, actor, `${this.directory}/${run.novelId}/rejected/${attemptId}.md`, markdown, [legacy])
       await this.present(exec, identity, path, `Rejected stage output: ${attempt.key}`)
     })
   }
