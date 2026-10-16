@@ -40,3 +40,9 @@ This repository owns the standalone novel-writing plugin. Read [the specificatio
 - Confirm paid model run scope and budget before execution. Do not automatically replay an uncertain paid call.
 - Keep local state under .codex/task-state, .codex/tickets and .codex/spikes; exclude these through .git/info/exclude and never stage them. One active checkpoint per session records decisions, tasks, failures, commands and next action.
 - Final reports name completed work, actual checks, skipped validation, residual processes, Git status and remaining acceptance. A skeleton repository is not a working plugin.
+
+## Cursor Cloud specific instructions
+
+- Resolve Node from `/usr/local/cargo/bin/node` (22.23). `/exec-daemon/node` is 22.14 and is outside this package's engines range. The environment install links the image Node binary into that directory because it precedes `/exec-daemon` on `PATH`.
+- Install with `corepack pnpm install --frozen-lockfile --ignore-scripts`, then run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build`.
+- The sibling checkout is `/agent/repos/story_weaver`. An empty PostgreSQL database is initialized by `app.db.alembic_runner.run_alembic_upgrade_head` (`upgrade 0001_init`, then `stamp head`). A raw `alembic upgrade head` on that empty database fails on later non-idempotent revisions. Start the API from the repository root with `uv run python -m app.run_service`.
