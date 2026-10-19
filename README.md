@@ -75,12 +75,13 @@ The only bypass is operator-side: the plugin config option `allowIncompleteSetti
 
 An import takes `novelId`, `requestId`, `dimensionCode`, `expectedAppliedId` (the current adopted version) and `output`: the complete settings stage document as JSON text, validated exactly like generated output. The host supplies its `inputRefs`. The new version keeps the replaced version's research plan, records `revisionOf` and `origin: "import"`, and is adopted without its own review. Older versions are never rewritten; a missing `origin` means a generated (`stage`) version.
 
-An import stays `pendingReview` until an assembled-settings collection containing it passes review. Until then it does not count as complete settings for the book outline, and `story_resume` of a run that uses it is refused. Run `story_update` to review it. When that review blocks and the repair would regenerate any imported dimension (pending or already released), the run stops and regenerates nothing instead of replacing author text. Import every dimension in dependency order before the update. Imports are refused while a run is running or interrupted. Refusals and stops end with one JSON line, like the required-settings gate:
+An import stays `pendingReview` until an assembled-settings collection containing it passes review. Until then it does not count as complete settings for the book outline, and `story_resume` of a run that uses it is refused. Run `story_update` to review it. When that review blocks and the repair would regenerate any imported dimension (pending or already released), the run stops and regenerates nothing instead of replacing author text. A run also stops with `"reason":"stale-import"` before any settings work when an imported dimension is stale (for example after re-importing only its upstream dimension, or after a brief change), instead of regenerating it. Import every dimension in dependency order, upstream first, before the update. After a brief change, the reused research is out of date, so an import is refused (`research-incomplete`) until a model run refreshes the research. Imports are refused while a run is running or interrupted. Refusals and stops end with one JSON line, like the required-settings gate:
 
 ```text
 {"code":"import-refused","reason":"run-active"}
 {"code":"import-refused","reason":"pending-review","importItems":[{"dimensionCode":"e1","artifactId":"…","pendingReview":true}]}
 {"code":"review-blocked","importItems":[{"dimensionCode":"e1","artifactId":"…","pendingReview":false}]}
+{"code":"review-blocked","reason":"stale-import","importItems":[{"dimensionCode":"g2","artifactId":"…","pendingReview":true}]}
 ```
 
 A store containing an imported version cannot be opened by an older plugin: its strict schema rejects the whole `story_writing` domain, not only that novel. Back up the storage before the first import.

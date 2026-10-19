@@ -206,8 +206,11 @@ export class ImportRefusedError extends HarnessError {
 }
 /** A blocking settings-collection review that would regenerate imported author text; the run stops instead. Ends with `{"code":"review-blocked","importItems":[...]}`. */
 export class ImportReviewBlockedError extends HarnessError {
-  constructor(readonly importItems: readonly ImportItem[]) {
-    super(`The settings collection review is blocking and repair would regenerate imported settings (${importItems.map(item => item.dimensionCode).join(', ')}); stopped without regenerating any dimension. Correct the imported text and import it again, then start a new story_update.\n${JSON.stringify({ code: 'review-blocked', importItems })}`, 'review-blocked')
+  constructor(readonly importItems: readonly ImportItem[], readonly reason?: 'stale-import') {
+    const codes = importItems.map(item => item.dimensionCode).join(', ')
+    super(`${reason === 'stale-import'
+      ? `Imported settings are out of date with their inputs (${codes}); stopped before regenerating any dimension, so imported text is not replaced. Import them again in dependency order (upstream first), then start a new story_update.`
+      : `The settings collection review is blocking and repair would regenerate imported settings (${codes}); stopped without regenerating any dimension. Correct the imported text and import it again, then start a new story_update.`}\n${JSON.stringify({ code: 'review-blocked', ...(reason === undefined ? {} : { reason }), importItems })}`, 'review-blocked')
     this.name = 'ImportReviewBlockedError'
   }
 }

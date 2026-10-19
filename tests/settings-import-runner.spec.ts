@@ -1,6 +1,11 @@
 /** Author settings import through the writing runner: run exclusion, resume refusal, pending review and the import-aware stop. */
+import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { isAbsolute, join } from 'node:path'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { expect, it } from 'vitest'
 import { ImportRefusedError, parseRequestId, type ArtifactId } from '../src/contracts.ts'
+import { parseStoryArtifactPreview } from '../src/preview-result.ts'
 import { openRunStore } from '../src/run-store.ts'
 import { WritingRunner } from '../src/writing-runner.ts'
 import { StageDeliveries } from '../src/stage-deliveries.ts'
@@ -163,6 +168,40 @@ it('F5: a released import still stops repair when a later collection review bloc
   expect(JSON.parse(stopped.value.error?.split('\n').at(-1) ?? '')).toEqual({ code: 'review-blocked', importItems: [{ dimensionCode: 'a1', artifactId: imported.value.artifact.id, pendingReview: false }] })
   expect(keys(fixture, stopped.value.id).filter(key => key.startsWith('settings/1/'))).toEqual([])
   expect(head(fixture, 'a1').artifact).toEqual(imported.value.artifact)
+  // F2: resuming the stopped run replays its blocking round-0 review and stops again instead of entering round 1.
+  const resumed = await fixture.run(exec => fixture.runner.resume(exec, stopped.value.id, false))
+  if (resumed.status !== 'fulfilled') throw new Error(String(resumed.reason))
+  expect(resumed.value.status).toBe('failed')
+  expect(JSON.parse(resumed.value.error?.split('\n').at(-1) ?? '')).toEqual({ code: 'review-blocked', importItems: [{ dimensionCode: 'a1', artifactId: imported.value.artifact.id, pendingReview: false }] })
+  expect(keys(fixture, stopped.value.id).filter(key => key.startsWith('settings/1/'))).toEqual([])
+  expect(head(fixture, 'a1').artifact).toEqual(imported.value.artifact)
+}, SLOW)
+
+it('B-1: a stale import is never regenerated in round 0; the run stops before any settings work and asks for a re-import', async () => {
+  const fixture = await written(['a2'])
+  const a1 = await importText(fixture, 'a1', '第一版')
+  if (a1.status !== 'fulfilled') throw new Error(String(a1.reason))
+  const a2 = await importText(fixture, 'a2', '作者流派')
+  if (a2.status !== 'fulfilled') throw new Error(String(a2.reason))
+  // Re-importing only the upstream a1 leaves the imported a2 stale.
+  const again = await importText(fixture, 'a1', '第二版')
+  if (again.status !== 'fulfilled') throw new Error(String(again.reason))
+  expect(head(fixture, 'a2')).toMatchObject({ artifact: a2.value.artifact, origin: 'import', stale: true })
+  const updated = await update(fixture, 'update-stale-import', ['a2'])
+  if (updated.status !== 'fulfilled') throw new Error(String(updated.reason))
+  expect(updated.value.status).toBe('failed')
+  expect(updated.value.error).toContain('Import them again in dependency order')
+  expect(JSON.parse(updated.value.error?.split('\n').at(-1) ?? '')).toEqual({ code: 'review-blocked', reason: 'stale-import', importItems: [{ dimensionCode: 'a2', artifactId: a2.value.artifact.id, pendingReview: true }] })
+  expect(keys(fixture, updated.value.id).filter(key => key.startsWith('settings/'))).toEqual([])
+  expect(head(fixture, 'a2').artifact).toEqual(a2.value.artifact)
+  // Re-importing the downstream dimension in dependency order clears the stop; the update reviews both without regenerating them.
+  const fixed = await importText(fixture, 'a2', '作者流派二')
+  if (fixed.status !== 'fulfilled') throw new Error(String(fixed.reason))
+  const reviewed = await update(fixture, 'update-after-reimport', ['a2'])
+  if (reviewed.status !== 'fulfilled') throw new Error(String(reviewed.reason))
+  expect(reviewed.value.status).toBe('completed')
+  expect(keys(fixture, reviewed.value.id).filter(key => key.startsWith('settings/0/'))).toEqual([])
+  expect(head(fixture, 'a2')).toMatchObject({ artifact: fixed.value.artifact, pendingReview: false })
 }, SLOW)
 
 it('keeps imported settings readable as a document', async () => {
@@ -171,4 +210,15 @@ it('keeps imported settings readable as a document', async () => {
   if (imported.status !== 'fulfilled') throw new Error(String(imported.reason))
   const stored = fixture.service.getArtifact(fixture.actor, { novelId: fixture.novel.id, artifactId: imported.value.artifact.id })
   expect(StageOutputSchemas.settings.parse(JSON.parse(stored.text))).toMatchObject({ dimensionCode: 'a1', facts: [{ id: 'import-a1' }] })
+  const preview = async (artifactId: ArtifactId) => {
+    const outcome = await fixture.ctx.tools.execute({ callId: ToolCallId(randomUUID()), name: 'story_preview', arguments: { novelId: fixture.novel.id, artifactId }, agent: fixture.parent, signal: new AbortController().signal })
+    if (outcome.isError) throw new Error(outcome.error.message)
+    const path = parseStoryArtifactPreview(outcome.value)?.path
+    if (path === undefined) throw new Error('Expected preview metadata')
+    return readFile(isAbsolute(path) ? path : join(fixture.root, path), 'utf8')
+  }
+  expect(await preview(imported.value.artifact.id)).toContain('Document: Author import (人工导入)')
+  const generated = await preview(imported.value.revisionOf!)
+  expect(generated).toContain('Document: Generated candidate')
+  expect(generated).not.toContain('人工导入')
 }, SLOW)

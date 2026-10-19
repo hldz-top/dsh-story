@@ -28,7 +28,7 @@ export interface SettingsCandidateView {
   /** 'import' marks author text adopted through story_settings_import without a per-dimension review. */
   readonly origin: 'stage' | 'import'
   /**
-   * Derived, never stored: an imported current head that no applied, current settings collection containing it has passed.
+   * Derived, never stored: an imported current head that no settings collection containing it has passed (latest review nonblocking) since the import. Release is sticky.
    * Until it clears, no downstream stage can use the collection, so it does not count as complete settings.
    */
   readonly pendingReview: boolean

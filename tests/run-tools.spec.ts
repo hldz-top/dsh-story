@@ -432,7 +432,8 @@ it('G2: reports an import refused by an unfinished run with a machine-readable l
   const model = new ScriptedModel((_request, index) => index === 0 ? call('story_settings_import', args) : stop())
   const h = await setup(model, { allowIncompleteSettings: true }, { allowSettingsImport: true })
   await h.runs.begin(h.actor, h.input)
-  args = { novelId: h.novel.id, requestId: 'import-a1', dimensionCode: 'a1', expectedAppliedId: h.novel.brief.id, output: JSON.stringify({ version: 1, dimensionCode: 'a1', facts: [], contentMarkdown: 'x' }) }
+  // A well-formed document; this novel has no adopted a1 yet, so the refusal must come from the run-active check that precedes every other check.
+  args = { novelId: h.novel.id, requestId: 'import-a1', dimensionCode: 'a1', expectedAppliedId: h.novel.brief.id, output: JSON.stringify({ version: 1, dimensionCode: 'a1', inputRefs: [], facts: [{ id: 'genre', statement: 'A harbor mystery.' }], contentMarkdown: '# Genre\n\nHarbor mystery.' }) }
   beginConversation(h.agent)
   await h.agent.whenIdle()
   const result = recordedResults(model)[0]

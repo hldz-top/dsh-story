@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { parseRequestId, type Actor, type ArtifactId } from '../src/contracts.ts'
+import { parseRequestId, type Actor } from '../src/contracts.ts'
 import type { NovelRecord } from '../src/records.ts'
 import { useStorage } from './support/storage.ts'
 
@@ -140,5 +140,22 @@ it('C3: a stage record cannot be passed off as an import', async () => {
   await writeFile(path, JSON.stringify(document))
   await h.restart()
   expect(() => h.service.getSettings(actor, novel.id)).toThrowError(expect.objectContaining({ code: 'corrupt-artifact' }))
-  void (null as ArtifactId | null)
+})
+
+it('C4: an unreviewed stage revision relabeled as an applied import is rejected by the import provenance prefix alone', async () => {
+  const { h, actor, novel, plan, applied } = await adopted('json')
+  const inputRefs = h.service.settingsInputs(actor, novel.id, 'a1', plan.planId, applied.artifact.id).map(ref => ({ artifactId: ref.id, sha256: ref.sha256 }))
+  const output = { version: 1, dimensionCode: 'a1', inputRefs, facts: [{ id: 'genre-revised', statement: 'The story is a quiet mystery.' }], contentMarkdown: '# Genre\nQuiet mystery.' }
+  const revision = await h.service.saveSettingsCandidate(actor, { novelId: novel.id, requestId: parseRequestId('revision'), dimensionCode: 'a1', researchPlanId: plan.planId, revisionOf: applied.artifact.id, output, childSessionId: brandString<SessionId>('child') })
+  const { path, document } = await storedDocument(h)
+  const record = document.tables.novels[novel.id]!
+  const history = record.settingsHistory as (NovelRecord['settingsHistory'][number] & { origin?: string })[]
+  const forged = history.find(item => item.artifact.id === revision.artifact.id)!
+  // Every structural rule for imports holds after this edit (revisionOf set, applied, no reviews, current head); only the hash differs.
+  forged.origin = 'import'
+  forged.applied = true
+  record.settingsHeads = [{ dimensionCode: 'a1', artifactId: revision.artifact.id }]
+  await writeFile(path, JSON.stringify(document))
+  await h.restart()
+  expect(() => h.service.getSettings(actor, novel.id)).toThrowError(expect.objectContaining({ code: 'corrupt-artifact' }))
 })

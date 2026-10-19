@@ -167,6 +167,21 @@ export class WritingRunner {
     return this.service.getSettings(inv.actor, inv.run.novelId).applied.filter(item => item.origin === 'import' && selected.has(item.dimensionCode)).map(importItem)
   }
 
+  /**
+   * Round 0 regenerates every selected dimension that is stale or missing, so an import that is stale, or sits downstream of a
+   * dimension that would be regenerated, would be replaced by model text before any review. Stop before the first generation.
+   */
+  private stopOnStaleImport(inv: Invocation): void {
+    const plan = planSettings(inv.run.settingsRoots)
+    const applied = new Map(this.service.getSettings(inv.actor, inv.run.novelId).applied.map(item => [item.dimensionCode, item]))
+    const regenerated = (code: string): boolean => { const item = applied.get(code); return item === undefined || item.stale }
+    const items = plan.selectedCodes.flatMap(code => {
+      const item = applied.get(code)
+      return item?.origin === 'import' && planSettings([code]).selectedCodes.some(regenerated) ? [importItem(item)] : []
+    })
+    if (items.length > 0) throw new ImportReviewBlockedError(items, 'stale-import')
+  }
+
   private stopOnBlockedImport(inv: Invocation): void {
     const items = this.importsBlockingRegeneration(inv)
     if (items.length > 0) throw new ImportReviewBlockedError(items)
@@ -283,6 +298,7 @@ export class WritingRunner {
       await this.deliver(inv, head.artifact)
       return
     }
+    this.stopOnStaleImport(inv)
     let feedback: ArtifactRef[] = []
     for (let round = 0; round <= inv.run.executionLimits.maxRepairAttempts; round++) {
       const previousReview = this.runs.get(inv.actor, inv.run.id).attempts.findLast(attempt => attempt.key.startsWith(`settings/collection/${round}/review`) && attempt.status === 'succeeded')
