@@ -9,8 +9,10 @@
  * - snapping: the closest equal-length source window differs by at most max(1, 5% of the quote) edits and is unique,
  *   so the quote is replaced by those exact source characters.
  * Every repair is reported to the registered listener. Anything else stays a repairable rejection whose message names
- * the other admitted inputs holding the text, or the closest source excerpt for the model to copy.
+ * the other admitted inputs holding the text, or the closest source excerpt for the model to copy. A caller may instead
+ * drop such a citation when its item keeps other admitted evidence; that drop is reported as a `dropped` repair.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 /** Text cited by a model output. */
 export interface QuoteCitation { readonly artifactId: string; readonly quote: string }
@@ -19,11 +21,16 @@ export interface QuoteSource { readonly artifactId: string; readonly text: strin
 
 /** One deterministic host repair applied to a model citation. */
 export interface QuoteRepair {
-  readonly kind: 'reattributed' | 'segmented' | 'snapped'
+  readonly kind: 'reattributed' | 'segmented' | 'snapped' | 'dropped'
   readonly declared: QuoteCitation
+  /** Citations admitted in place of the declared one; empty for a drop. */
   readonly admitted: readonly QuoteCitation[]
-  /** Total edit distance snapped across the admitted excerpts; zero for pure re-attribution. */
+  /** Total edit distance snapped across the admitted excerpts; zero for pure re-attribution or a drop. */
   readonly distance: number
+  /** Output path of the evidence item, for example `checks[2]`, when the caller knows it. */
+  readonly location?: string
+  /** For a drop: the host rejection the citation could not satisfy. */
+  readonly reason?: string
 }
 
 /** Result of admitting one citation. */
@@ -292,8 +299,24 @@ export function onQuoteRepair(listener: QuoteRepairListener): () => void {
   return () => { listeners.delete(listener) }
 }
 
+const scopes = new AsyncLocalStorage<QuoteRepair[]>()
+
+/**
+ * Run an admission and collect the repairs it reports, so a caller can persist them with the stage that produced them.
+ * Scoped by async context, so concurrent admissions never see each other's repairs.
+ * @param run - The admission to observe. @returns Its result, or its error, together with the repairs reported meanwhile.
+ */
+export async function collectQuoteRepairs<T>(run: () => Promise<T> | T): Promise<{ readonly result: PromiseSettledResult<T>; readonly repairs: readonly QuoteRepair[] }> {
+  const repairs: QuoteRepair[] = []
+  const result = await scopes.run(repairs, async () => {
+    try { return { status: 'fulfilled', value: await run() } as const } catch (reason) { return { status: 'rejected', reason } as const }
+  })
+  return { result, repairs }
+}
+
 /** @param repair - A repair just applied during admission. */
 export function reportQuoteRepair(repair: QuoteRepair): void {
+  scopes.getStore()?.push(repair)
   for (const listener of listeners) {
     try { listener(repair) } catch { /* observers never change admission */ }
   }

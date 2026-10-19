@@ -14,6 +14,12 @@ const a4 = fixture.evidenceSources[0]!
 const MISQUOTE = '进一步确认受众维持现实向悬疑推理读者（依赖 a3）'
 const SOURCE_EXCERPT = '受众维持现实向悬疑推理读者（依赖 a3）'
 
+/** Keep only the citation with this quote in its item, so the item has no other evidence to fall back on. */
+function onlyMisquote(review: ReviewOutput, quote: string): ReviewOutput {
+  const keep = <T extends { evidence: ReviewOutput['checks'][number]['evidence'] }>(item: T): T => item.evidence.some(e => e.quote === quote) ? { ...item, evidence: item.evidence.filter(e => e.quote === quote) as T['evidence'] } : item
+  return { ...review, checks: review.checks.map(keep) as ReviewOutput['checks'], issues: review.issues.map(keep) }
+}
+
 function replaceQuote(review: ReviewOutput, from: string, to: string): ReviewOutput {
   const swap = <T extends { evidence: ReviewOutput['checks'][number]['evidence'] }>(item: T): T => ({ ...item, evidence: item.evidence.map(e => e.quote === from ? { ...e, quote: to } : e) })
   return { ...review, checks: review.checks.map(swap), issues: review.issues.map(swap) }
@@ -26,11 +32,14 @@ describe('evidence quotes from run_2a372815 settings a4 review', () => {
     expect(evidenceQuoteOccurs(MISQUOTE, a4.text)).toBe(false)
   })
 
-  it('still rejects the stored review and names the offending citation so a repair can fix it', () => {
-    let error: unknown
-    try { parseReviewOutput(fixture.review, expected) } catch (cause) { error = cause }
-    expect(error).toBeInstanceOf(StageOutputError)
-    const message = (error as Error).message
+  it('drops the misquote, which shares its item with valid quotes, and reports the drop instead of rejecting the review', () => {
+    const { value, repairs } = collectRepairs(() => parseReviewOutput(fixture.review, expected))
+    expect(value.checks.flatMap(check => check.evidence).map(e => e.quote)).not.toContain(MISQUOTE)
+    expect(repairs).toContainEqual(expect.objectContaining({ kind: 'dropped', declared: expect.objectContaining({ quote: MISQUOTE }), admitted: [], reason: expect.stringContaining('character for character') }))
+  })
+
+  it('still rejects the misquote when it is the only evidence of its item, and names the offending citation so a repair can fix it', () => {
+    const message = rejection(() => parseReviewOutput(onlyMisquote(fixture.review, MISQUOTE), expected))
     expect(message).toMatch(/^Evidence quote does not occur in its declared source/)
     expect(message).toContain(a4.artifactId)
     expect(message).toContain(MISQUOTE)
@@ -98,12 +107,12 @@ describe('host repair of near-exact quotes', () => {
 
   it('still rejects a quote that differs by more than the bound, and offers the closest source text to copy', () => {
     const reworded = '受众保持现实系悬疑推理读者群（依赖 a3）'
-    const message = rejection(() => parseReviewOutput(replaceQuote(fixture.review, MISQUOTE, reworded), expected))
+    const message = rejection(() => parseReviewOutput(onlyMisquote(replaceQuote(fixture.review, MISQUOTE, reworded), reworded), expected))
     expect(message).toMatch(/^Evidence quote does not occur in its declared source/)
     expect(message).toContain(`Closest source text, in ${a4.artifactId}`)
     expect(message).toContain('悬疑推理读者')
     // The original prefixed misquote (5 invented characters) is beyond the bound too.
-    expect(rejection(() => parseReviewOutput(fixture.review, expected))).toContain('Closest source text')
+    expect(rejection(() => parseReviewOutput(onlyMisquote(fixture.review, MISQUOTE), expected))).toContain('Closest source text')
   })
 
   it('rejects a near match that is ambiguous between two source locations', () => {
@@ -156,7 +165,7 @@ describe('mis-attributed source from run_78b4448f chapter 1 outline review', () 
     const { value, repairs } = collectRepairs(() => parseReviewOutput(review, checks))
     const fixed = value.checks.flatMap(check => check.evidence).filter(e => e.quote === QUOTE)
     expect(fixed).toEqual([{ artifactId: settings.artifactId, quote: QUOTE }])
-    expect(repairs).toContainEqual({ kind: 'reattributed', distance: 0, declared: { artifactId: outline.artifactId, quote: QUOTE }, admitted: [{ artifactId: settings.artifactId, quote: QUOTE }] })
+    expect(repairs).toContainEqual(expect.objectContaining({ kind: 'reattributed', distance: 0, declared: { artifactId: outline.artifactId, quote: QUOTE }, admitted: [{ artifactId: settings.artifactId, quote: QUOTE }], location: expect.stringMatching(/^checks\[\d+\]$/) }))
   })
 
   it('lists every admitted input holding the text when the correction would be ambiguous', () => {

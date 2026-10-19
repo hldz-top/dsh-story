@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { artifactIdSchema, type ArtifactId } from './contracts.ts'
 import type { SettingsDimensionKind } from './settings-catalog.ts'
 import { echo, parseModelOutput, StageValidationRejection } from './stage-rejection.ts'
-import { reportQuoteRepair, resolveEvidenceQuote } from './evidence-quote.ts'
+import { reportQuoteRepair, resolveEvidenceQuote, type QuoteRepair } from './evidence-quote.ts'
 
 /** A catalog classification dimension records a label and its grounds, not world-building detail. The single source for this set; stage-prompts.ts imports it rather than declaring its own copy. */
 export const ENUM_SETTINGS_KINDS: ReadonlySet<SettingsDimensionKind> = new Set(['enum_single', 'enum_multi'])
@@ -131,24 +131,77 @@ function quoteEcho(quote: string): string {
   return JSON.stringify(chars.length <= QUOTE_ECHO_CHARS ? quote : `${chars.slice(0, QUOTE_ECHO_CHARS).join('')}…`)
 }
 
-/** @returns The admitted citations: exact ones unchanged, deterministic host repairs applied (see evidence-quote.ts); otherwise a repairable rejection with a copy hint. */
-function checkEvidence(citations: readonly EvidenceCitation[], sources: readonly EvidenceSource[], admitted: readonly ArtifactId[]): EvidenceCitation[] {
+/** One evidence item (a check, issue, timeline event or obligation) none of whose citations could be admitted. */
+export interface UnresolvedEvidence {
+  /** Output path of the item, for example `checks[2]` or `issues[0]`. */
+  readonly location: string
+  /** The item's citations exactly as the model wrote them. */
+  readonly citations: readonly EvidenceCitation[]
+  /** The host rejection message for each citation, in order. */
+  readonly reasons: readonly string[]
+}
+
+/**
+ * A review or continuity value whose only defect is evidence: every other admission rule passed, and each listed item has
+ * no admissible citation left. The writing runner can repair exactly these items without regenerating the whole value.
+ */
+export class EvidenceRejection extends StageValidationRejection {
+  /** @param unresolved - Every item without admissible evidence, in output order. */
+  constructor(readonly unresolved: readonly [UnresolvedEvidence, ...UnresolvedEvidence[]]) {
+    const [first] = unresolved
+    const more = unresolved.length > 1 ? ` ${unresolved.length - 1} more evidence item(s) also have no admissible quote: ${unresolved.slice(1).map(item => item.location).join(', ')}.` : ''
+    super(`${first.reasons[0]!} (evidence item ${first.location})${more}`)
+    this.name = 'EvidenceRejection'
+  }
+}
+
+function rejectionReason(citation: EvidenceCitation, admitted: readonly ArtifactId[], hint: string): string {
+  if (!admitted.includes(citation.artifactId as ArtifactId)) return `Evidence names an artifact outside the stage inputs: ${echo(citation.artifactId)}; cite only ${list(admitted)}.${hint}`
+  return `Evidence quote does not occur in its declared source ${citation.artifactId}: ${quoteEcho(citation.quote)}. `
+    + `Copy each quote character for character as one contiguous excerpt of that artifact; do not add lead-in words, paraphrase, or join separate passages.${hint}`
+}
+
+/**
+ * Admit one item's citations: exact ones unchanged, deterministic host repairs applied (see evidence-quote.ts). A citation
+ * that cannot be admitted is dropped, with a reported `dropped` repair, when the item keeps at least one admitted
+ * citation; otherwise the whole item is returned as unresolved and nothing is reported as dropped.
+ */
+function checkEvidence(location: string, citations: readonly EvidenceCitation[], sources: readonly EvidenceSource[], admitted: readonly ArtifactId[]): { accepted: EvidenceCitation[]; unresolved?: UnresolvedEvidence } {
   const accepted: EvidenceCitation[] = []
+  const rejected: Array<{ citation: EvidenceCitation; reason: string }> = []
+  const repairs: QuoteRepair[] = []
   for (const citation of citations) {
     const resolution = resolveEvidenceQuote(citation, sources, admitted)
-    if (resolution.status === 'rejected') {
-      if (!admitted.includes(citation.artifactId)) throw new StageValidationRejection(`Evidence names an artifact outside the stage inputs: ${echo(citation.artifactId)}; cite only ${list(admitted)}.${resolution.hint}`)
-      throw new StageValidationRejection(`Evidence quote does not occur in its declared source ${citation.artifactId}: ${quoteEcho(citation.quote)}. `
-        + `Copy each quote character for character as one contiguous excerpt of that artifact; do not add lead-in words, paraphrase, or join separate passages.${resolution.hint}`)
+    const resolved = resolution.status === 'admitted' ? resolution.citations.map(item => ({ artifactId: admitted.find(id => id === item.artifactId), quote: item.quote })) : []
+    if (resolution.status === 'rejected' || resolved.some(item => item.artifactId === undefined)) {
+      rejected.push({ citation, reason: rejectionReason(citation, admitted, resolution.status === 'rejected' ? resolution.hint : '') })
+      continue
     }
-    if (resolution.repair !== undefined) reportQuoteRepair(resolution.repair)
-    for (const item of resolution.citations) {
-      const artifactId = admitted.find(id => id === item.artifactId)
-      if (artifactId === undefined) throw new StageValidationRejection(`Evidence names an artifact outside the stage inputs: ${echo(item.artifactId)}; cite only ${list(admitted)}`)
-      accepted.push({ artifactId, quote: item.quote })
-    }
+    if (resolution.repair !== undefined) repairs.push({ ...resolution.repair, location })
+    for (const item of resolved) accepted.push({ artifactId: item.artifactId!, quote: item.quote })
   }
-  return accepted
+  if (rejected.length > 0 && accepted.length === 0) {
+    return { accepted, unresolved: { location, citations: rejected.map(item => item.citation), reasons: rejected.map(item => item.reason) } }
+  }
+  for (const repair of repairs) reportQuoteRepair(repair)
+  for (const { citation, reason } of rejected) reportQuoteRepair({ kind: 'dropped', declared: citation, admitted: [], distance: 0, location, reason })
+  return { accepted }
+}
+
+/** Admits evidence item by item, then rejects once with every item that has no admissible quote. */
+class EvidenceAudit {
+  private readonly unresolved: UnresolvedEvidence[] = []
+  constructor(private readonly sources: readonly EvidenceSource[], private readonly admitted: readonly ArtifactId[]) {}
+  /** @returns The admitted citations; an unresolved item yields its original citations so later rules still see a value. */
+  check(location: string, citations: readonly EvidenceCitation[]): EvidenceCitation[] {
+    const result = checkEvidence(location, citations, this.sources, this.admitted)
+    if (result.unresolved === undefined) return result.accepted
+    this.unresolved.push(result.unresolved)
+    return [...citations]
+  }
+  finish(): void {
+    if (this.unresolved.length > 0) throw new EvidenceRejection(this.unresolved as [UnresolvedEvidence, ...UnresolvedEvidence[]])
+  }
 }
 
 /** @param value - Model JSON value. @param expected - Requested dimension and exact upstream versions. @returns A detached validated settings candidate; structural only — a persisted or replayed candidate must always still parse. */
@@ -191,13 +244,16 @@ export function parseReviewOutput(value: unknown, expected: {
   unique(expected.evidenceSources.map(source => source.artifactId), 'evidence source')
   const missingChecks = expected.requiredChecks.filter(category => !output.checks.some(check => check.category === category))
   if (missingChecks.length > 0) throw new StageValidationRejection(`Review is missing a required check: ${missingChecks.join(', ')} (required: ${expected.requiredChecks.join(', ')})`)
-  const admitted = [output.reviewed.artifactId, ...output.inputRefs.map(ref => ref.artifactId)]
-  const checks = output.checks.map(check => ({ ...check, evidence: nonempty(checkEvidence(check.evidence, expected.evidenceSources, admitted)) }))
-  const issues = output.issues.map(issue => {
+  for (const issue of output.issues) {
     if (issue.category === 'style' && issue.severity !== 'advisory') throw new StageValidationRejection(`Style suggestions must remain advisory: issue ${echo(issue.id)} is ${issue.severity}`)
     if (issue.category !== 'style' && issue.severity !== 'blocking') throw new StageValidationRejection(`${issue.category} issues must be blocking: issue ${echo(issue.id)} is ${issue.severity}`)
-    return { ...issue, evidence: nonempty(checkEvidence(issue.evidence, expected.evidenceSources, admitted)) }
-  })
+  }
+  // Every non-evidence rule has passed: an evidence rejection below is the value's only defect.
+  const admitted = [output.reviewed.artifactId, ...output.inputRefs.map(ref => ref.artifactId)]
+  const audit = new EvidenceAudit(expected.evidenceSources, admitted)
+  const checks = output.checks.map((check, index) => ({ ...check, evidence: nonempty(audit.check(`checks[${index}]`, check.evidence)) }))
+  const issues = output.issues.map((issue, index) => ({ ...issue, evidence: nonempty(audit.check(`issues[${index}]`, issue.evidence)) }))
+  audit.finish()
   return { ...output, checks: nonempty(checks), issues }
 }
 
@@ -265,13 +321,15 @@ export function parseContinuityOutput(value: unknown, expected: {
   if (!admitted.includes(expected.reviewedBodyId) || !expected.evidenceSources.some(source => source.artifactId === expected.reviewedBodyId)) {
     throw new StageValidationRejection(`Reviewed body must be a declared input with source text: include ${expected.reviewedBodyId} in inputRefs`)
   }
-  const timeline = output.timeline.map(event => ({ ...event, evidence: nonempty(checkEvidence(event.evidence, expected.evidenceSources, admitted)) }))
-  const obligations = output.obligations.map(obligation => {
-    const evidence = checkEvidence(obligation.evidence, expected.evidenceSources, admitted)
-    if (obligation.status === 'fulfilled' && !evidence.some(citation => citation.artifactId === expected.reviewedBodyId)) {
+  const audit = new EvidenceAudit(expected.evidenceSources, admitted)
+  const timeline = output.timeline.map((event, index) => ({ ...event, evidence: nonempty(audit.check(`timeline[${index}]`, event.evidence)) }))
+  const checked = output.obligations.map((obligation, index) => ({ ...obligation, evidence: audit.check(`obligations[${index}]`, obligation.evidence) }))
+  audit.finish()
+  const obligations = checked.map(obligation => {
+    if (obligation.status === 'fulfilled' && !obligation.evidence.some(citation => citation.artifactId === expected.reviewedBodyId)) {
       throw new StageValidationRejection(`A fulfilled obligation requires evidence from the actual reviewed body: obligation ${echo(obligation.id)} cites no quote from ${expected.reviewedBodyId}`)
     }
-    return { ...obligation, evidence }
+    return obligation
   })
   return { ...output, timeline, obligations }
 }

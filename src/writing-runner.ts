@@ -14,8 +14,10 @@ import { buildResearchPlanningPrompt, researchNecessity, RESEARCH_PLANNING_OUTPU
 import { StageValidationRejection } from './stage-rejection.ts'
 import { planSettings } from './settings-plan.ts'
 import { settingsCatalog, type SettingsDimensionKind } from './settings-catalog.ts'
-import { StageOutputSchemas, type BodyOutput, type ReviewCategory, type StageInputRef } from './stage-output.ts'
+import { EvidenceRejection, StageOutputSchemas, type BodyOutput, type ReviewCategory, type StageInputRef } from './stage-output.ts'
 import { countStoryWords } from './body-text.ts'
+import { buildCitationRepairPrompt, CITATION_REPAIR_OUTPUT_SCHEMA, mergeCitationRepair } from './citation-repair.ts'
+import { collectQuoteRepairs } from './evidence-quote.ts'
 import type { GeneratedManuscriptTarget, ManuscriptCandidateView, ManuscriptTarget } from './manuscript.ts'
 import type { SettingsCandidateView } from './settings.ts'
 import { writingActor } from './tools.ts'
@@ -349,24 +351,52 @@ export class WritingRunner {
       requestId: requestId(inv.run, reviewKey), childSessionId: result.childSessionId, output: result.structured }))
   }
 
+  /**
+   * Review admission with host repair. A rejection whose only defect is evidence ({@link EvidenceRejection}) is repaired by
+   * a citation-only stage that rewrites just the unresolved items' evidence and keeps every accepted item untouched;
+   * any other rejection asks for a whole new review. Both share maxRepairAttempts. Each admitted or rejected attempt
+   * durably records the host evidence repairs and drops reported during its admission.
+   */
   private async reviewLoop<T extends SettingsCandidateView | ManuscriptCandidateView>(inv: Invocation, key: string, candidate: T, requiredChecks: readonly ReviewCategory[], save: (result: CapturedStage, reviewKey: string) => Promise<T>): Promise<T> {
     if (candidate.review !== null) return candidate
     if ('length' in candidate && candidate.length?.blocking) return candidate
     let validationError: string | null = null
+    let pending: { prior: unknown; rejection: EvidenceRejection; repairError: string | null } | null = null
     for (let repair = 0; repair <= inv.run.executionLimits.maxRepairAttempts; repair++) {
-      const reviewKey = `${key}/review/${repair}`
-      const result = await this.reviewStage(inv, reviewKey, candidate, requiredChecks, validationError)
-      let reviewed: T
-      try { reviewed = await save(result, reviewKey) }
-      catch (cause) {
+      const reviewKey = pending === null ? `${key}/review/${repair}` : `${key}/review/${repair}/citations`
+      let result: CapturedStage
+      if (pending === null) result = await this.reviewStage(inv, reviewKey, candidate, requiredChecks, validationError)
+      else {
+        const repaired = await this.citationRepairStage(inv, reviewKey, candidate, pending.prior, pending.rejection, pending.repairError)
+        try { result = { ...repaired, structured: mergeCitationRepair(pending.prior, pending.rejection.unresolved, repaired.structured) } }
+        catch (cause) {
+          if (!isOutputError(cause)) throw cause
+          pending = { prior: pending.prior, rejection: pending.rejection, repairError: cause.message }
+          validationError = cause.message
+          continue
+        }
+      }
+      const { result: saved, repairs } = await collectQuoteRepairs(() => save(result, reviewKey))
+      await this.runs.recordEvidenceEvents(inv.actor, inv.run.id, result.attempt.id, repairs)
+      if (saved.status === 'rejected') {
+        const cause: unknown = saved.reason
         if (!isOutputError(cause)) throw cause
         validationError = cause.message
+        pending = cause instanceof EvidenceRejection ? { prior: result.structured, rejection: cause, repairError: null } : null
         continue
       }
+      const reviewed = saved.value
       if (reviewed.review === null) throw new WritingError('corrupt-artifact', 'Saved stage review has no artifact')
       return reviewed
     }
     throw new WritingError('review-blocked', `Review output repair limit was exhausted: ${validationError}`)
+  }
+
+  private async citationRepairStage(inv: Invocation, key: string, candidate: SettingsCandidateView | ManuscriptCandidateView, prior: unknown, rejection: EvidenceRejection, repairError: string | null): Promise<CapturedStage> {
+    const refs = uniqueRefs([...candidate.inputRefs.map(ref => this.service.getArtifact(inv.actor, { novelId: inv.run.novelId, artifactId: ref.artifactId })), candidate.artifact])
+    const prompt = buildCitationRepairPrompt({ novelId: inv.run.novelId, prior, unresolved: rejection.unresolved,
+      inputs: refs.map(ref => ({ artifactId: ref.id, sha256: ref.sha256, kind: ref.kind, chars: ref.chars })) })
+    return this.capture(inv, key, repairError === null ? prompt : `${prompt}\n\nThe previous citation repair was rejected: ${repairError}`, refs, CITATION_REPAIR_OUTPUT_SCHEMA, ['story_read_artifact'])
   }
 
   private async reviewStage(inv: Invocation, key: string, candidate: SettingsCandidateView | ManuscriptCandidateView, requiredChecks: readonly ReviewCategory[], validationError: string | null): Promise<CapturedStage> {

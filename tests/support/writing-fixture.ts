@@ -32,6 +32,7 @@ const promptData = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('research'), novelId: novelIdSchema, briefArtifactId: artifactIdSchema, purpose: z.string(), inputs: z.array(artifactRef), requestId: requestIdSchema, necessity: researchNecessitySchema.optional() }),
   z.object({ kind: z.literal('research-planning'), novelId: novelIdSchema, briefArtifactId: artifactIdSchema, purpose: z.string(), inputs: z.array(artifactRef), requestId: requestIdSchema, outputTarget: z.record(z.string(), z.unknown()) }),
   z.object({ kind: z.enum(['settings', 'review', 'book-outline', 'chapter-outline', 'body', 'continuity']), novelId: novelIdSchema, inputs: z.array(promptInput), task: z.string(), requirements: z.array(z.string()) }),
+  z.object({ kind: z.literal('review-citation-repair'), novelId: novelIdSchema, inputs: z.array(promptInput), items: z.array(z.object({ location: z.string(), claim: z.record(z.string(), z.unknown()), rejected: z.array(z.object({ artifactId: z.string(), quote: z.string(), hostReason: z.string() })) })) }),
 ])
 const taskSchema = z.object({
   revisionInstructions: z.string().optional(), validationError: z.string().nullable().optional(),
@@ -181,7 +182,7 @@ function quoteCandidate(candidate: WritingFixtureSource): string {
 
 function generate(state: ChildState): object {
   const task = state.task
-  if (task === null || (state.data.kind === 'research' || state.data.kind === 'research-planning')) throw new Error('Research output uses its actual native plan')
+  if (task === null || (state.data.kind === 'research' || state.data.kind === 'research-planning' || state.data.kind === 'review-citation-repair')) throw new Error('Research output uses its actual native plan')
   for (const ref of task.inputRefs) if (source(state, ref.artifactId).sha256 !== ref.sha256) throw new Error('Fixture stage task references unread or changed input')
   const base = { version: 1, inputRefs: task.inputRefs }
   const revision = task.revisionInstructions === undefined ? '' : `修订要求：${task.revisionInstructions}`
@@ -241,7 +242,7 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
     let state = stages.get(sessionId)
     if (state === undefined) {
       const data = readTask(request)
-      state = { sessionId, data, kind: data.kind, task: data.kind === 'research' || data.kind === 'research-planning' ? null : taskSchema.parse(JSON.parse(data.task)), sources: new Map(), requestCount: 0, readPages: 0, inputIndex: 0, offset: 0, text: '', researchPhase: 0, planId: null, pending: null, nativeRejections: 0 }
+      state = { sessionId, data, kind: data.kind, task: data.kind === 'research' || data.kind === 'research-planning' || data.kind === 'review-citation-repair' ? null : taskSchema.parse(JSON.parse(data.task)), sources: new Map(), requestCount: 0, readPages: 0, inputIndex: 0, offset: 0, text: '', researchPhase: 0, planId: null, pending: null, nativeRejections: 0 }
       stages.set(sessionId, state)
     }
     state.requestCount += 1
@@ -266,6 +267,12 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
       if (state.researchPhase === 2) return emit('story_complete_research', { novelId: data.novelId, planId: state.planId, requestId: data.requestId, findings: [{ questionId: 'fixture-fiction', callIds: [], selections: [], conclusion: `Preserve the fictional premise: ${source(state, data.briefArtifactId).text}`, adequate: true }] })
       if (state.researchPhase === 3) return emit('story_get_research', { novelId: data.novelId, planId: state.planId })
       const output = { planId: state.planId }
+      return emit('structured_output', options.intervene === undefined || state.nativeRejections > 0 ? output : options.intervene(state, output))
+    }
+    if (state.data.kind === 'review-citation-repair') {
+      // Like a model copying from the reviewed candidate (the last listed input): one exact excerpt per listed item.
+      const reviewed = required(state.data.inputs.at(-1), 'reviewed candidate input')
+      const output = { version: 1, items: state.data.items.map(item => ({ location: item.location, evidence: [{ artifactId: reviewed.artifactId, quote: quoteCandidate(source(state, reviewed.artifactId)) }] })) }
       return emit('structured_output', options.intervene === undefined || state.nativeRejections > 0 ? output : options.intervene(state, output))
     }
     const injected = options.injectFinish?.(state)
