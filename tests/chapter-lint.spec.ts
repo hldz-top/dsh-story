@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { assembleChapter, chapterFromMarkdown, JsonSyntaxError, LintInputError, lintChapter, panelLimits, parseJson, parseLintBody, parseLintOutline, parseTypoTable, requiredLiterals, storedArtifactText, TECH_METAPHOR_TERMS, type LintBody, type LintOutline, type TypoRule } from '../src/chapter-lint.ts'
+import { assembleChapter, chapterFromMarkdown, JsonSyntaxError, LintInputError, lintChapter, panelLimits, parseJson, parseLintBody, parseLintOutline, parseTypoTable, requiredLiterals, storedArtifactText, TECH_METAPHOR_TERMS, type LintBody, type LintOutline } from '../src/chapter-lint.ts'
 
 // Acceptance spec: /workspace/dsh-story-notes/p1-lint-expectations.md (QA Lead, 2026-10-19 18:09 Asia/Taipei).
 // Fixtures are the stored artifact texts of 第七号协议 ch1: v1 artifact_230c4d0c (sha256 c755b9a5…), v2 artifact_82f3048a
@@ -241,6 +241,7 @@ describe('chapter-lint input validation (qa-postmerge-main.md G2, T2, T3)', () =
     expect(inputError(() => parseLintBody({ scenes: [{ sceneId: 'a' }] }))).toBe('$.scenes[0].text: expected a string, got missing')
     expect(inputError(() => parseLintBody({ scenes: [{ id: 'a', text: 'x' }] }))).toBe('$.scenes[0].sceneId: expected a string, got missing')
     expect(parseLintBody(v1)).toBe(v1)
+    expect(parseLintBody(v2)).toBe(v2)
   })
 
   it('names the exact outline field', () => {
@@ -266,8 +267,6 @@ describe('chapter-lint input validation (qa-postmerge-main.md G2, T2, T3)', () =
     expect(inputError(() => parseTypoTable([{ right: 'x' }]))).toBe('$[0].wrong: expected a nonempty string, got missing')
     expect(inputError(() => parseTypoTable([{ wrong: '的' }]))).toBe('$[0].right: expected a string, got missing')
     expect(inputError(() => parseTypoTable([{ wrong: '的', right: 5 }]))).toBe('$[0].right: expected a string, got a number')
-    expect(() => lintChapter('的', { typos: [{ wrong: '的' } as unknown as TypoRule] })).toThrow('every typo entry needs a "right" string')
-    expect(() => lintChapter('的', { typos: [{ wrong: '的', right: 5 } as unknown as TypoRule] })).toThrow('every typo entry needs a "right" string')
   })
 
   it('tells a missing artifact from an artifact without text', () => {
@@ -335,6 +334,15 @@ describe('chapter-lint CLI error lines name the file and field (qa-postmerge-mai
     expect(result.stdout).toBe('')
     expect(result.stderr).toBe(`chapter-lint: ${expected}\n`)
     expect(result.stderr).not.toMatch(/invalid input|Cannot read|is not iterable|is not a function|\bat |node:internal/)
+  })
+
+  it('reports an unexpected lint failure as one internal-error line without the engine message', () => {
+    // Every known bad input is rejected before lintChapter; force a failure inside it to exercise the fallback.
+    const hook = `data:text/javascript,${encodeURIComponent("String.prototype.matchAll = function () { throw new TypeError('Cannot read properties of undefined (reading \\'leak\\')') }")}`
+    const result = spawnSync(process.execPath, ['--import', hook, script, md], { cwd: scratch, encoding: 'utf8', timeout: 20_000 })
+    expect(result.status).toBe(2)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('chapter-lint: internal error (TypeError); please report the command and input\n')
   })
 
   it('still reports a valid stored body with its outline', () => {

@@ -159,10 +159,7 @@ export function lintChapter(chapter: string | LintBody, options: LintOptions = {
   const points = new Points(text)
   const findings: LintFinding[] = []
   const { outline } = options
-  for (const typo of options.typos ?? []) {
-    if (typeof typo?.wrong !== 'string' || typo.wrong.length === 0) throw new Error('every typo entry needs a nonempty "wrong" string')
-    if (typeof typo.right !== 'string') throw new Error('every typo entry needs a "right" string')
-  }
+  for (const typo of options.typos ?? []) if (typeof typo?.wrong !== 'string' || typo.wrong.length === 0) throw new Error('every typo entry needs a nonempty "wrong" string')
 
   const lines: PanelLine[] = [...text.matchAll(PANEL_LINE)].map((match, index) => {
     const offset = points.offset(match.index)
@@ -368,7 +365,7 @@ function kind(value: unknown): string {
   return `a ${typeof value}`
 }
 /** @returns `path` extended by one property, bracket-quoted when it is not an identifier. */
-export function fieldPath(path: string, key: string | number): string {
+function fieldPath(path: string, key: string | number): string {
   if (typeof key === 'number') return `${path}[${key}]`
   return /^[A-Za-z_$][\w$]*$/u.test(key) ? `${path}.${key}` : `${path}[${JSON.stringify(key)}]`
 }
