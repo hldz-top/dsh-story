@@ -60,7 +60,7 @@ export const Config: z<Config> = z.object({
   maxResearchLogEvents: z.number().default(2048),
 })
 
-export const name = 'dsh-story'
+export const name = 'dsh-story-weaver'
 export const inject = ['storageDomain', 'tools', 'fs', 'subagents', 'sessions', 'sessionPersistence', 'sessionProjections']
 
 /**

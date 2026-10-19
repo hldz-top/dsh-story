@@ -14,7 +14,7 @@ async function fixture(t, entry, files = {}) {
   await mkdir(join(root, 'src/client'), { recursive: true })
   await mkdir(join(root, 'lib'))
   await writeFile(join(root, 'package.json'), JSON.stringify({
-    name: 'dsh-story', version: '0.0.0', type: 'module',
+    name: 'dsh-story-weaver', version: '0.0.0', type: 'module',
   }))
   await writeFile(join(root, 'lib/index.js'), 'export const hostSentinel = true\n')
   await writeFile(join(root, 'src/client/index.ts'), entry)
@@ -43,7 +43,7 @@ export function apply(ctx: Context) { ctx.provide('story', View({ label: version
   runInNewContext(code, { window }, { timeout: 1000 })
   assert.equal(registrations.length, 1)
   const registration = registrations[0]
-  assert.equal(registration.id, 'dsh-story')
+  assert.equal(registration.id, 'dsh-story-weaver')
   assert.equal(typeof registration.factory, 'function')
   const requested = []
   const hostReact = { version: 'host-react-identity' }

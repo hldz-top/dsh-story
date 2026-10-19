@@ -10,12 +10,34 @@ DSH Story is a standalone TypeScript plugin for researched settings, book and ch
 
 ## Table of Contents
 
+- [Installation](#installation)
 - [Writing workflow](#writing-workflow)
 - [Reading and previews](#reading-and-previews)
 - [Local development](#local-development)
 - [Host integration](#host-integration)
 - [Limits and distribution](#limits-and-distribution)
 - [Further reading](#further-reading)
+
+## Installation
+
+The npm package is `dsh-story-weaver`. Install it into a DSH profile with the DSH CLI (requires Node ≥22.19, DSH 0.2.x and pnpm on `PATH`):
+
+```sh
+dsh plugin --profile web add dsh-story-weaver
+```
+
+Use `dsh-story-weaver@next` for release candidates. In the DSH web UI you can instead open Plugins → Add plugin and enter `dsh-story-weaver`.
+
+**pnpm version.** Installation is verified with pnpm 11.7.0. With Node 22.19's bundled corepack, the pnpm 12.x that corepack fetches by default (12.14.0 at the time of testing) fails to start (`Cannot find module …/corepack/v1/pnpm/12.14.0/bin/pnpm.cjs`), and `dsh plugin add` fails. Pin the verified version, for example `corepack prepare pnpm@11.7.0 --activate` (or put a `pnpm` shim that runs `corepack pnpm@11.7.0` on `PATH`). If the default `COREPACK_HOME` is not writable, set `COREPACK_HOME` to a writable directory.
+
+**Profiles other than `web`.** The bundle does not add the `present` tool, and the `headless` profile (like other non-web profiles) does not enable it by default. Without it, `story_write` is refused with `Writing requires the native present tool in this Agent scope` and no run is created. Enable `@deepseek-ai/dsh-tool-present` in that profile before writing; reading and preview tools work without it.
+
+### Uninstalling
+
+Remove it with `dsh plugin --profile web remove dsh-story-weaver` (use the same `--profile` you installed into). This removes the package, its dependencies and the bundle from the profile. Two things intentionally or harmlessly remain:
+
+- Your novels and run history stay in `$DSH_HOME/storages/story_writing.json` and `$DSH_HOME/storages/story_runs.json`. Reinstalling picks them up again; delete these files yourself if you want the data gone.
+- Empty scope directories such as `node_modules/@deepseek-ai/` and `node_modules/@standard-schema/` may be left in the profile directory. They are safe to delete.
 
 ## Writing workflow
 
@@ -82,7 +104,7 @@ The writing service owns immutable documents and applied references; a separate 
 
 One host owns each writing facility; simultaneous writer processes sharing storage are not supported by the verified deployment. Native fixtures establish execution and persistence behavior, not literary quality or large-book performance. The required three-chapter real-model run, full browser acceptance and final human review remain pending.
 
-The manifest declares a built DSH composition bundle. No verified fixed-version private installation address is supplied yet. Distribution is designed around the existing DSH CLI and a prebuilt private release; [the installation study](docs/research/private-cli-install-research.md) separates that design from actual release and authentication evidence. Browser, OS-protocol and Desktop installer enhancements are outside scope.
+The manifest declares a built DSH composition bundle, distributed as the prebuilt npm package `dsh-story-weaver` (see [Installation](#installation)). The earlier [private installation study](docs/research/private-cli-install-research.md) is kept for reference. Browser, OS-protocol and Desktop installer enhancements are outside scope.
 
 ## Further reading
 
