@@ -209,9 +209,10 @@ it('keeps the required-settings bypass out of every tool schema', async () => {
 })
 
 it.each([
-  { settingsRoots: ['a4', 'a5', 'e1', 'g1'], missing: 'g2 (主线)' },
-  { settingsRoots: ['e1'], missing: 'a3 (受众), a4 (风格基调), a5 (时空设定), g1 (金手指), g2 (主线)' },
-])('refuses story_write with incomplete required settings $settingsRoots as a settings-incomplete tool error', async ({ settingsRoots, missing }) => {
+  { settingsRoots: ['a4', 'a5', 'e1', 'g1'], missing: 'g2 (主线)', codes: ['g2'] },
+  { settingsRoots: ['e1'], missing: 'a3 (受众), a4 (风格基调), a5 (时空设定), g1 (金手指), g2 (主线)', codes: ['a3', 'a4', 'a5', 'g1', 'g2'] },
+  { settingsRoots: [], missing: 'a1 (类型 / 题材), a2 (流派 / 子类型), a3 (受众), a4 (风格基调), a5 (时空设定), e1 (主角设定), g1 (金手指), g2 (主线)', codes: ['a1', 'a2', 'a3', 'a4', 'a5', 'e1', 'g1', 'g2'] },
+])('refuses story_write with incomplete required settings $settingsRoots as a settings-incomplete tool error', async ({ settingsRoots, missing, codes }) => {
   let input: BeginRunInput
   const model = new ScriptedModel((_request, index) => {
     if (index !== 0) return stop()
@@ -224,7 +225,8 @@ it.each([
   await h.agent.whenIdle()
   const result = recordedResults(model)[0]
   expect(result).toMatchObject({ isError: true })
-  expect(result?.content).toEqual([{ type: 'text', text: `Error: Required novel settings are missing: ${missing}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.includes(',') ? 'them' : 'it'}; ["a4", "a5", "g2"] covers every required setting.` }])
+  expect(result?.content).toEqual([{ type: 'text', text: `Error: Required novel settings are missing: ${missing}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.includes(',') ? 'them' : 'it'}; ["a4", "a5", "g2"] covers every required setting.\n${JSON.stringify({ code: 'settings-incomplete', missing: codes })}` }])
+  expect(h.agent.session.snapshotEvents().findLast(event => event.type === 'tool/result')?.data).toMatchObject({ error: { name: 'SettingsIncompleteError', code: 'settings-incomplete' } })
   expect(JSON.stringify(result)).not.toContain('allowIncompleteSettings')
   expect(h.runs.list(h.actor, input.novelId)).toEqual([])
 })

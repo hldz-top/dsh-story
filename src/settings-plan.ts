@@ -106,9 +106,9 @@ export const REQUIRED_NOVEL_SETTINGS: readonly string[] = settingsCatalog.filter
 /**
  * @param roots - Requested settings roots; their dependency closure is what a run generates or reuses.
  * @param catalog - Dimensions and their requiredFor markers.
- * @returns Required novel dimensions absent from the closure, in catalog order; empty when complete.
+ * @returns Required novel dimensions absent from the closure, in catalog order; empty when complete, every one when roots is empty.
  */
 export function missingRequiredSettings(roots: readonly string[], catalog: readonly SettingsDimension[] = settingsCatalog): readonly SettingsDimension[] {
-  const selected = new Set(planSettings(roots, catalog).selectedCodes)
+  const selected = new Set(roots.length === 0 ? [] : planSettings(roots, catalog).selectedCodes)
   return catalog.filter(dimension => dimension.enabled && dimension.requiredFor.includes('novel_writing') && !selected.has(dimension.code))
 }

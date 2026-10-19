@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { nativeStageOutputSchema } from './native-stage-schema.ts'
-import { WritingError, parseArtifactId, parseRequestId, type Actor, type ArtifactRef } from './contracts.ts'
+import { SettingsIncompleteError, WritingError, parseArtifactId, parseRequestId, type Actor, type ArtifactRef } from './contracts.ts'
 import type { WritingService } from './service.ts'
 import { RunStoreError, type AttemptFailureKind, type RunStore, type BeginRunInput, type RunExecutionLimits, type RunServiceLimits, type RunId, type WritingRun, type WritingAttempt } from './run-store.ts'
 import { executeStage, StageExecutionError, type StageRequest, type StageResult } from './stage-executor.ts'
@@ -118,13 +118,11 @@ export class WritingRunner {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
     if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
-    planSettings(input.settingsRoots)
     if (!resuming && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
-      if (missing.length > 0) {
-        throw new WritingError('settings-incomplete', `Required novel settings are missing: ${missing.map(item => `${item.code} (${item.name})`).join(', ')}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.length === 1 ? 'it' : 'them'}; [\"a4\", \"a5\", \"g2\"] covers every required setting.`)
-      }
+      if (missing.length > 0) throw new SettingsIncompleteError(missing)
     }
+    planSettings(input.settingsRoots)
     if (input.mode === 'write' && !resuming) {
       const settings = this.service.getSettings(actor, input.novelId)
       const manuscript = this.service.getManuscript(actor, input.novelId)
