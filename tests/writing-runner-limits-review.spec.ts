@@ -21,7 +21,8 @@ import { useWritingFixture } from './support/writing-fixture.ts'
 
 it('rejects incompatible chapter bounds without changing the stopped run or occupying its active slot', async () => {
   const fixture = await useWritingFixture({ executionLimits: { maxChapterWords: 4500 } })
-  const run = await fixture.runs.begin(fixture.actor, { ...fixture.input, revision: null, executionLimits: fixture.runner.limits, serviceLimits: { ...fixture.service.limits, ...fixture.service.researchLimits } })
+  const { allowIncompleteSettings: _bypass, ...stored } = fixture.input
+  const run = await fixture.runs.begin(fixture.actor, { ...stored, revision: null, executionLimits: fixture.runner.limits, serviceLimits: { ...fixture.service.limits, ...fixture.service.researchLimits } })
   const stopped = await fixture.runs.finish(fixture.actor, run.id, 'stopped', 'Author stopped before native work.')
   await fixture.runner.close()
   await fixture.service.close()
@@ -103,7 +104,7 @@ it('unloads the actual plugin only after its active native run saves stopped sta
     yield* next()
   }, { global: true })
   const writing = fixture.run(exec => runner.start(exec, { novelId: novel.id, briefArtifactId: novel.brief.id, requestId: parseRequestId('dispose-fixture-run'),
-    settingsRoots: ['a1'], chapterCount: 1, fromChapter: 1, throughChapter: 1, mode: 'write' }))
+    settingsRoots: ['a1'], chapterCount: 1, fromChapter: 1, throughChapter: 1, mode: 'write', allowIncompleteSettings: true }))
   await Promise.race([entered.promise, writing.then(result => { throw new Error(`Writing ended before native dispatch barrier: ${JSON.stringify(result)}`) })])
   const run = runner.runs.list(actor, novel.id)[0]
   if (run === undefined) throw new Error('Active native writing run was not stored')

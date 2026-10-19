@@ -21,6 +21,7 @@ The command schemas require every field below; there is no implicit chapter rang
 | `settingsRoots` | Nonempty unique enabled dimension codes. Dependency closure is resolved by the planner; external editor dimensions reject. |
 | `chapterCount` | Positive total planned book chapters. |
 | `fromChapter`, `throughChapter` | Explicit inclusive scope satisfying `1 <= fromChapter <= throughChapter <= chapterCount`. |
+| `allowIncompleteSettings` | Optional, default `false`. Only `true` skips the [required settings gate](../../README.md#required-settings); reserved for smoke and unit tests. Not persisted. |
 
 `story_write` runs the requested writing range through research, settings, outline, chapter outline, prose, review, bounded repair and publication. `story_update` explicitly authorizes updating that range after upstream changes while retaining previous versions. Both commands wait for terminal progress or failure and capture configured execution limits at admission. The exact implemented orchestration is owned by [the runner](../../src/writing-runner.ts); these tools do not apply generated text independently.
 
@@ -53,7 +54,7 @@ Artifact references contain `id`, `kind`, `revision`, full UTF-8 `sha256`, Unico
 
 `story_settings_catalog` accepts optional `settingsRoots`. With no roots it returns all enabled, non-external catalog choices and `plan: null`; it selects nothing. With explicit roots it returns the same choices and `{selectedCodes, layers}` for the dependency closure. Empty, duplicate, unknown, disabled or external roots reject.
 
-Each choice contains `code`, the original Story `name`, `dependsOn`, `enabled`, original `kind`, historical `requiredFor`, transitive `pullsIn`, and `closureSize`. Historical wizard requirements are descriptive metadata and never add roots implicitly. `selectedCodes` and each topological layer are code-sorted; dimensions in one layer have no dependencies on one another. [The settings planner](../../src/settings-plan.ts) owns closure and ordering.
+Each choice contains `code`, the original Story `name`, `dependsOn`, `enabled`, original `kind`, historical `requiredFor`, transitive `pullsIn`, and `closureSize`. Wizard requirements never add roots implicitly; the `novel_writing` markers define the codes the [required settings gate](../../README.md#required-settings) checks before `story_write`, `story_update` and `story_revise` start work. `selectedCodes` and each topological layer are code-sorted; dimensions in one layer have no dependencies on one another. [The settings planner](../../src/settings-plan.ts) owns closure and ordering.
 
 ## Exact raw-output pages
 

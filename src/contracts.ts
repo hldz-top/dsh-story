@@ -168,7 +168,7 @@ export interface ResearchView extends ResearchRequest {
 }
 
 /** Stable service errors for tool-facing failure reporting. */
-export type WritingErrorCode = 'novel-not-found' | 'workspace-mismatch' | 'artifact-not-found' | 'request-conflict' | 'revision-conflict' | 'invalid-range' | 'artifact-too-large' | 'invalid-input' | 'corrupt-artifact' | 'closed' | 'research-not-found' | 'research-active' | 'research-budget' | 'research-incomplete' | 'session-mismatch' | 'settings-not-found' | 'review-blocked'
+export type WritingErrorCode = 'novel-not-found' | 'workspace-mismatch' | 'artifact-not-found' | 'request-conflict' | 'revision-conflict' | 'invalid-range' | 'artifact-too-large' | 'invalid-input' | 'corrupt-artifact' | 'closed' | 'research-not-found' | 'research-active' | 'research-budget' | 'research-incomplete' | 'session-mismatch' | 'settings-not-found' | 'settings-incomplete' | 'review-blocked'
 /** A rejected writing command; no success result is substituted. */
 export class WritingError extends Error {
   constructor(readonly code: WritingErrorCode, message: string, options?: ErrorOptions) { super(message, options); this.name = 'WritingError' }

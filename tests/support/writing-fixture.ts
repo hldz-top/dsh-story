@@ -313,6 +313,6 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
   const actor: Actor = { sessionId: fixture.parent.session.id, workspace: workspace.displayPath }
   const novel = await service.createNovel(actor, { requestId: parseRequestId('writing-fixture-novel'), title: '雾港航标', brief: '守灯人林澜在虚构雾港追查失踪船只。请完成三章故事，每章三千至五千字。' })
   storedText = id => service.getArtifact(actor, { novelId: novel.id, artifactId: id }).text
-  const input: StartWritingInput = { novelId: novel.id, briefArtifactId: novel.brief.id, requestId: parseRequestId('writing-fixture-run'), settingsRoots: ['a1'], chapterCount: 3, fromChapter: 1, throughChapter: 3, mode: 'write' }
+  const input: StartWritingInput = { novelId: novel.id, briefArtifactId: novel.brief.id, requestId: parseRequestId('writing-fixture-run'), settingsRoots: ['a1'], chapterCount: 3, fromChapter: 1, throughChapter: 3, mode: 'write', allowIncompleteSettings: true }
   return { ...fixture, service, runs, runner, actor, novel, input, stages: stages as ReadonlyMap<SessionId, WritingFixtureStage> }
 }

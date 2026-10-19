@@ -186,7 +186,7 @@ it.each(['write', 'update'] as const)('replays an exact stopped %s request throu
   const model = new ScriptedModel((_request, index) => {
     if (index !== 0) return stop()
     const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision: _revision, ...args } = input
-    return call(`story_${mode}`, args)
+    return call(`story_${mode}`, { ...args, allowIncompleteSettings: true })
   })
   const h = await setup(model)
   input = { ...h.input, mode }
@@ -198,12 +198,32 @@ it.each(['write', 'update'] as const)('replays an exact stopped %s request throu
   expect(h.runs.list(h.actor, run.novelId)).toEqual([expected])
 })
 
+it.each([
+  { settingsRoots: ['a4', 'a5', 'e1', 'g1'], missing: 'g2 (主线)' },
+  { settingsRoots: ['e1'], missing: 'a3 (受众), a4 (风格基调), a5 (时空设定), g1 (金手指), g2 (主线)' },
+])('refuses story_write with incomplete required settings $settingsRoots as a settings-incomplete tool error', async ({ settingsRoots, missing }) => {
+  let input: BeginRunInput
+  const model = new ScriptedModel((_request, index) => {
+    if (index !== 0) return stop()
+    const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision: _revision, ...args } = input
+    return call('story_write', { ...args, settingsRoots })
+  })
+  const h = await setup(model)
+  input = h.input
+  beginConversation(h.agent)
+  await h.agent.whenIdle()
+  const result = recordedResults(model)[0]
+  expect(result).toMatchObject({ isError: true })
+  expect(result?.content).toEqual([{ type: 'text', text: `Error: Required novel settings are missing: ${missing}. Add ${missing.includes(",") ? "them" : "it"} to settingsRoots (dependencies are added automatically); allowIncompleteSettings: true skips this check for smoke tests only.` }])
+  expect(h.runs.list(h.actor, input.novelId)).toEqual([])
+})
+
 it.each([{ fromChapter: 0 }, { fromChapter: 3, throughChapter: 2 }, { throughChapter: 4 }, { settingsRoots: ['e8'] }, { settingsRoots: [] }, { settingsRoots: ['missing'] }])('refuses an invalid writing scope %j before preparing native work', async change => {
   let input: BeginRunInput
   const model = new ScriptedModel((_request, index) => {
     if (index !== 0) return stop()
     const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision: _revision, ...args } = input
-    return call('story_write', { ...args, ...change })
+    return call('story_write', { ...args, allowIncompleteSettings: true, ...change })
   })
   const h = await setup(model)
   input = h.input
@@ -315,7 +335,7 @@ it('replays the exact upstream-only revision intent without starting downstream 
     if (index !== 0) return stop()
     if (input.revision === null) throw new Error('Missing fixture revision')
     const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision, ...args } = input
-    return call('story_revise', { ...args, ...revision })
+    return call('story_revise', { ...args, allowIncompleteSettings: true, ...revision })
   })
   const h = await setup(model)
   const { candidate } = await appliedSettings(h)
@@ -335,8 +355,8 @@ it('requires an exact base version and nonblank instructions for upstream revisi
   const model = new ScriptedModel((_request, index) => {
     if (index > 1) return stop()
     const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision: _revision, ...args } = input
-    return index === 0 ? call('story_revise', { ...args, instructions: 'Change the setting.' })
-      : call('story_revise', { ...args, baseArtifactId: input.briefArtifactId, instructions: '  ' }, 'blank-instructions')
+    return index === 0 ? call('story_revise', { ...args, allowIncompleteSettings: true, instructions: 'Change the setting.' })
+      : call('story_revise', { ...args, allowIncompleteSettings: true, baseArtifactId: input.briefArtifactId, instructions: '  ' }, 'blank-instructions')
   })
   const h = await setup(model)
   input = h.input

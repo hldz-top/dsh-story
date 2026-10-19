@@ -27,6 +27,12 @@ Create a novel with a title and creative brief, then use the explicit novel and 
 
 `story_stop` cancels owned work and waits for child cleanup. `story_resume` reuses durable stage results and requires an explicit `retryUnknown` choice before any unresolved native attempt can be replaced. It refuses changed writing/research limits before changing stored progress; legacy runs without a limit snapshot remain readable but cannot resume. The [writing tools](docs/api/writing-tools.md) document all command arguments and returned fields.
 
+### Required settings
+
+`story_write`, `story_update` and `story_revise` refuse a new request before any settings, book outline or chapter work when the dependency closure of `settingsRoots` lacks a setting whose catalog `requiredFor` includes `novel_writing`. Those codes are `a1` (类型 / 题材), `a2` (流派 / 子类型), `a3` (受众), `a4` (风格基调), `a5` (时空设定), `e1` (主角设定), `g1` (金手指) and `g2` (主线). `settingsRoots: ["a4", "a5", "g2"]` covers all eight through dependencies.
+
+A blocked request stores no run and fails with error code `settings-incomplete` and the message `Required novel settings are missing: <code> (<name>), …. Add it/them to settingsRoots (dependencies are added automatically); allowIncompleteSettings: true skips this check for smoke tests only.` The tool result has `isError: true` and the text `Error: <message>`. The plugin does not set a process exit code. In the headless DSH used for smoke runs, the process exits 0 even when a story tool fails, so scripts must check the tool result rather than the exit status. `story_resume` continues an existing run and is not re-checked. Passing `allowIncompleteSettings: true` is the only bypass, for smoke and unit tests.
+
 ## Reading and previews
 
 Tool results provide typed metadata and exact version references. Models read complete text through bounded `story_read_artifact` pages, following `nextOffset` until `eof`; retained raw stage output has a separate bounded reader. References contain identity, digest and size metadata rather than full document text.

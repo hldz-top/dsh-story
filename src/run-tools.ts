@@ -100,7 +100,8 @@ function runValue(run: WritingRun) {
 export function registerRunTools(ctx: Context, service: WritingService, runner: WritingRunner): void {
   const startParameters = { novelId: text, briefArtifactId: text, requestId: text, settingsRoots: strings,
     chapterCount: { ...integer, description: 'Positive total book chapter count.' }, fromChapter: { ...integer, description: 'First requested chapter, starting at 1.' },
-    throughChapter: { ...integer, description: 'Last requested chapter, fromChapter <= throughChapter <= chapterCount.' } } as const
+    throughChapter: { ...integer, description: 'Last requested chapter, fromChapter <= throughChapter <= chapterCount.' },
+    allowIncompleteSettings: { type: 'boolean', description: 'Smoke/unit tests only. Default false: a new request whose settingsRoots closure lacks a required novel dimension (a1 a2 a3 a4 a5 e1 g1 g2) is refused with code settings-incomplete before any work.' } } as const
   for (const mode of ['write', 'update'] as const) {
     ctx.effect(() => ctx.tools.register(defineTool({
       name: `story_${mode}`, description: mode === 'write'
