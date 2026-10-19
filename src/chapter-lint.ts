@@ -159,7 +159,10 @@ export function lintChapter(chapter: string | LintBody, options: LintOptions = {
   const points = new Points(text)
   const findings: LintFinding[] = []
   const { outline } = options
-  for (const typo of options.typos ?? []) if (typeof typo?.wrong !== 'string' || typo.wrong.length === 0) throw new Error('every typo entry needs a nonempty "wrong" string')
+  for (const typo of options.typos ?? []) {
+    if (typeof typo?.wrong !== 'string' || typo.wrong.length === 0) throw new Error('every typo entry needs a nonempty "wrong" string')
+    if (typeof typo.right !== 'string') throw new Error('every typo entry needs a "right" string')
+  }
 
   const lines: PanelLine[] = [...text.matchAll(PANEL_LINE)].map((match, index) => {
     const offset = points.offset(match.index)
@@ -227,4 +230,221 @@ function occurrences(text: string, needle: string, points: Points): Located[] {
   const found: Located[] = []
   for (let index = text.indexOf(needle); index >= 0; index = text.indexOf(needle, index + needle.length)) found.push(points.locate(index, [...needle].length))
   return found
+}
+
+/**
+ * Input the lint cannot interpret. `path` locates the offending field in JSONPath style: `$` is the document root,
+ * e.g. `$.scenes[2].text` or `$[0].right`.
+ */
+export class LintInputError extends Error {
+  readonly path: string
+  constructor(path: string, message: string) {
+    super(message)
+    this.name = 'LintInputError'
+    this.path = path
+  }
+}
+
+/** A JSON syntax error at a 1-based line and column; columns count code points. */
+export class JsonSyntaxError extends Error {
+  readonly line: number
+  readonly column: number
+  constructor(line: number, column: number, message: string) {
+    super(message)
+    this.name = 'JsonSyntaxError'
+    this.line = line
+    this.column = column
+  }
+}
+
+/** @returns The parsed value. @throws {@link JsonSyntaxError} with the position of the first syntax error. */
+export function parseJson(text: string): unknown {
+  try { return JSON.parse(text) as unknown } catch { throw locateJsonError(text) }
+}
+
+class SyntaxAt {
+  readonly offset: number
+  readonly message: string
+  constructor(offset: number, message: string) { this.offset = offset; this.message = message }
+}
+
+/** Re-scans text that JSON.parse rejected, so the reported position and reason do not depend on the engine's wording. */
+function locateJsonError(text: string): JsonSyntaxError {
+  let index = 0
+  const fail = (message: string, at = index): never => {
+    throw new SyntaxAt(at, at >= text.length ? 'unexpected end of input' : message)
+  }
+  const unexpected = (): never => fail(`unexpected character ${describeAt(text, index)}`)
+  const space = () => { while (index < text.length && ' \t\n\r'.includes(text[index]!)) index++ }
+  const string = () => {
+    const start = index++
+    while (index < text.length) {
+      const char = text[index]!
+      if (char === '"') { index++; return }
+      if (char === '\\') {
+        const escape = text[index + 1]
+        if (escape !== undefined && '"\\/bfnrt'.includes(escape)) index += 2
+        else if (escape === 'u' && /^[\dA-Fa-f]{4}$/u.test(text.slice(index + 2, index + 6))) index += 6
+        else fail('invalid escape in string')
+      } else if (char < ' ') fail('control character in string')
+      else index++
+    }
+    fail('unterminated string', start)
+  }
+  const value = (): void => {
+    space()
+    const char = text[index]
+    if (char === '{') {
+      index++
+      space()
+      if (text[index] === '}') { index++; return }
+      for (;;) {
+        space()
+        if (text[index] !== '"') fail(`expected a property name, got ${describeAt(text, index)}`)
+        string()
+        space()
+        if (text[index] !== ':') fail(`expected ":", got ${describeAt(text, index)}`)
+        index++
+        value()
+        space()
+        if (text[index] === ',') { index++; continue }
+        if (text[index] === '}') { index++; return }
+        fail(`expected "," or "}", got ${describeAt(text, index)}`)
+      }
+    }
+    if (char === '[') {
+      index++
+      space()
+      if (text[index] === ']') { index++; return }
+      for (;;) {
+        value()
+        space()
+        if (text[index] === ',') { index++; continue }
+        if (text[index] === ']') { index++; return }
+        fail(`expected "," or "]", got ${describeAt(text, index)}`)
+      }
+    }
+    if (char === '"') return string()
+    if (char === '-' || (char !== undefined && char >= '0' && char <= '9')) {
+      const number = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/uy
+      number.lastIndex = index
+      if (!number.test(text)) fail('invalid number')
+      index = number.lastIndex
+      return
+    }
+    for (const literal of ['true', 'false', 'null']) if (text.startsWith(literal, index)) { index += literal.length; return }
+    unexpected()
+  }
+  try {
+    value()
+    space()
+    if (index < text.length) fail(`unexpected content after the JSON value: ${describeAt(text, index)}`)
+    return position(text, 0, 'invalid JSON')
+  } catch (cause) {
+    if (cause instanceof SyntaxAt) return position(text, cause.offset, cause.message)
+    throw cause
+  }
+}
+
+function describeCharacter(point: number): string {
+  return point < 0x20 || point === 0x7f || point === 0xfeff ? `U+${point.toString(16).toUpperCase().padStart(4, '0')}` : JSON.stringify(String.fromCodePoint(point))
+}
+function describeAt(text: string, index: number): string {
+  return index >= text.length ? 'end of input' : describeCharacter(text.codePointAt(index)!)
+}
+function position(text: string, offset: number, message: string): JsonSyntaxError {
+  const before = text.slice(0, offset)
+  const lineStart = before.lastIndexOf('\n') + 1
+  return new JsonSyntaxError(before.split('\n').length, Array.from(before.slice(lineStart)).length + 1, message)
+}
+
+type Fields = Record<string, unknown>
+function kind(value: unknown): string {
+  if (value === undefined) return 'missing'
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'an array'
+  if (typeof value === 'string') return value.length === 0 ? 'an empty string' : 'a string'
+  if (typeof value === 'object') return 'an object'
+  return `a ${typeof value}`
+}
+/** @returns `path` extended by one property, bracket-quoted when it is not an identifier. */
+export function fieldPath(path: string, key: string | number): string {
+  if (typeof key === 'number') return `${path}[${key}]`
+  return /^[A-Za-z_$][\w$]*$/u.test(key) ? `${path}.${key}` : `${path}[${JSON.stringify(key)}]`
+}
+function record(value: unknown, path: string, expected: string): Fields {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new LintInputError(path, `expected ${expected}, got ${kind(value)}`)
+  return value as Fields
+}
+function list(value: unknown, path: string, expected: string): unknown[] {
+  if (!Array.isArray(value)) throw new LintInputError(path, `expected ${expected}, got ${kind(value)}`)
+  return value
+}
+function text(value: unknown, path: string, nonempty = false): void {
+  if (typeof value !== 'string' || (nonempty && value.length === 0)) throw new LintInputError(path, `expected a ${nonempty ? 'nonempty ' : ''}string, got ${kind(value)}`)
+}
+function strings(value: unknown, path: string): void {
+  list(value, path, 'an array of strings').forEach((item, index) => text(item, fieldPath(path, index)))
+}
+
+/** @returns `value` as a stored body. @throws {@link LintInputError} at the first field the lint cannot read. */
+export function parseLintBody(value: unknown): LintBody {
+  const body = record(value, '$', 'a chapter body object with a "scenes" array')
+  list(body['scenes'], '$.scenes', 'an array of scenes').forEach((item, index) => {
+    const path = fieldPath('$.scenes', index)
+    const scene = record(item, path, 'a scene object')
+    text(scene['text'], fieldPath(path, 'text'))
+    text(scene['sceneId'], fieldPath(path, 'sceneId'))
+  })
+  return value as LintBody
+}
+
+/** @returns `value` as a stored chapter outline. @throws {@link LintInputError} at the first field the lint cannot read. */
+export function parseLintOutline(value: unknown): LintOutline {
+  const outline = record(value, '$', 'a chapter outline object')
+  if (outline['throughLine'] !== undefined) text(outline['throughLine'], '$.throughLine')
+  strings(outline['constraints'], '$.constraints')
+  list(outline['obligations'], '$.obligations', 'an array of obligations').forEach((item, index) => {
+    const path = fieldPath('$.obligations', index)
+    const obligation = record(item, path, 'an obligation object')
+    text(obligation['id'], fieldPath(path, 'id'))
+    text(obligation['description'], fieldPath(path, 'description'))
+  })
+  list(outline['scenes'], '$.scenes', 'an array of scenes').forEach((item, index) => {
+    const path = fieldPath('$.scenes', index)
+    const scene = record(item, path, 'a scene object')
+    text(scene['id'], fieldPath(path, 'id'))
+    if (scene['purpose'] !== undefined) text(scene['purpose'], fieldPath(path, 'purpose'))
+    text(scene['action'], fieldPath(path, 'action'))
+    strings(scene['obligationIds'], fieldPath(path, 'obligationIds'))
+  })
+  return value as LintOutline
+}
+
+/** @returns `value` as a typo table. @throws {@link LintInputError} at the first entry the lint cannot use. */
+export function parseTypoTable(value: unknown): TypoRule[] {
+  list(value, '$', 'an array of {"wrong", "right"} entries').forEach((item, index) => {
+    const path = fieldPath('$', index)
+    const entry = record(item, path, 'a {"wrong", "right"} entry')
+    text(entry['wrong'], fieldPath(path, 'wrong'), true)
+    text(entry['right'], fieldPath(path, 'right'))
+  })
+  return value as TypoRule[]
+}
+
+/**
+ * @param store - A parsed `story_writing.json` storage file.
+ * @param id - An artifact id.
+ * @returns The artifact's stored text.
+ * @throws {@link LintInputError} when the artifacts table, the artifact or its text is absent.
+ */
+export function storedArtifactText(store: unknown, id: string): string {
+  const tables = record(record(store, '$', 'a storage object')['tables'], '$.tables', 'an object of tables')
+  const artifacts = record(tables['artifacts'], '$.tables.artifacts', 'an artifacts table')
+  const path = fieldPath('$.tables.artifacts', id)
+  if (!Object.hasOwn(artifacts, id)) throw new LintInputError(path, 'artifact not found')
+  const artifact = record(artifacts[id], path, 'an artifact object')
+  const stored = artifact['text']
+  if (typeof stored !== 'string') throw new LintInputError(fieldPath(path, 'text'), `artifact has no text: expected a string, got ${kind(stored)}`)
+  return stored
 }
