@@ -56,6 +56,8 @@ const chapterOutlineSchema = inputsSchema.extend({
   chapterNumber: z.number().int().positive(), title: text, targetWords: z.number().int().positive(), throughLine: text,
   constraints: z.array(text), obligations: z.array(obligationSchema),
   scenes: z.array(z.strictObject({ id: text, purpose: text, action: text, obligationIds: z.array(text) })).nonempty(),
+  // Optional free-text state list (prompt version 2): where key objects and places are, who holds them, whether they are physical. No enums, so a loose note never costs a repair attempt.
+  stateNotes: z.array(text).optional(),
 })
 const bodySchema = inputsSchema.extend({
   chapterNumber: z.number().int().positive(), scenes: z.array(z.strictObject({ sceneId: text, text })).nonempty(),
@@ -89,6 +91,9 @@ export type ContinuityOutput = z.infer<typeof continuitySchema>
 export type EvidenceCitation = z.infer<typeof citationSchema>
 /** Host-verified text available for exact quotation checks. */
 export interface EvidenceSource { readonly artifactId: ArtifactId; readonly text: string }
+
+/** The chapter-outline schema published to runs on prompt version 1, before stateNotes existed. */
+export const chapterOutlineSchemaV1 = chapterOutlineSchema.omit({ stateNotes: true })
 
 /** Model response schemas; use z.toJSONSchema(schema, { io: 'input' }) for the branded identifier parsers. */
 export const StageOutputSchemas = {

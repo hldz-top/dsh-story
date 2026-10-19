@@ -1,8 +1,8 @@
 /** Native DSH publication of the canonical writing-stage schemas. */
 import { assertObjectJsonSchema, type ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { z } from 'zod'
-import { StageOutputSchemas } from './stage-output.ts'
-import type { StagePromptKind } from './stage-prompts.ts'
+import { chapterOutlineSchemaV1, StageOutputSchemas } from './stage-output.ts'
+import { CURRENT_PROMPT_VERSION, type PromptVersion, type StagePromptKind } from './stage-prompts.ts'
 
 const nativeFields = new Set(['type', 'required', 'additionalProperties', 'enum', 'const', 'description', 'title', 'default', 'examples'])
 const hostConstraints = new Set(['minLength', 'minItems', 'pattern', 'exclusiveMinimum', 'maximum'])
@@ -63,8 +63,10 @@ export function projectNativeStageSchema(schema: object): ObjectJsonSchema {
 /**
  * Publish a writing-stage output schema for native child capture.
  * @param kind - The canonical stage schema selected by the writing run.
+ * @param promptVersion - The run's prompt version; version 1 publishes the frozen schema without later optional fields.
  * @returns An object-root schema; the caller must still run canonical admission.
  */
-export function nativeStageOutputSchema(kind: StagePromptKind): ObjectJsonSchema {
-  return projectNativeStageSchema(z.toJSONSchema(StageOutputSchemas[kind], { io: 'input' }))
+export function nativeStageOutputSchema(kind: StagePromptKind, promptVersion: PromptVersion = CURRENT_PROMPT_VERSION): ObjectJsonSchema {
+  const schema = kind === 'chapter-outline' && promptVersion === 1 ? chapterOutlineSchemaV1 : StageOutputSchemas[kind]
+  return projectNativeStageSchema(z.toJSONSchema(schema, { io: 'input' }))
 }

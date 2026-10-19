@@ -6,12 +6,40 @@ export interface BodyWordBounds { readonly minChapterWords: number; readonly max
 /** Program-owned chapter length finding; a violation blocks application. */
 export type BodyLengthResult = { readonly status: 'within-range'; readonly blocking: false }
   | { readonly status: 'too-short' | 'too-long'; readonly blocking: true }
+/**
+ * Host-measured positions handed to a body review. Offsets count Unicode code points of the assembled chapter (scenes
+ * joined with "\n\n", no title; punctuation and whitespace included); percent = offset / totalChars × 100, one decimal.
+ */
+export interface BodyBeats {
+  readonly totalChars: number
+  readonly scenes: readonly { readonly sceneId: string; readonly offset: number; readonly percent: number }[]
+  /** Standalone 【…】 lines (a whole line from 【 to 】), in order. */
+  readonly panels: readonly { readonly index: number; readonly offset: number; readonly percent: number; readonly text: string }[]
+}
 /** Exact assembled text and its deterministic length finding. */
 export interface BodyInspection { readonly text: string; readonly wordCount: number; readonly length: BodyLengthResult }
 
 /** @param output - Validated scenes in chapter order. @returns Exact scene text separated by two line feeds. */
 export function assembleBody(output: BodyOutput): string {
   return output.scenes.map(scene => scene.text).join('\n\n')
+}
+
+/** @param output - Validated scenes in chapter order. @returns Scene and panel-line positions in code points of the assembled chapter. */
+export function measureBeats(output: BodyOutput): BodyBeats {
+  const text = assembleBody(output)
+  const totalChars = [...text].length
+  const percent = (offset: number) => totalChars === 0 ? 0 : Math.round(offset / totalChars * 1000) / 10
+  const scenes: { sceneId: string; offset: number; percent: number }[] = []
+  let offset = 0
+  for (const scene of output.scenes) {
+    scenes.push({ sceneId: scene.sceneId, offset, percent: percent(offset) })
+    offset += [...scene.text].length + 2
+  }
+  const panels = [...text.matchAll(/^【[^\n]*】$/gmu)].map((match, index) => {
+    const at = [...text.slice(0, match.index)].length
+    return { index: index + 1, offset: at, percent: percent(at), text: match[0] }
+  })
+  return { totalChars, scenes, panels }
 }
 
 /** @param text - Reader-facing chapter prose. @returns The Story word count. */

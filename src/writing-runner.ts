@@ -8,7 +8,7 @@ import { SettingsIncompleteError, WritingError, parseArtifactId, parseRequestId,
 import type { WritingService } from './service.ts'
 import { RunStoreError, type AttemptFailureKind, type RunStore, type BeginRunInput, type RunExecutionLimits, type RunServiceLimits, type RunId, type WritingRun, type WritingAttempt } from './run-store.ts'
 import { executeStage, StageExecutionError, type StageRequest, type StageResult } from './stage-executor.ts'
-import { buildStagePrompt, type StagePromptKind } from './stage-prompts.ts'
+import { buildStagePrompt, type PromptVersion, type StagePromptKind } from './stage-prompts.ts'
 import { buildResearchPrompt, validateResearchStageResult, RESEARCH_STAGE_OUTPUT_SCHEMA, researchStageTools, researchToolAuthorization } from './research-stage.ts'
 import { buildResearchPlanningPrompt, researchNecessity, RESEARCH_PLANNING_OUTPUT_SCHEMA, type ResearchNecessity } from './research-planning.ts'
 import { StageValidationRejection } from './stage-rejection.ts'
@@ -421,6 +421,8 @@ export class WritingRunner {
     const reviewedKind: StagePromptKind = 'dimensionCode' in candidate ? 'settings' : candidate.target.kind
     return this.stage(inv, key, 'review', refs, { reviewed: inputRef(candidate.artifact), requiredChecks, validationError,
       ...('length' in candidate ? { measuredWordCount: candidate.wordCount, measuredLength: candidate.length } : {}),
+      // Version-1 runs keep their original task text; later runs hand the body review host-measured positions to cite.
+      ...('beats' in candidate && candidate.beats !== null && promptVersionOf(inv.run) >= 2 ? { measuredBeats: candidate.beats } : {}),
       ...(settingsDimensionKind === undefined ? {} : { dimensionKind: settingsDimensionKind }),
       ...(settingsCollectionKinds === undefined ? {} : { dimensionKinds: settingsCollectionKinds }) },
       [candidate.artifact], settingsDimensionKind, settingsCollectionKinds, reviewedKind)
@@ -478,8 +480,9 @@ export class WritingRunner {
         ...(feedback.length > 0 && kind !== 'review' ? [repairMode === 'length'
           ? 'Condense or expand across all scenes to reach the aim; preserve required events, established facts and scene identities rather than passage wording.'
           : 'Repair the defects documented in the supplied prior candidate and review. Preserve unaffected facts and passages and return the entire candidate.'] : []),
-      ], ...(settingsDimensionKind === undefined ? {} : { settingsDimensionKind }), ...(settingsCollectionKinds === undefined ? {} : { settingsCollectionKinds }) })
-    return this.capture(inv, key, prompt, allRefs, nativeStageOutputSchema(kind), ['story_read_artifact'], undefined, prose ? 'prose' : 'stored')
+      ], ...(settingsDimensionKind === undefined ? {} : { settingsDimensionKind }), ...(settingsCollectionKinds === undefined ? {} : { settingsCollectionKinds }),
+      promptVersion: promptVersionOf(inv.run) })
+    return this.capture(inv, key, prompt, allRefs, nativeStageOutputSchema(kind, promptVersionOf(inv.run)), ['story_read_artifact'], undefined, prose ? 'prose' : 'stored')
   }
 
   private proseChars(inv: Invocation, ref: ArtifactRef): number { return this.service.proseChars(inv.actor, { novelId: inv.run.novelId, artifactId: ref.id }) }
@@ -572,6 +575,8 @@ export class WritingRunner {
 }
 
 function requestId(run: WritingRun, key: string) { return parseRequestId(`${run.id}:${createHash('sha256').update(key).digest('hex')}`) }
+/** @returns The prompt version a run started with; runs stored before versioning are version 1. */
+function promptVersionOf(run: WritingRun): PromptVersion { return run.promptVersion ?? 1 }
 function inputRef(ref: ArtifactRef): StageInputRef { return { artifactId: ref.id, sha256: ref.sha256 } }
 function withoutSignal(actor: Actor): Actor { return { sessionId: actor.sessionId, workspace: actor.workspace } }
 function message(cause: unknown): string {
