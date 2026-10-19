@@ -31,7 +31,9 @@ Create a novel with a title and creative brief, then use the explicit novel and 
 
 `story_write`, `story_update` and `story_revise` refuse a new request before any settings, book outline or chapter work when the dependency closure of `settingsRoots` lacks a setting whose catalog `requiredFor` includes `novel_writing`. Those codes are `a1` (类型 / 题材), `a2` (流派 / 子类型), `a3` (受众), `a4` (风格基调), `a5` (时空设定), `e1` (主角设定), `g1` (金手指) and `g2` (主线). `settingsRoots: ["a4", "a5", "g2"]` covers all eight through dependencies.
 
-A blocked request stores no run and fails with error code `settings-incomplete` and the message `Required novel settings are missing: <code> (<name>), …. Add it/them to settingsRoots (dependencies are added automatically); allowIncompleteSettings: true skips this check for smoke tests only.` The tool result has `isError: true` and the text `Error: <message>`. The plugin does not set a process exit code. In the headless DSH used for smoke runs, the process exits 0 even when a story tool fails, so scripts must check the tool result rather than the exit status. `story_resume` continues an existing run and is not re-checked. Passing `allowIncompleteSettings: true` is the only bypass, for smoke and unit tests.
+A blocked request stores no run and fails with error code `settings-incomplete` and the message `Required novel settings are missing: <code> (<name>), …. Complete the settings first: choose settingsRoots whose dependencies cover it/them; ["a4", "a5", "g2"] covers every required setting.` The tool result has `isError: true` and the text `Error: <message>`. The plugin does not set a process exit code. In the headless DSH used for smoke runs, the process exits 0 even when a story tool fails, so scripts must check the tool result rather than the exit status. `story_resume` continues an existing run and is not re-checked.
+
+The only bypass is operator-side: the plugin config option `allowIncompleteSettings` (default `false`), for smoke and unit tests. It is not a tool argument, so the model cannot set it.
 
 ## Reading and previews
 

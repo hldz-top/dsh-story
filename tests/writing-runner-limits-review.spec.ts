@@ -21,14 +21,13 @@ import { useWritingFixture } from './support/writing-fixture.ts'
 
 it('rejects incompatible chapter bounds without changing the stopped run or occupying its active slot', async () => {
   const fixture = await useWritingFixture({ executionLimits: { maxChapterWords: 4500 } })
-  const { allowIncompleteSettings: _bypass, ...stored } = fixture.input
-  const run = await fixture.runs.begin(fixture.actor, { ...stored, revision: null, executionLimits: fixture.runner.limits, serviceLimits: { ...fixture.service.limits, ...fixture.service.researchLimits } })
+  const run = await fixture.runs.begin(fixture.actor, { ...fixture.input, revision: null, executionLimits: fixture.runner.limits, serviceLimits: { ...fixture.service.limits, ...fixture.service.researchLimits } })
   const stopped = await fixture.runs.finish(fixture.actor, run.id, 'stopped', 'Author stopped before native work.')
   await fixture.runner.close()
   await fixture.service.close()
   const service = await openWritingService(fixture.ctx.storageDomain, fixture.service.limits, fixture.service.researchLimits,
     { minChapterWords: 3000, maxChapterWords: 5000 })
-  const runner = new WritingRunner(fixture.ctx, service, fixture.runs, { ...fixture.runner.limits, maxChapterWords: 5000 }, new StageDeliveries(fixture.ctx, service, fixture.runs, '.dsh-story'))
+  const runner = new WritingRunner(fixture.ctx, service, fixture.runs, { ...fixture.runner.limits, maxChapterWords: 5000 }, new StageDeliveries(fixture.ctx, service, fixture.runs, '.dsh-story'), { allowIncompleteSettings: true })
   fixture.ctx.effect(() => () => service.close())
   fixture.ctx.effect(() => () => runner.close())
   const outcome = await fixture.run(exec => runner.resume(exec, run.id, false))
@@ -65,7 +64,7 @@ it('rejects incompatible research admission limits before changing saved progres
   await fixture.service.close()
   const service = await openWritingService(fixture.ctx.storageDomain, fixture.service.limits,
     { ...fixture.service.researchLimits, maxResearchLogEvents: 1 }, fixture.service.manuscriptLimits)
-  const runner = new WritingRunner(fixture.ctx, service, fixture.runs, fixture.runner.limits, new StageDeliveries(fixture.ctx, service, fixture.runs, '.dsh-story'))
+  const runner = new WritingRunner(fixture.ctx, service, fixture.runs, fixture.runner.limits, new StageDeliveries(fixture.ctx, service, fixture.runs, '.dsh-story'), { allowIncompleteSettings: true })
   fixture.ctx.effect(() => () => service.close())
   fixture.ctx.effect(() => () => runner.close())
   const resumed = await fixture.run(exec => runner.resume(exec, stopped.id, true))
@@ -87,7 +86,7 @@ it('unloads the actual plugin only after its active native run saves stopped sta
   fixture.ctx.effect(() => fixture.ctx.web.registerFetchProvider({ id: 'unused-fetch', available: () => true, fetch: async request => ({ url: request.url, statusCode: 200, body: { kind: 'text', content: 'Unused offline response.' }, truncated: false }) }))
   await fixture.ctx.plugin(ToolWeb, { searchMaxQueries: 4, searchMaxResults: 8, searchTimeoutMs: 5000, fetchTimeoutMs: 5000, fetchMaxOutputChars: 10000 })
   await fixture.ctx.plugin(Present, new Present.Config())
-  const plugin = await fixture.ctx.plugin(Story, new Story.Config({ ...new Story.Config(), stageProvider: 'stage-spawn' }))
+  const plugin = await fixture.ctx.plugin(Story, new Story.Config({ ...new Story.Config(), stageProvider: 'stage-spawn', allowIncompleteSettings: true }))
   const runner = fixture.ctx.storyRunner
   const workspace = await fixture.ctx.fs.resolve('.', { cwd: fixture.root })
   const actor = { sessionId: fixture.parent.session.id, workspace: workspace.displayPath }
@@ -104,7 +103,7 @@ it('unloads the actual plugin only after its active native run saves stopped sta
     yield* next()
   }, { global: true })
   const writing = fixture.run(exec => runner.start(exec, { novelId: novel.id, briefArtifactId: novel.brief.id, requestId: parseRequestId('dispose-fixture-run'),
-    settingsRoots: ['a1'], chapterCount: 1, fromChapter: 1, throughChapter: 1, mode: 'write', allowIncompleteSettings: true }))
+    settingsRoots: ['a1'], chapterCount: 1, fromChapter: 1, throughChapter: 1, mode: 'write' }))
   await Promise.race([entered.promise, writing.then(result => { throw new Error(`Writing ended before native dispatch barrier: ${JSON.stringify(result)}`) })])
   const run = runner.runs.list(actor, novel.id)[0]
   if (run === undefined) throw new Error('Active native writing run was not stored')

@@ -68,6 +68,8 @@ export interface WritingFixtureStage {
 }
 /** Optional deterministic interventions affect model output, never bypass native tools or stores. */
 export interface WritingFixtureOptions {
+  /** Operator-side required-settings bypass (plugin config allowIncompleteSettings). Default true: most fixtures run partial settings. */
+  readonly allowIncompleteSettings?: boolean
   readonly backend?: 'json' | 'sqlite'
   readonly maxReadChars?: number
   readonly executionLimits?: Partial<RunExecutionLimits>
@@ -307,12 +309,12 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
   fixture.ctx.effect(() => () => runs.close())
   registerWritingTools(fixture.ctx, service, '.dsh-story')
   registerResearchTools(fixture.ctx, service)
-  const runner = new WritingRunner(fixture.ctx, service, runs, executionLimits, new StageDeliveries(fixture.ctx, service, runs, '.dsh-story'))
+  const runner = new WritingRunner(fixture.ctx, service, runs, executionLimits, new StageDeliveries(fixture.ctx, service, runs, '.dsh-story'), { allowIncompleteSettings: options.allowIncompleteSettings ?? true })
   fixture.ctx.effect(() => () => runner.close())
   const workspace = await fixture.ctx.fs.resolve('.', { cwd: fixture.root })
   const actor: Actor = { sessionId: fixture.parent.session.id, workspace: workspace.displayPath }
   const novel = await service.createNovel(actor, { requestId: parseRequestId('writing-fixture-novel'), title: '雾港航标', brief: '守灯人林澜在虚构雾港追查失踪船只。请完成三章故事，每章三千至五千字。' })
   storedText = id => service.getArtifact(actor, { novelId: novel.id, artifactId: id }).text
-  const input: StartWritingInput = { novelId: novel.id, briefArtifactId: novel.brief.id, requestId: parseRequestId('writing-fixture-run'), settingsRoots: ['a1'], chapterCount: 3, fromChapter: 1, throughChapter: 3, mode: 'write', allowIncompleteSettings: true }
+  const input: StartWritingInput = { novelId: novel.id, briefArtifactId: novel.brief.id, requestId: parseRequestId('writing-fixture-run'), settingsRoots: ['a1'], chapterCount: 3, fromChapter: 1, throughChapter: 3, mode: 'write' }
   return { ...fixture, service, runs, runner, actor, novel, input, stages: stages as ReadonlyMap<SessionId, WritingFixtureStage> }
 }

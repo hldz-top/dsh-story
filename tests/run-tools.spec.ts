@@ -16,7 +16,7 @@ import { z } from 'zod'
 import { parseRequestId, type Actor } from '../src/contracts.ts'
 import { openWritingService } from '../src/service.ts'
 import { openRunStore, type BeginRunInput, type WritingRun } from '../src/run-store.ts'
-import { WritingRunner } from '../src/writing-runner.ts'
+import { WritingRunner, type WritingRunnerOptions } from '../src/writing-runner.ts'
 import { StageDeliveries, registerStageDeliveryProjection } from '../src/stage-deliveries.ts'
 import { registerRunTools } from '../src/run-tools.ts'
 import { call, ScriptedModel, stop } from './support/model.ts'
@@ -24,7 +24,7 @@ import { call, ScriptedModel, stop } from './support/model.ts'
 const executionLimits = { maxRepairAttempts: 1, maxParallelStages: 1, maxStageRequests: 2, stageTimeoutMs: 1000, maxDelegationDepth: 1, minChapterWords: 3000, maxChapterWords: 5000, stageProvider: 'unmounted-fixture-provider' }
 const researchLimits = { maxResearchQuestions: 8, maxResearchCalls: 4, maxResearchSources: 8, maxEvidenceChars: 2000, maxResearchLogEvents: 200 }
 
-async function setup(model: ScriptedModel) {
+async function setup(model: ScriptedModel, runnerOptions: WritingRunnerOptions = { allowIncompleteSettings: true }) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-story-run-tools-'))
   const cwd = join(root, 'author')
   await mkdir(cwd)
@@ -41,7 +41,7 @@ async function setup(model: ScriptedModel) {
   ctx.effect(() => () => service.close())
   const runs = await openRunStore(ctx.storageDomain, { maxAttempts: 8, maxOutputBytes: 100_000 })
   ctx.effect(() => () => runs.close())
-  const runner = new WritingRunner(ctx, service, runs, executionLimits, new StageDeliveries(ctx, service, runs, '.dsh-story'))
+  const runner = new WritingRunner(ctx, service, runs, executionLimits, new StageDeliveries(ctx, service, runs, '.dsh-story'), runnerOptions)
   ctx.effect(() => () => runner.close())
   ctx.effect(() => ctx.llm.registerAdapter(['fixture'], model))
   const registration = await ctx.plugin({ name: 'run-tool-fixture-registration', inject: ['tools', 'fs'], apply(scope: Context) { registerRunTools(scope, service, runner) } })
@@ -186,7 +186,7 @@ it.each(['write', 'update'] as const)('replays an exact stopped %s request throu
   const model = new ScriptedModel((_request, index) => {
     if (index !== 0) return stop()
     const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision: _revision, ...args } = input
-    return call(`story_${mode}`, { ...args, allowIncompleteSettings: true })
+    return call(`story_${mode}`, { ...args })
   })
   const h = await setup(model)
   input = { ...h.input, mode }
@@ -196,6 +196,16 @@ it.each(['write', 'update'] as const)('replays an exact stopped %s request throu
   await h.agent.whenIdle()
   expect(jsonResult(recordedResults(model)[0])).toEqual(expected)
   expect(h.runs.list(h.actor, run.novelId)).toEqual([expected])
+})
+
+it('keeps the required-settings bypass out of every tool schema', async () => {
+  const h = await setup(new ScriptedModel(() => stop()))
+  const names = ['story_write', 'story_update', 'story_revise', 'story_resume']
+  for (const name of names) {
+    const tool = h.ctx.tools.get(name)
+    expect(tool, name).toBeDefined()
+    expect(JSON.stringify(tool), name).not.toContain('allowIncompleteSettings')
+  }
 })
 
 it.each([
@@ -208,13 +218,14 @@ it.each([
     const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision: _revision, ...args } = input
     return call('story_write', { ...args, settingsRoots })
   })
-  const h = await setup(model)
+  const h = await setup(model, {})
   input = h.input
   beginConversation(h.agent)
   await h.agent.whenIdle()
   const result = recordedResults(model)[0]
   expect(result).toMatchObject({ isError: true })
-  expect(result?.content).toEqual([{ type: 'text', text: `Error: Required novel settings are missing: ${missing}. Add ${missing.includes(",") ? "them" : "it"} to settingsRoots (dependencies are added automatically); allowIncompleteSettings: true skips this check for smoke tests only.` }])
+  expect(result?.content).toEqual([{ type: 'text', text: `Error: Required novel settings are missing: ${missing}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.includes(',') ? 'them' : 'it'}; ["a4", "a5", "g2"] covers every required setting.` }])
+  expect(JSON.stringify(result)).not.toContain('allowIncompleteSettings')
   expect(h.runs.list(h.actor, input.novelId)).toEqual([])
 })
 
@@ -223,7 +234,7 @@ it.each([{ fromChapter: 0 }, { fromChapter: 3, throughChapter: 2 }, { throughCha
   const model = new ScriptedModel((_request, index) => {
     if (index !== 0) return stop()
     const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision: _revision, ...args } = input
-    return call('story_write', { ...args, allowIncompleteSettings: true, ...change })
+    return call('story_write', { ...args, ...change })
   })
   const h = await setup(model)
   input = h.input
@@ -335,7 +346,7 @@ it('replays the exact upstream-only revision intent without starting downstream 
     if (index !== 0) return stop()
     if (input.revision === null) throw new Error('Missing fixture revision')
     const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision, ...args } = input
-    return call('story_revise', { ...args, allowIncompleteSettings: true, ...revision })
+    return call('story_revise', { ...args, ...revision })
   })
   const h = await setup(model)
   const { candidate } = await appliedSettings(h)
@@ -355,8 +366,8 @@ it('requires an exact base version and nonblank instructions for upstream revisi
   const model = new ScriptedModel((_request, index) => {
     if (index > 1) return stop()
     const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision: _revision, ...args } = input
-    return index === 0 ? call('story_revise', { ...args, allowIncompleteSettings: true, instructions: 'Change the setting.' })
-      : call('story_revise', { ...args, allowIncompleteSettings: true, baseArtifactId: input.briefArtifactId, instructions: '  ' }, 'blank-instructions')
+    return index === 0 ? call('story_revise', { ...args, instructions: 'Change the setting.' })
+      : call('story_revise', { ...args, baseArtifactId: input.briefArtifactId, instructions: '  ' }, 'blank-instructions')
   })
   const h = await setup(model)
   input = h.input
@@ -391,7 +402,7 @@ it('returns explicit missing legacy limits through the native tool schema and re
   await writeFile(file, JSON.stringify(document))
   const runs = await openRunStore(h.ctx.storageDomain, h.runs.limits)
   h.ctx.effect(() => () => runs.close())
-  const runner = new WritingRunner(h.ctx, h.service, runs, executionLimits, new StageDeliveries(h.ctx, h.service, runs, '.dsh-story'))
+  const runner = new WritingRunner(h.ctx, h.service, runs, executionLimits, new StageDeliveries(h.ctx, h.service, runs, '.dsh-story'), { allowIncompleteSettings: true })
   h.ctx.effect(() => () => runner.close())
   await h.ctx.plugin({ name: 'legacy-run-tool-registration', inject: ['tools', 'fs'], apply(scope: Context) { registerRunTools(scope, h.service, runner) } })
   const before = runs.get(h.actor, run.id)

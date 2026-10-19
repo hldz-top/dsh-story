@@ -24,9 +24,12 @@ import { writingActor } from './tools.ts'
 import type { StageDeliveries } from './stage-deliveries.ts'
 
 /** Author-selected scope; deployment execution limits are captured by the runner. */
-/** Explicit opt-out of the required-settings gate; only smoke and unit tests should set it. Not stored with the run. */
-export interface SettingsGateBypass { readonly allowIncompleteSettings?: boolean }
-export type StartWritingInput = Omit<BeginRunInput, 'executionLimits' | 'serviceLimits' | 'revision' | 'mode'> & { readonly mode: 'write' | 'update' } & SettingsGateBypass
+export type StartWritingInput = Omit<BeginRunInput, 'executionLimits' | 'serviceLimits' | 'revision' | 'mode'> & { readonly mode: 'write' | 'update' }
+/** Operator-side runner settings; never reachable through tool arguments. */
+export interface WritingRunnerOptions {
+  /** Skip the required-settings gate. Plugin config only, default false; for smoke and unit tests. Not stored with runs. */
+  readonly allowIncompleteSettings?: boolean
+}
 interface Invocation { readonly actor: Actor; readonly exec: ToolExecution; readonly run: WritingRun; readonly controller: AbortController }
 interface CapturedStage extends StageResult { readonly attempt: WritingAttempt }
 interface ActiveRun { readonly controller: AbortController; readonly done: Promise<WritingRun> }
@@ -41,12 +44,12 @@ export class WritingRunner {
   private readonly replayShutdown = new Error('Writing preview replay was cancelled by plugin shutdown.')
   private closed = false
   /** @param ctx - Existing DSH capabilities. @param service - Version owner. @param runs - Durable run owner. @param limits - Explicit deployment limits copied into new runs. @param deliveries - Awaited native document publisher. */
-  constructor(private readonly ctx: Context, private readonly service: WritingService, readonly runs: RunStore, readonly limits: RunExecutionLimits, private readonly deliveries: StageDeliveries) {}
+  constructor(private readonly ctx: Context, private readonly service: WritingService, readonly runs: RunStore, readonly limits: RunExecutionLimits, private readonly deliveries: StageDeliveries, private readonly options: WritingRunnerOptions = {}) {}
 
   /** @param exec - Calling native tool. @param input - Explicit novel, brief and chapter scope. @returns Terminal progress after all native work has stopped. */
-  async start(exec: ToolExecution, { allowIncompleteSettings, ...input }: StartWritingInput): Promise<WritingRun> {
+  async start(exec: ToolExecution, input: StartWritingInput): Promise<WritingRun> {
     const actor = await writingActor(this.ctx, exec)
-    this.admit(actor, input, false, allowIncompleteSettings === true)
+    this.admit(actor, input)
     this.requirePresentation(exec)
     return this.admission(async () => {
       const run = await this.runs.begin(actor, { ...input, revision: null, executionLimits: this.limits, serviceLimits: this.serviceLimits() })
@@ -55,9 +58,9 @@ export class WritingRunner {
   }
 
   /** @param exec - Native author tool. @param input - Exact applied base and requested revision. @returns After only that upstream version is reviewed and adopted. */
-  async revise(exec: ToolExecution, { allowIncompleteSettings, ...input }: Omit<BeginRunInput, 'executionLimits' | 'serviceLimits'> & SettingsGateBypass): Promise<WritingRun> {
+  async revise(exec: ToolExecution, input: Omit<BeginRunInput, 'executionLimits' | 'serviceLimits'>): Promise<WritingRun> {
     const actor = await writingActor(this.ctx, exec)
-    this.admit(actor, input, false, allowIncompleteSettings === true)
+    this.admit(actor, input)
     this.requirePresentation(exec)
     if (input.mode !== 'revise' || input.revision === null) throw new RunStoreError('invalid-input', 'An upstream revision needs an exact base and instructions')
     return this.admission(async () => {
@@ -108,18 +111,18 @@ export class WritingRunner {
 
   /**
    * New requests must select every required novel dimension (catalog requiredFor: novel_writing) in their settingsRoots
-   * closure before any settings, outline or chapter work starts, unless allowIncompleteSettings is explicitly true.
+   * closure before any settings, outline or chapter work starts, unless the operator set allowIncompleteSettings in the plugin config.
    * A resume continues an already admitted run and is not re-gated.
    */
-  private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false, allowIncompleteSettings = false): void {
+  private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
     if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
     planSettings(input.settingsRoots)
-    if (!resuming && !allowIncompleteSettings) {
+    if (!resuming && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
       if (missing.length > 0) {
-        throw new WritingError('settings-incomplete', `Required novel settings are missing: ${missing.map(item => `${item.code} (${item.name})`).join(', ')}. Add ${missing.length === 1 ? 'it' : 'them'} to settingsRoots (dependencies are added automatically); allowIncompleteSettings: true skips this check for smoke tests only.`)
+        throw new WritingError('settings-incomplete', `Required novel settings are missing: ${missing.map(item => `${item.code} (${item.name})`).join(', ')}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.length === 1 ? 'it' : 'them'}; [\"a4\", \"a5\", \"g2\"] covers every required setting.`)
       }
     }
     if (input.mode === 'write' && !resuming) {

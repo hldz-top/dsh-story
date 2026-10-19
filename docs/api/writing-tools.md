@@ -21,7 +21,6 @@ The command schemas require every field below; there is no implicit chapter rang
 | `settingsRoots` | Nonempty unique enabled dimension codes. Dependency closure is resolved by the planner; external editor dimensions reject. |
 | `chapterCount` | Positive total planned book chapters. |
 | `fromChapter`, `throughChapter` | Explicit inclusive scope satisfying `1 <= fromChapter <= throughChapter <= chapterCount`. |
-| `allowIncompleteSettings` | Optional, default `false`. Only `true` skips the [required settings gate](../../README.md#required-settings); reserved for smoke and unit tests. Not persisted. |
 
 `story_write` runs the requested writing range through research, settings, outline, chapter outline, prose, review, bounded repair and publication. `story_update` explicitly authorizes updating that range after upstream changes while retaining previous versions. Both commands wait for terminal progress or failure and capture configured execution limits at admission. The exact implemented orchestration is owned by [the runner](../../src/writing-runner.ts); these tools do not apply generated text independently.
 
