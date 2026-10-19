@@ -483,7 +483,7 @@ export class WritingRunner {
           ? 'Condense or expand across all scenes to reach the aim; preserve required events, established facts and scene identities rather than passage wording.'
           : 'Repair the defects documented in the supplied prior candidate and review. Preserve unaffected facts and passages and return the entire candidate.'] : []),
       ], ...(settingsDimensionKind === undefined ? {} : { settingsDimensionKind }), ...(settingsCollectionKinds === undefined ? {} : { settingsCollectionKinds }),
-      promptVersion: promptVersionOf(inv.run) })
+      ...(kind === 'review' && reviewedKind !== undefined ? { reviewedKind } : {}), promptVersion: promptVersionOf(inv.run) })
     return this.capture(inv, key, prompt, allRefs, nativeStageOutputSchema(kind, promptVersionOf(inv.run)), ['story_read_artifact'], undefined, prose ? 'prose' : 'stored')
   }
 

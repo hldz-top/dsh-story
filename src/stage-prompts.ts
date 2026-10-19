@@ -29,6 +29,8 @@ export interface StagePromptRequest {
   readonly settingsDimensionKind?: SettingsDimensionKind
   /** Every selected dimension's catalog kind, keyed by code; selects collection-scoped review wording when reviewing the assembled settings collection. Omitted otherwise. */
   readonly settingsCollectionKinds?: Readonly<Record<string, SettingsDimensionKind>>
+  /** For a 'review' stage, the kind of the reviewed candidate; the version-3 AI-tone sentence goes only to reviews of a body. */
+  readonly reviewedKind?: StagePromptKind
   /** The run's recorded prompt version; omitted means version 1, the frozen pre-guardrail text. */
   readonly promptVersion?: PromptVersion
 }
@@ -155,7 +157,7 @@ export function buildStagePrompt(request: StagePromptRequest): string {
       : request.kind === 'review' ? reviewInstructions(request.settingsDimensionKind, request.settingsCollectionKinds)
       : stageInstructions[request.kind]),
     ...((request.promptVersion ?? 1) >= 2 ? guardrails[request.kind] ?? [] : []),
-    ...((request.promptVersion ?? 1) >= 3 ? aiToneGuardrails[request.kind] ?? [] : []),
+    ...((request.promptVersion ?? 1) >= 3 && (request.kind !== 'review' || request.reviewedKind === 'body') ? aiToneGuardrails[request.kind] ?? [] : []),
   ]
   return [...instructions, 'TASK_DATA', JSON.stringify({
     novelId: request.novelId, kind: request.kind, inputs: request.inputs, task: request.task, requirements: request.requirements,

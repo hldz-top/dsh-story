@@ -55,6 +55,17 @@ describe('version 1 is frozen', () => {
   })
 })
 
+describe('version 3 AI-tone review', () => {
+  it('adds the AI-tone sentence only to reviews of a body', () => {
+    for (const reviewedKind of kinds) {
+      const prompt = buildStagePrompt({ ...base, kind: 'review', reviewedKind, promptVersion: 3 })
+      expect(prompt.includes(AI_TONE_PHRASE), reviewedKind).toBe(reviewedKind === 'body')
+    }
+    expect(buildStagePrompt({ ...base, kind: 'review', promptVersion: 3 })).not.toContain(AI_TONE_PHRASE)
+    for (const kind of kinds) if (kind !== 'review') expect(buildStagePrompt({ ...base, kind, reviewedKind: 'body', promptVersion: 3 }), kind).not.toContain(AI_TONE_PHRASE)
+  })
+})
+
 describe('version 2 guardrails', () => {
   it('is followed by version 3 for new runs', () => { expect(CURRENT_PROMPT_VERSION).toBe(3) })
 
@@ -147,5 +158,6 @@ describe('runs keep their prompt version', () => {
     const otherReviews = record.seen.filter(item => item.stage.kind === 'review' && item !== bodyReview && typeof item.stage.task?.measuredWordCount !== 'number')
     expect(otherReviews.length).toBeGreaterThan(0)
     for (const review of otherReviews) expect(JSON.parse((review.stage.data as { task: string }).task)).not.toHaveProperty('aiToneMarkers')
+    for (const review of otherReviews) expect(review.prompt).not.toContain(AI_TONE_PHRASE)
   })
 })
