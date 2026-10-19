@@ -504,7 +504,8 @@ export class WritingService {
     if (replay !== undefined) {
       if (replay.origin !== 'import' || replay.dimensionCode !== request.dimensionCode || replay.revisionOf !== request.expectedAppliedId) throw new WritingError('request-conflict', 'Request id was already used with different input')
       const output = parseSettingsDimensionOutput({ ...request.output, inputRefs: replay.inputRefs }, { dimensionCode: request.dimensionCode, inputRefs: replay.inputRefs })
-      this.sameRequest(replay.request.hash, settingsHash({ origin: 'import', researchPlanId: replay.researchPlanId, childSessionId: request.childSessionId, revisionOf: replay.revisionOf }, output))
+      // The importing Session is record metadata, not request input: a retry from a new process or Session replays the same import.
+      if (!settingsReceiptMatches(replay.request.hash, replay, output)) throw new WritingError('request-conflict', 'Request id was already used with different input')
       this.validateSettings(actor, novel, replay)
       return this.settingsView(novel, replay)
     }
@@ -524,7 +525,7 @@ export class WritingService {
     const updated = await this.domain.table('novels').update(novel.id, current => {
       actor.signal?.throwIfAborted()
       const duplicate = current.settingsHistory.find(item => item.request.requestId === request.requestId)
-      if (duplicate !== undefined) { this.sameRequest(duplicate.request.hash, hash); return current }
+      if (duplicate !== undefined) { if (!settingsReceiptMatches(duplicate.request.hash, { ...duplicate, origin: 'import' }, output)) throw new WritingError('request-conflict', 'Request id was already used with different input'); return current }
       if (current.settingsHeads.find(head => head.dimensionCode === request.dimensionCode)?.artifactId !== base.artifact.id) throw new WritingError('revision-conflict', 'Another settings version was adopted before this import')
       const actual = this.settingsInputs(actor, current.id, request.dimensionCode, base.researchPlanId, base.artifact.id).map(ref => ({ artifactId: ref.id, sha256: ref.sha256 }))
       if (!isDeepStrictEqual(actual, inputRefs)) throw new WritingError('revision-conflict', 'Settings inputs changed before import')
@@ -666,8 +667,7 @@ export class WritingService {
         expected.push(base.artifact.id)
       }
       if (candidate.origin === 'import' && (candidate.revisionOf === null || !candidate.applied || candidate.reviewHistory.length > 0)) throw new Error('An imported settings version must be an adopted, unreviewed replacement of an earlier version')
-      const expectedHash = settingsHash(candidate, output)
-      if (candidate.request.hash !== expectedHash) throw new Error('Settings provenance differs from its publication receipt')
+      if (!settingsReceiptMatches(candidate.request.hash, candidate, output)) throw new Error('Settings provenance differs from its publication receipt')
       if (candidate.inputRefs.length !== expected.length || candidate.inputRefs.some(ref => !expected.includes(ref.artifactId))) throw new Error('Settings index differs from its required source versions')
       for (const input of candidate.inputRefs) {
         const source = this.getArtifact(actor, { novelId: novel.id, artifactId: input.artifactId })
@@ -764,10 +764,25 @@ export class WritingService {
   }
 }
 
-/** Publication receipt: an import is prefixed so it can never pass as, or be passed off as, a model-stage record. */
-function settingsHash(record: { readonly origin?: 'stage' | 'import' | undefined; readonly researchPlanId: ArtifactId; readonly childSessionId: string; readonly revisionOf: ArtifactId | null }, output: unknown): string {
-  const body = [record.researchPlanId, record.childSessionId, output, ...(record.revisionOf === null ? [] : [record.revisionOf])]
-  return createHash('sha256').update(JSON.stringify(record.origin === 'import' ? ['import', ...body] : body)).digest('hex')
+type SettingsReceiptRecord = { readonly origin?: 'stage' | 'import' | undefined; readonly researchPlanId: ArtifactId; readonly childSessionId: string; readonly revisionOf: ArtifactId | null }
+
+/**
+ * Publication receipt: an import is prefixed so it can never pass as, or be passed off as, a model-stage record.
+ * A stage receipt binds its native child Session; an import receipt does not, because the importing Session is only
+ * record metadata (childSessionId) and a retry of the same requestId from another process must replay, not conflict.
+ */
+function settingsHash(record: SettingsReceiptRecord, output: unknown): string {
+  const lineage = record.revisionOf === null ? [] : [record.revisionOf]
+  const body = record.origin === 'import' ? ['import', record.researchPlanId, output, ...lineage] : [record.researchPlanId, record.childSessionId, output, ...lineage]
+  return createHash('sha256').update(JSON.stringify(body)).digest('hex')
+}
+
+/** @returns Whether a stored receipt matches; import receipts written before the importing Session left the hash (PR #18 at 75874bd and earlier) still verify against their own recorded Session. */
+function settingsReceiptMatches(stored: string, record: SettingsReceiptRecord, output: unknown): boolean {
+  if (stored === settingsHash(record, output)) return true
+  if (record.origin !== 'import') return false
+  const lineage = record.revisionOf === null ? [] : [record.revisionOf]
+  return stored === createHash('sha256').update(JSON.stringify(['import', record.researchPlanId, record.childSessionId, output, ...lineage])).digest('hex')
 }
 
 /** @param facility - The host's mounted storage domain service. @param limits - Explicit size limits. @param researchLimits - Explicit research limits. @param manuscriptLimits - Explicit inclusive chapter word bounds. @returns One domain-owning writing service. */

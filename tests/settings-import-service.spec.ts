@@ -1,4 +1,5 @@
 /** Author settings import at the service: provenance, store compatibility, validation and derived pending review. */
+import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -70,6 +71,17 @@ describe.each(['json', 'sqlite'] as const)('%s settings import', backend => {
     const again = await h.service.importSettings(actor, { ...request, requestId: parseRequestId('import-2'), expectedAppliedId: imported.artifact.id })
     expect(again).toMatchObject({ origin: 'import', revisionOf: imported.artifact.id, pendingReview: true })
     expect(h.service.getSettings(actor, novel.id).history.map(item => [item.origin, item.status])).toEqual([['stage', 'applied'], ['import', 'applied'], ['import', 'applied']])
+  })
+
+  it('P-1: a retry of the same requestId from a new process and Session replays the import; different input still conflicts', async () => {
+    const { h, actor, novel, request } = await adopted(backend)
+    const imported = await h.service.importSettings(actor, request)
+    await h.restart()
+    const retry = { ...request, childSessionId: brandString<SessionId>('importer-after-restart') }
+    expect(await h.service.importSettings({ ...actor, sessionId: retry.childSessionId }, retry)).toEqual(imported)
+    expect(h.service.getSettings(actor, novel.id).history).toHaveLength(2)
+    await expect(h.service.importSettings(actor, { ...retry, output: { ...request.output, contentMarkdown: 'Different.' } })).rejects.toMatchObject({ code: 'request-conflict' })
+    await expect(h.service.importSettings(actor, { ...retry, expectedAppliedId: imported.artifact.id })).rejects.toMatchObject({ code: 'request-conflict' })
   })
 
   it('D: refuses a stale head, a dimension without an adopted head, unavailable dimensions and invalid documents', async () => {
@@ -156,6 +168,29 @@ it('C4: an unreviewed stage revision relabeled as an applied import is rejected 
   forged.applied = true
   record.settingsHeads = [{ dimensionCode: 'a1', artifactId: revision.artifact.id }]
   await writeFile(path, JSON.stringify(document))
+  await h.restart()
+  expect(() => h.service.getSettings(actor, novel.id)).toThrowError(expect.objectContaining({ code: 'corrupt-artifact' }))
+})
+
+it('P-1: an import receipt written with the importing Session in its hash (75874bd) still verifies and replays from any Session', async () => {
+  const { h, actor, novel, request } = await adopted('json')
+  const imported = await h.service.importSettings(actor, request)
+  const output = JSON.parse(h.service.getArtifact(actor, { novelId: novel.id, artifactId: imported.artifact.id }).text) as unknown
+  const { path, document } = await storedDocument(h)
+  const record = document.tables.novels[novel.id]!.settingsHistory[1]!
+  const legacy = createHash('sha256').update(JSON.stringify(['import', record.researchPlanId, record.childSessionId, output, record.revisionOf])).digest('hex')
+  // New receipts bind the import prefix, research, text and lineage, but not the importing Session.
+  expect(record.request.hash).toBe(createHash('sha256').update(JSON.stringify(['import', record.researchPlanId, output, record.revisionOf])).digest('hex'))
+  record.request = { ...record.request, hash: legacy }
+  await writeFile(path, JSON.stringify(document))
+  await h.restart()
+  expect(h.service.getSettings(actor, novel.id).applied).toEqual([imported])
+  expect(await h.service.importSettings(actor, { ...request, childSessionId: brandString<SessionId>('another-importer') })).toEqual(imported)
+  await expect(h.service.importSettings(actor, { ...request, output: { ...request.output, contentMarkdown: 'Different.' } })).rejects.toMatchObject({ code: 'request-conflict' })
+  // Tampering with the recorded Session of a legacy receipt is still detected.
+  const again = await storedDocument(h)
+  again.document.tables.novels[novel.id]!.settingsHistory[1]!.childSessionId = brandString<SessionId>('forged')
+  await writeFile(again.path, JSON.stringify(again.document))
   await h.restart()
   expect(() => h.service.getSettings(actor, novel.id)).toThrowError(expect.objectContaining({ code: 'corrupt-artifact' }))
 })
