@@ -78,7 +78,13 @@ export interface SaveBriefRequest {
 /** An exact version under an owned novel; no current-version substitution occurs. */
 export interface ArtifactRequest { readonly novelId: NovelId; readonly artifactId: ArtifactId }
 /** Requested character interval; limit must not exceed the configured maximum. */
-export interface ReadArtifactRequest extends ArtifactRequest { readonly offset: number; readonly limit: number }
+export interface ReadArtifactRequest extends ArtifactRequest {
+  readonly offset: number; readonly limit: number
+  /** `prose` serves the reader-facing plain text (see prose-view.ts) instead of the stored text; default `stored`. */
+  readonly view?: ArtifactView
+}
+/** Which text of an artifact a read serves: the exact stored text, or its reader-facing plain-text view. */
+export type ArtifactView = 'stored' | 'prose'
 /** A Unicode code-point interval that can be continued until eof. */
 export interface ArtifactSlice extends ArtifactRequest {
   readonly kind: ArtifactKind
@@ -89,6 +95,8 @@ export interface ArtifactSlice extends ArtifactRequest {
   readonly totalChars: number
   readonly text: string
   readonly eof: boolean
+  /** The served text; offsets, totalChars and text refer to it. sha256 always identifies the stored version. */
+  readonly view: ArtifactView
 }
 
 /** A planning question; internal and creative questions require no external facts. */

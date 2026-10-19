@@ -40,7 +40,7 @@ export const PIPELINE_STAGES = 49
 const planningTarget = (stage: WritingFixtureStage): Record<string, unknown> | undefined => stage.data.kind === 'research-planning' ? stage.data.outputTarget : undefined
 const researchPurpose = (stage: WritingFixtureStage): string => stage.data.kind === 'research' ? stage.data.purpose : ''
 const reviewed = (stage: WritingFixtureStage) => stage.kind === 'review' && stage.task?.reviewed !== undefined ? stage.sources.get(stage.task.reviewed.artifactId) : undefined
-const reviewedJson = (stage: WritingFixtureStage): Output => JSON.parse(reviewed(stage)!.text)
+const reviewedJson = (stage: WritingFixtureStage): Output => JSON.parse(reviewed(stage)!.stored ?? reviewed(stage)!.text)
 const isPlanning = (stage: WritingFixtureStage, target: string) => {
   const value = planningTarget(stage)
   return value !== undefined && (value.kind === 'settings' ? value.dimensionCode === target : value.kind === target)

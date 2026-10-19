@@ -158,6 +158,7 @@ it('saves a new brief while reading the exact earlier version in Unicode pages',
       "sha256": "349ee448ecb2fe2abe0233480858ff4be7f1d43c9a89db2b7e326d4952749250",
       "text": "潮🌊",
       "totalChars": 6,
+      "view": "stored",
     }
   `)
   expect(resultValue(model.requests[4]!)).toMatchObject({ text: '汐城钟楼', offset: 2, nextOffset: 6, eof: true, revision: 1 })

@@ -72,7 +72,7 @@ const attemptFailureKindSchema = z.enum(['refused', 'truncated'])
 export type AttemptFailureKind = z.infer<typeof attemptFailureKindSchema>
 const citedQuoteSchema = z.strictObject({ artifactId: z.string(), quote: z.string() })
 const evidenceEventSchema = z.strictObject({
-  kind: z.enum(['reattributed', 'segmented', 'snapped', 'dropped']), location: z.string().optional(),
+  kind: z.enum(['reattributed', 'segmented', 'snapped', 'dropped', 'downgraded']), location: z.string().optional(),
   declared: citedQuoteSchema, admitted: z.array(citedQuoteSchema), distance: z.number().int().nonnegative(), reason: z.string().optional(),
 })
 /** One host evidence repair or drop applied while admitting an attempt's output. */

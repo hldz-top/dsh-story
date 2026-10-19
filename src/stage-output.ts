@@ -26,14 +26,23 @@ const settingsSchema = inputsSchema.extend({
 })
 const citationSchema = z.strictObject({ artifactId: artifactIdSchema, quote: text })
 const reviewCategorySchema = z.enum(['completeness', 'consistency', 'obligations', 'continuity', 'length', 'style'])
+const issueShape = {
+  id: text, severity: z.enum(['blocking', 'advisory']).describe('Style issues must be advisory; every other category must be blocking.'), category: reviewCategorySchema,
+  location: text, message: text, evidence: z.array(citationSchema).nonempty(),
+}
+/** The schema a model review must satisfy (also published to the native child). */
 const reviewSchema = inputsSchema.extend({
   reviewed: inputRefSchema,
   checks: z.array(z.strictObject({ category: reviewCategorySchema, summary: text, evidence: z.array(citationSchema).nonempty() })).nonempty(),
-  issues: z.array(z.strictObject({
-    id: text, severity: z.enum(['blocking', 'advisory']).describe('Style issues must be advisory; every other category must be blocking.'), category: reviewCategorySchema,
-    location: text, message: text, evidence: z.array(citationSchema).nonempty(),
-  })),
+  issues: z.array(z.strictObject(issueShape)),
 })
+/**
+ * Host marker on an issue none of whose evidence can be found in any admitted input: the issue is kept, made advisory,
+ * and keeps its original citations so the marker can be re-verified on every readback. Never part of the model schema.
+ */
+const hostDowngradeSchema = z.strictObject({ from: z.enum(['blocking', 'advisory']), reason: text })
+/** The admitted (stored) review: the model schema plus host downgrade markers. */
+const admittedReviewSchema = reviewSchema.extend({ issues: z.array(z.strictObject({ ...issueShape, hostDowngrade: hostDowngradeSchema.optional() })) })
 const obligationSchema = z.strictObject({ id: text, description: text })
 const bookOutlineSchema = inputsSchema.extend({
   contentMarkdown: text, ending: text,
@@ -67,7 +76,7 @@ export type SettingsDimensionOutput = z.infer<typeof settingsSchema>
 /** Substantive review categories; the host specifies those required for the stage. */
 export type ReviewCategory = z.infer<typeof reviewCategorySchema>
 /** Review findings tied to an exact candidate and quoted source versions. */
-export type ReviewOutput = z.infer<typeof reviewSchema>
+export type ReviewOutput = z.infer<typeof admittedReviewSchema>
 /** Ordered book structure, character development, ending, and chapter obligations. */
 export type BookOutlineOutput = z.infer<typeof bookOutlineSchema>
 /** Ordered chapter scenes and the required obligations they execute. */
@@ -199,6 +208,10 @@ class EvidenceAudit {
     this.unresolved.push(result.unresolved)
     return [...citations]
   }
+  /** @returns The admitted citations, or the unresolved item without recording it. */
+  inspect(location: string, citations: readonly EvidenceCitation[]): { accepted: EvidenceCitation[]; unresolved?: UnresolvedEvidence } {
+    return checkEvidence(location, citations, this.sources, this.admitted)
+  }
   finish(): void {
     if (this.unresolved.length > 0) throw new EvidenceRejection(this.unresolved as [UnresolvedEvidence, ...UnresolvedEvidence[]])
   }
@@ -234,7 +247,7 @@ export function checkSettingsDimensionScope(output: SettingsDimensionOutput, kin
 export function parseReviewOutput(value: unknown, expected: {
   reviewed: StageInputRef; inputRefs: readonly StageInputRef[]; requiredChecks: readonly ReviewCategory[]; evidenceSources: readonly EvidenceSource[]
 }): ReviewOutput {
-  const output = parseModelOutput(reviewSchema, value, 'Review output')
+  const output = parseModelOutput(admittedReviewSchema, value, 'Review output')
   matchingInputs(output.inputRefs, expected.inputRefs)
   if (output.reviewed.artifactId !== expected.reviewed.artifactId || output.reviewed.sha256 !== expected.reviewed.sha256) {
     throw new StageValidationRejection(`Reviewed artifact differs from the requested candidate version: got ${output.reviewed.artifactId}@${output.reviewed.sha256.slice(0, 12)}, expected ${expected.reviewed.artifactId}@${expected.reviewed.sha256.slice(0, 12)}`)
@@ -245,6 +258,10 @@ export function parseReviewOutput(value: unknown, expected: {
   const missingChecks = expected.requiredChecks.filter(category => !output.checks.some(check => check.category === category))
   if (missingChecks.length > 0) throw new StageValidationRejection(`Review is missing a required check: ${missingChecks.join(', ')} (required: ${expected.requiredChecks.join(', ')})`)
   for (const issue of output.issues) {
+    if (issue.hostDowngrade !== undefined) {
+      if (issue.severity !== 'advisory') throw new StageValidationRejection(`A host-downgraded issue must be advisory: issue ${echo(issue.id)} is ${issue.severity}`)
+      continue
+    }
     if (issue.category === 'style' && issue.severity !== 'advisory') throw new StageValidationRejection(`Style suggestions must remain advisory: issue ${echo(issue.id)} is ${issue.severity}`)
     if (issue.category !== 'style' && issue.severity !== 'blocking') throw new StageValidationRejection(`${issue.category} issues must be blocking: issue ${echo(issue.id)} is ${issue.severity}`)
   }
@@ -252,7 +269,20 @@ export function parseReviewOutput(value: unknown, expected: {
   const admitted = [output.reviewed.artifactId, ...output.inputRefs.map(ref => ref.artifactId)]
   const audit = new EvidenceAudit(expected.evidenceSources, admitted)
   const checks = output.checks.map((check, index) => ({ ...check, evidence: nonempty(audit.check(`checks[${index}]`, check.evidence)) }))
-  const issues = output.issues.map((issue, index) => ({ ...issue, evidence: nonempty(audit.check(`issues[${index}]`, issue.evidence)) }))
+  const issues = output.issues.map((issue, index) => {
+    const location = `issues[${index}]`
+    const result = audit.inspect(location, issue.evidence)
+    if (issue.hostDowngrade !== undefined) {
+      // Readback of a stored downgrade: valid only while none of its evidence can be found.
+      if (result.unresolved === undefined) throw new StageValidationRejection(`hostDowngrade is host-owned and marks only issues whose evidence occurs in no input: issue ${echo(issue.id)} has admissible evidence`)
+      return issue
+    }
+    if (result.unresolved === undefined) return { ...issue, evidence: nonempty(result.accepted) }
+    // No quote of this issue occurs in any admitted input: keep the finding but stop it blocking, instead of spending a repair.
+    const reason = result.unresolved.reasons[0]!
+    reportQuoteRepair({ kind: 'downgraded', declared: issue.evidence[0]!, admitted: [], distance: 0, location, reason: `${issue.severity} ${issue.category} issue ${echo(issue.id)} made advisory: ${reason}` })
+    return { ...issue, severity: 'advisory' as const, hostDowngrade: { from: issue.severity, reason } }
+  })
   audit.finish()
   return { ...output, checks: nonempty(checks), issues }
 }

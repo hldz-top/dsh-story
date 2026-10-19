@@ -395,8 +395,8 @@ export class WritingRunner {
   private async citationRepairStage(inv: Invocation, key: string, candidate: SettingsCandidateView | ManuscriptCandidateView, prior: unknown, rejection: EvidenceRejection, repairError: string | null): Promise<CapturedStage> {
     const refs = uniqueRefs([...candidate.inputRefs.map(ref => this.service.getArtifact(inv.actor, { novelId: inv.run.novelId, artifactId: ref.artifactId })), candidate.artifact])
     const prompt = buildCitationRepairPrompt({ novelId: inv.run.novelId, prior, unresolved: rejection.unresolved,
-      inputs: refs.map(ref => ({ artifactId: ref.id, sha256: ref.sha256, kind: ref.kind, chars: ref.chars })) })
-    return this.capture(inv, key, repairError === null ? prompt : `${prompt}\n\nThe previous citation repair was rejected: ${repairError}`, refs, CITATION_REPAIR_OUTPUT_SCHEMA, ['story_read_artifact'])
+      inputs: refs.map(ref => ({ artifactId: ref.id, sha256: ref.sha256, kind: ref.kind, chars: this.proseChars(inv, ref), view: 'prose' })) })
+    return this.capture(inv, key, repairError === null ? prompt : `${prompt}\n\nThe previous citation repair was rejected: ${repairError}`, refs, CITATION_REPAIR_OUTPUT_SCHEMA, ['story_read_artifact'], undefined, 'prose')
   }
 
   private async reviewStage(inv: Invocation, key: string, candidate: SettingsCandidateView | ManuscriptCandidateView, requiredChecks: readonly ReviewCategory[], validationError: string | null): Promise<CapturedStage> {
@@ -451,10 +451,13 @@ export class WritingRunner {
     // Chinese counting treats each CJK character as a word: stating the chapter-total range on a settings/continuity stage reads as "write N characters" and contradicts the classification bound. Only book-outline/chapter-outline/body actually assemble chapter prose that range measures, so only those (and reviews of them) get the line.
     const rangedKind = kind === 'review' ? reviewedKind : kind
     const includeChapterRange = rangedKind === 'book-outline' || rangedKind === 'chapter-outline' || rangedKind === 'body'
+    // A review reads every input as reader-facing prose, so any quote it copies is checkable plain text, never JSON scaffolding.
+    const prose = kind === 'review'
     const prompt = buildStagePrompt({ kind, novelId: inv.run.novelId,
-      inputs: allRefs.map(ref => ({ artifactId: ref.id, sha256: ref.sha256, kind: ref.kind, chars: ref.chars })),
+      inputs: allRefs.map(ref => ({ artifactId: ref.id, sha256: ref.sha256, kind: ref.kind, chars: prose ? this.proseChars(inv, ref) : ref.chars, ...(prose ? { view: 'prose' } : {}) })),
       task: JSON.stringify({ ...task, inputRefs: refs.map(inputRef) }), requirements: [
         ...(includeChapterRange ? [chapterRangeRequirement(kind, inv.run.executionLimits)] : []),
+        ...(prose ? ['Every input is served as its reader-facing plain text (view "prose"): chapter text as its assembled scenes, structured documents as their prose values one per line, without field names or identifiers. totalChars refers to that text; sha256 still identifies the stored version. Quote only text exactly as served.'] : []),
         'If task.validationError is present, correct that explicit host validation failure and return the complete value; prior raw outputs remain saved in run history.',
         'Output inputRefs must exactly match TASK_DATA.task.inputRefs in order; additional candidate and review documents are evidence for inspection and repair.',
         // A length repair rescales every scene toward the aim, so it must not be told to keep unaffected passages; other repairs keep the documented-defects wording.
@@ -462,8 +465,10 @@ export class WritingRunner {
           ? 'Condense or expand across all scenes to reach the aim; preserve required events, established facts and scene identities rather than passage wording.'
           : 'Repair the defects documented in the supplied prior candidate and review. Preserve unaffected facts and passages and return the entire candidate.'] : []),
       ], ...(settingsDimensionKind === undefined ? {} : { settingsDimensionKind }), ...(settingsCollectionKinds === undefined ? {} : { settingsCollectionKinds }) })
-    return this.capture(inv, key, prompt, allRefs, nativeStageOutputSchema(kind), ['story_read_artifact'])
+    return this.capture(inv, key, prompt, allRefs, nativeStageOutputSchema(kind), ['story_read_artifact'], undefined, prose ? 'prose' : 'stored')
   }
+
+  private proseChars(inv: Invocation, ref: ArtifactRef): number { return this.service.proseChars(inv.actor, { novelId: inv.run.novelId, artifactId: ref.id }) }
 
   /**
    * A malformed structured_output call, or a child turn that ends without returning its structured result, retries
@@ -473,7 +478,7 @@ export class WritingRunner {
    * execution; then the stage fails with an explicit exhaustion message. Every other stage outcome (success, or any
    * other failure) settles in exactly one prepareAttempt/executeStage pass.
    */
-  private async capture(inv: Invocation, key: string, prompt: string, refs: readonly ArtifactRef[], outputSchema: object, allowedTools: readonly string[], authorizeTool?: StageRequest['authorizeTool']): Promise<CapturedStage> {
+  private async capture(inv: Invocation, key: string, prompt: string, refs: readonly ArtifactRef[], outputSchema: object, allowedTools: readonly string[], authorizeTool?: StageRequest['authorizeTool'], readView: 'stored' | 'prose' = 'stored'): Promise<CapturedStage> {
     for (let retry = 0; ; retry++) {
       inv.actor.signal?.throwIfAborted()
       if (this.service.getNovel(inv.actor, inv.run.novelId).brief.id !== inv.run.briefArtifactId) throw new WritingError('revision-conflict', 'Creative brief changed during writing')
@@ -484,10 +489,15 @@ export class WritingRunner {
       }
       if (attempt.status !== 'prepared') throw new RunStoreError('attempt-state', 'The native stage is already running or requires explicit recovery')
       let published = false
+      let stopProse: (() => void) | undefined
       try {
         const result = await executeStage(this.ctx, inv.exec, { attemptId: attempt.id, prompt, outputSchema, ...(authorizeTool === undefined ? {} : { authorizeTool }),
-          onStarted: async childSessionId => { published = true; attempt = await this.runs.associateChild(inv.actor, inv.run.id, attempt.id, childSessionId) },
-        }, { ...inv.run.executionLimits, allowedTools })
+          onStarted: async childSessionId => {
+            published = true
+            if (readView === 'prose') stopProse = this.service.serveProseTo(childSessionId)
+            attempt = await this.runs.associateChild(inv.actor, inv.run.id, attempt.id, childSessionId)
+          },
+        }, { ...inv.run.executionLimits, allowedTools }).finally(() => stopProse?.())
         const text = JSON.stringify(result.structured)
         if (text === undefined) throw new Error('Native stage returned no serializable structured output')
         attempt = await this.runs.saveOutput(inv.actor, inv.run.id, attempt.id, text)

@@ -413,6 +413,23 @@ it('repairs a settings review whose quote adds words to its source by rewriting 
   expect(saved.checks[0]!.evidence[0]!.quote).not.toContain('进一步确认')
 })
 
+it('serves every review input as plain prose, never stored JSON, while other stages keep reading stored text', async () => {
+  const fixture = await useWritingFixture()
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.status).toBe('completed')
+  const reviews = [...fixture.stages.values()].filter(stage => stage.kind === 'review')
+  expect(reviews.length).toBeGreaterThan(0)
+  for (const stage of reviews) for (const source of stage.sources.values()) {
+    expect(source.view, `${stage.sessionId} ${source.kind}`).toBe('prose')
+    for (const scaffolding of ['"sceneId"', '"chapterNumber"', '"inputRefs"', '"sha256"']) expect(source.text).not.toContain(scaffolding)
+  }
+  const bodyReview = reviews.find(stage => [...stage.sources.values()].some(source => source.kind === 'body' && source.artifactId === stage.task?.reviewed?.artifactId))!
+  const bodySource = bodyReview.sources.get(bodyReview.task!.reviewed!.artifactId)!
+  expect(bodySource.text).toBe(JSON.parse(bodySource.stored!).scenes.map((scene: { text: string }) => scene.text).join('\n\n'))
+  for (const stage of fixture.stages.values()) if (stage.kind === 'body' || stage.kind === 'continuity') for (const source of stage.sources.values()) expect(source.view).toBe('stored')
+})
+
 it('drops an unresolvable citation from an item that keeps other valid evidence and records the drop on the run attempt', async () => {
   let injected = false
   const fixture = await useWritingFixture({ intervene(stage, output) {

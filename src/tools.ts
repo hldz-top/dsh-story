@@ -113,14 +113,17 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
           totalChars: { type: 'integer', required: true },
           text: { type: 'string', required: true },
           eof: { type: 'boolean', required: true },
+          view: { type: 'string', required: true, enum: ['stored', 'prose'] },
         },
       },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
+      // Review children always read the reader-facing prose view; the host decides, not the child.
+      const view = service.readsProse(exec.agent?.session.id) ? 'prose' : 'stored'
       return service.readArtifact(await writingActor(ctx, exec), {
-        ...args, novelId: parseNovelId(args.novelId), artifactId: parseArtifactId(args.artifactId),
+        ...args, novelId: parseNovelId(args.novelId), artifactId: parseArtifactId(args.artifactId), view,
       })
     },
   })))

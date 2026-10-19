@@ -113,3 +113,62 @@ describe('citation-only repair of an evidence-rejected review', () => {
     expect(() => mergeCitationRepair(prior, rejection.unresolved, { version: 1, items: [] })).toThrow(StageOutputError)
   })
 })
+
+describe('downgrading a blocking issue whose evidence occurs in no input', () => {
+  const blockingIssue = (quote: string) => ({ id: 'i1', severity: 'blocking' as const, category: 'continuity' as const, location: '第 8 拍', message: '时刻错位没写清。', evidence: [{ artifactId: body, quote }] })
+
+  it('keeps the finding, makes it advisory with a host marker, and reports a downgraded event instead of rejecting', () => {
+    const { value, repairs } = collect(() => parseReviewOutput(review({ issues: [blockingIssue('可惜没找到')] }), expected))
+    expect(value.issues).toEqual([{ ...blockingIssue('可惜没找到'), severity: 'advisory', hostDowngrade: { from: 'blocking', reason: expect.stringMatching(/^Evidence quote does not occur in its declared source/) } }])
+    expect(repairs).toEqual([expect.objectContaining({ kind: 'downgraded', location: 'issues[0]', declared: { artifactId: body, quote: '可惜没找到' }, admitted: [],
+      reason: expect.stringMatching(/^blocking continuity issue "i1" made advisory: Evidence quote does not occur/) })])
+  })
+
+  it('keeps an issue with valid evidence blocking, and drops (with an event) only its unresolvable citation', () => {
+    const issue = blockingIssue('门框比四周板面凉一截。')
+    issue.evidence.push({ artifactId: body, quote: '可惜没找到' })
+    const { value, repairs } = collect(() => parseReviewOutput(review({ issues: [issue] }), expected))
+    expect(value.issues[0]).toMatchObject({ severity: 'blocking', evidence: [{ artifactId: body, quote: '门框比四周板面凉一截。' }] })
+    expect(value.issues[0]).not.toHaveProperty('hostDowngrade')
+    expect(repairs.map(repair => [repair.kind, repair.location])).toEqual([['dropped', 'issues[0]']])
+  })
+
+  it('re-verifies a stored downgrade on readback without reporting it again, and refuses a marker on an issue whose evidence exists', () => {
+    const stored = parseReviewOutput(review({ issues: [blockingIssue('可惜没找到')] }), expected)
+    const again = collect(() => parseReviewOutput(JSON.parse(JSON.stringify(stored)), expected))
+    expect(again.value).toEqual(stored)
+    expect(again.repairs).toEqual([])
+    const forged = { ...stored, issues: [{ ...stored.issues[0]!, evidence: [{ artifactId: body, quote: '门框比四周板面凉一截。' }] }] }
+    expect(() => parseReviewOutput(forged, expected)).toThrow(/hostDowngrade is host-owned/)
+  })
+
+  it('does not publish the host marker in the model-facing review schema', async () => {
+    const { nativeStageOutputSchema } = await import('../src/native-stage-schema.ts')
+    expect(JSON.stringify(nativeStageOutputSchema('review'))).not.toContain('hostDowngrade')
+  })
+})
+
+describe('plain-prose review inputs', () => {
+  it('serves a chapter body as its assembled scene text with no JSON structure or field names', async () => {
+    const { proseView } = await import('../src/prose-view.ts')
+    const stored = JSON.stringify({ version: 1, inputRefs: [{ artifactId: outline, sha256: sha('c') }], chapterNumber: 1, scenes: [{ sceneId: 'ch1-s1', text: '沈遥扶住壁板，停了。' }, { sceneId: 'ch1-s2', text: '门框比四周板面凉一截。' }] })
+    const prose = proseView('body', stored)
+    expect(prose).toBe('沈遥扶住壁板，停了。\n\n门框比四周板面凉一截。')
+    for (const scaffolding of ['chapterNumber', 'scenes', 'sceneId', '{', '"', outline, sha('c')]) expect(prose).not.toContain(scaffolding)
+  })
+
+  it('serves other structured inputs as their prose values, one per line, without keys, identifiers or digests; plain text unchanged', async () => {
+    const { proseView } = await import('../src/prose-view.ts')
+    const settings = JSON.stringify({ version: 1, inputRefs: [{ artifactId: outline, sha256: sha('c') }], dimensionCode: 'a2', facts: [{ id: 'a2-constraint-downstream', statement: '后续阶段须守：开篇即绑定系统。' }], contentMarkdown: '## 流派\n\n主型：**科幻系统流**' })
+    expect(proseView('settings-dimension', settings)).toBe('后续阶段须守：开篇即绑定系统。\n## 流派\n\n主型：**科幻系统流**')
+    expect(proseView('creative-brief', '原创中文科幻「系统流」网文。')).toBe('原创中文科幻「系统流」网文。')
+  })
+
+  it('checks quotes against the body prose, so a quote of its JSON keys can never be admitted and one from the prose is', () => {
+    const value = review()
+    value.checks[0]!.evidence = [{ artifactId: body, quote: '"chapterNumber":1,"scenes":' }]
+    expect(thrown(() => parseReviewOutput(value, expected))).toBeInstanceOf(EvidenceRejection)
+    value.checks[0]!.evidence = [{ artifactId: body, quote: '沈遥扶住壁板，停了。' }]
+    expect(parseReviewOutput(value, expected).checks[0]!.evidence).toEqual([{ artifactId: body, quote: '沈遥扶住壁板，停了。' }])
+  })
+})

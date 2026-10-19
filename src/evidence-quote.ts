@@ -21,7 +21,7 @@ export interface QuoteSource { readonly artifactId: string; readonly text: strin
 
 /** One deterministic host repair applied to a model citation. */
 export interface QuoteRepair {
-  readonly kind: 'reattributed' | 'segmented' | 'snapped' | 'dropped'
+  readonly kind: 'reattributed' | 'segmented' | 'snapped' | 'dropped' | 'downgraded'
   readonly declared: QuoteCitation
   /** Citations admitted in place of the declared one; empty for a drop. */
   readonly admitted: readonly QuoteCitation[]
@@ -29,7 +29,7 @@ export interface QuoteRepair {
   readonly distance: number
   /** Output path of the evidence item, for example `checks[2]`, when the caller knows it. */
   readonly location?: string
-  /** For a drop: the host rejection the citation could not satisfy. */
+  /** For a drop or downgrade: the host rejection the citation could not satisfy. */
   readonly reason?: string
 }
 

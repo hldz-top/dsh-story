@@ -13,6 +13,7 @@ import { writingDomain, type NovelRecord, type ResearchRecord, type SettingsReco
 import { researchEvidenceContentSchema, researchPlanContentSchema, researchQuestions } from './research.ts'
 
 import { settingsCatalog } from './settings-catalog.ts'
+import { proseView } from './prose-view.ts'
 import { parseSettingsDimensionOutput, parseReviewOutput, checkSettingsDimensionScope } from './stage-output.ts'
 import type { ApplySettingsCandidateRequest, SaveSettingsReviewRequest, SaveSettingsCandidateRequest, SettingsCandidateView, SettingsView } from './settings.ts'
 import { ManuscriptStore, type AssembleSettingsRequest, type ManuscriptCandidateView, type ManuscriptView, type SaveManuscriptReviewRequest, type ApplyManuscriptCandidateRequest, type ManuscriptLimits, type ManuscriptContext, type GeneratedManuscriptTarget, type SaveManuscriptCandidateRequest, type ApplyChapterRequest, type AppliedChapterView } from './manuscript.ts'
@@ -190,15 +191,35 @@ export class WritingService {
       throw new WritingError('invalid-range', 'Artifact read interval exceeds the configured bounds')
     }
     const artifact = this.getArtifact(actor, request)
-    const characters = [...artifact.text]
+    const view = request.view ?? 'stored'
+    const characters = [...(view === 'prose' ? proseView(artifact.kind, artifact.text) : artifact.text)]
     if (request.offset > characters.length) throw new WritingError('invalid-range', 'Artifact offset is past EOF')
     const nextOffset = Math.min(characters.length, request.offset + request.limit)
     return {
       novelId: request.novelId, artifactId: request.artifactId, kind: artifact.kind, revision: artifact.revision,
       sha256: artifact.sha256, offset: request.offset, nextOffset, totalChars: characters.length,
-      text: characters.slice(request.offset, nextOffset).join(''), eof: nextOffset === characters.length,
+      text: characters.slice(request.offset, nextOffset).join(''), eof: nextOffset === characters.length, view,
     }
   }
+
+  /** @param actor - Host-admitted workspace. @param request - Exact version. @returns Code points of its reader-facing plain-text view. */
+  proseChars(actor: Actor, request: ArtifactRequest): number {
+    const artifact = this.getArtifact(actor, request)
+    return [...proseView(artifact.kind, artifact.text)].length
+  }
+
+  /**
+   * Sessions whose artifact reads are always served as plain prose (review and citation-repair children). Host-owned:
+   * the child cannot opt out, so a reviewer never sees JSON scaffolding it could quote.
+   */
+  private readonly proseReaders = new Set<string>()
+  /** @param sessionId - Native child Session. @returns A function ending its prose-only reads. */
+  serveProseTo(sessionId: string): () => void {
+    this.proseReaders.add(sessionId)
+    return () => { this.proseReaders.delete(sessionId) }
+  }
+  /** @param sessionId - Reading Session. @returns Whether its reads must use the prose view. */
+  readsProse(sessionId: string | undefined): boolean { return sessionId !== undefined && this.proseReaders.has(sessionId) }
 
   /** @param actor - Plan-owning Session and workspace. @param request - Questions and exact current brief. @param startSeq - First admitted Session log position. @returns The published immutable plan or its idempotent replay. */
   async startResearch(actor: Actor, request: StartResearchRequest, startSeq: number): Promise<ResearchView> {
