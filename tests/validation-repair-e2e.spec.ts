@@ -38,7 +38,7 @@ describe('unified validation repair across the full 49-stage pipeline (offline f
       report.push(`${injection.stage} | ${injection.violation} | ${attempt!.key} -> ${replacement}`)
     }
     // The live prompt plans exactly 49 stages; replacements only add attempt indices (candidate/n, review/n, research repair/n) to those stages.
-    const logical = new Set(stageKeys(run.attempts).map(key => key.replace(/\/repair\/\d+$/u, '').replace(/\/(candidate|review)\/\d+/gu, '/$1')))
+    const logical = new Set(stageKeys(run.attempts).map(key => key.replace(/\/repair\/\d+$/u, '').replace(/\/citations$/u, '').replace(/\/(candidate|review)\/\d+/gu, '/$1')))
     expect([...logical], JSON.stringify([...logical])).toHaveLength(PIPELINE_STAGES)
     expect(replacements.size).toBe(combined.filter(item => item.finish === undefined).length)
     const manuscript = fixture.service.getManuscript(fixture.actor, fixture.novel.id)

@@ -1,6 +1,7 @@
 /** Durable writing-run progress in the host's existing storage domain facility. */
 import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
+import type { QuoteRepair } from './evidence-quote.ts'
 import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { defineDomain, domainTable, type Domain, type DomainFacility } from '@deepseek-ai/dsh-storage-domain'
@@ -69,12 +70,24 @@ export type RunOutputRef = z.infer<typeof outputRefSchema>
 const attemptFailureKindSchema = z.enum(['refused', 'truncated'])
 /** Why a failed attempt's model response is unusable: the provider refused it, or output stopped at the length limit. */
 export type AttemptFailureKind = z.infer<typeof attemptFailureKindSchema>
+const citedQuoteSchema = z.strictObject({ artifactId: z.string(), quote: z.string() })
+const evidenceEventSchema = z.strictObject({
+  kind: z.enum(['reattributed', 'segmented', 'snapped', 'dropped', 'downgraded']), location: z.string().optional(),
+  declared: citedQuoteSchema, admitted: z.array(citedQuoteSchema), distance: z.number().int().nonnegative(), reason: z.string().optional(),
+})
+/** One host evidence repair or drop applied while admitting an attempt's output. */
+export type EvidenceEvent = z.infer<typeof evidenceEventSchema>
+/** Code points kept per recorded quote or reason; events are diagnostics, the admitted value itself is stored in full. */
+const EVENT_TEXT_CHARS = 400
+const MAX_EVIDENCE_EVENTS = 200
 const attemptSchema = z.strictObject({
   id: attemptIdSchema, parentSessionId: sessionIdSchema, request: attemptRequestSchema,
   status: z.enum(['prepared', 'running', 'succeeded', 'failed', 'unknown']), childSessionId: sessionIdSchema.nullable(),
   output: outputRefSchema.nullable(), error: z.string().nullable(), retryAuthorized: z.boolean(),
   // Absent for every other attempt, so records written before this field existed remain valid unchanged.
   failureKind: attemptFailureKindSchema.optional(),
+  // Host evidence repairs and drops from admitting this attempt's output; absent when none (and on older records).
+  evidenceEvents: z.array(evidenceEventSchema).max(MAX_EVIDENCE_EVENTS).optional(),
 })
 type AttemptRecord = z.infer<typeof attemptSchema>
 /** Detached execution progress, excluding the stored prompt and response schema. */
@@ -266,6 +279,29 @@ export class RunStore {
       if (status === 'completed' && latestAttempts(run).some(attempt => attempt.status !== 'succeeded')) fail('attempt-state', 'Unfinished stages cannot complete a run')
       return { ...run, status, error: message ?? null, attempts: run.attempts.map(attempt => attempt.status === 'prepared' || attempt.status === 'running' ? unknownAttempt(attempt) : attempt) }
     }))
+  }
+
+  /**
+   * @param actor - Workspace owner. @param runId - Running request. @param attemptId - Attempt whose saved output was just admitted (or rejected).
+   * @param events - Host evidence repairs and drops reported during that admission; recording the same events again is a no-op.
+   * @returns The attempt with its durable events.
+   */
+  async recordEvidenceEvents(actor: Actor, runId: RunId, attemptId: AttemptId, events: readonly QuoteRepair[]): Promise<WritingAttempt> {
+    const clip = (value: string) => { const chars = [...value]; return chars.length <= EVENT_TEXT_CHARS ? value : `${chars.slice(0, EVENT_TEXT_CHARS).join('')}…` }
+    const quote = (item: { artifactId: string; quote: string }) => ({ artifactId: item.artifactId, quote: clip(item.quote) })
+    const bounded = events.slice(0, MAX_EVIDENCE_EVENTS).map(event => evidenceEventSchema.parse({
+      kind: event.kind, ...(event.location === undefined ? {} : { location: event.location }), declared: quote(event.declared),
+      admitted: event.admitted.map(quote), distance: event.distance, ...(event.reason === undefined ? {} : { reason: clip(event.reason) }) }))
+    const run = await this.change(actor, runId, current => {
+      this.requireRunning(current)
+      return replaceAttempt(current, attemptId, attempt => {
+        if (attempt.status !== 'succeeded') fail('attempt-state', 'Evidence events belong to an attempt with saved output')
+        if (isDeepStrictEqual(attempt.evidenceEvents ?? [], bounded)) return attempt
+        const { evidenceEvents: _previous, ...rest } = attempt
+        return bounded.length === 0 ? rest : { ...rest, evidenceEvents: bounded }
+      })
+    })
+    return attemptView(findAttempt(run, attemptId))
   }
 
   private async persistOutput(actor: Actor, runId: RunId, attemptId: AttemptId, text: string): Promise<WritingAttempt> {

@@ -40,7 +40,7 @@ export const PIPELINE_STAGES = 49
 const planningTarget = (stage: WritingFixtureStage): Record<string, unknown> | undefined => stage.data.kind === 'research-planning' ? stage.data.outputTarget : undefined
 const researchPurpose = (stage: WritingFixtureStage): string => stage.data.kind === 'research' ? stage.data.purpose : ''
 const reviewed = (stage: WritingFixtureStage) => stage.kind === 'review' && stage.task?.reviewed !== undefined ? stage.sources.get(stage.task.reviewed.artifactId) : undefined
-const reviewedJson = (stage: WritingFixtureStage): Output => JSON.parse(reviewed(stage)!.text)
+const reviewedJson = (stage: WritingFixtureStage): Output => JSON.parse(reviewed(stage)!.stored ?? reviewed(stage)!.text)
 const isPlanning = (stage: WritingFixtureStage, target: string) => {
   const value = planningTarget(stage)
   return value !== undefined && (value.kind === 'settings' ? value.dimensionCode === target : value.kind === target)
@@ -52,7 +52,9 @@ const isReviewOf = (stage: WritingFixtureStage, kind: string, chapter?: number) 
 export const isChapterStage = (stage: WritingFixtureStage, kind: string, chapter: number) => stage.kind === kind && stage.task?.chapterNumber === chapter
 const misquote = (output: Output) => ({ ...output, checks: output.checks.map((check: Output, index: number) => index === 0 ? { ...check, evidence: [{ ...check.evidence[0], quote: `进一步确认${check.evidence[0].quote}` }] } : check) })
 const dropCheck = (category: string) => (output: Output) => ({ ...output, checks: output.checks.filter((check: Output) => check.category !== category) })
-export const next = (key: string) => key.replace(/\/(\d+)$/u, (_, n: string) => `/${Number(n) + 1}`)
+export const next = (key: string) => key.replace(/\/(\d+)(\/citations)?$/u, (_, n: string, citations?: string) => `/${Number(n) + 1}${citations ?? ''}`)
+/** An evidence-only review rejection is repaired by a citation-only stage rather than a whole new review. */
+const citationNext = (key: string) => `${next(key)}/citations`
 const same = (key: string) => key
 const planningNext = (key: string) => `${key}/1`
 const researchNext = (key: string) => `${key}/repair/1`
@@ -94,7 +96,7 @@ export const injections: readonly Injection[] = [
     message: /Stage input references do not match the requested versions: missing "artifact_[^"]+"; unexpected none/ },
   // Settings dimension reviews
   { id: 'settings-review-misquote', stage: 'settings review', violation: 'misquote (invented lead-in)', chapter: 0, match: stage => isDimensionReview(stage, 'a1'),
-    mutate: misquote, replacement: next, message: /Review output repair limit was exhausted: Evidence quote does not occur in its declared source artifact_\S+: "进一步确认/ },
+    mutate: misquote, replacement: citationNext, message: /Review output repair limit was exhausted: Evidence quote does not occur in its declared source artifact_\S+: "进一步确认/ },
   { id: 'settings-review-missing-check', stage: 'settings review', violation: 'missing required check', chapter: 0, match: stage => isDimensionReview(stage, 'a4'),
     mutate: dropCheck('consistency'), replacement: next, message: /Review is missing a required check: consistency \(required: completeness, consistency\)/ },
   { id: 'settings-review-style-severity', stage: 'settings review', violation: 'severity rule (blocking style issue)', chapter: 0, match: stage => isDimensionReview(stage, 'e1'),
@@ -105,7 +107,7 @@ export const injections: readonly Injection[] = [
     replacement: key => next(key.replace(/\/review\/0$/u, '')), message: /Settings repair limit was exhausted for a5/, solo: true },
   // Full-settings (collection) review
   { id: 'collection-review-misquote', stage: 'full-settings review', violation: 'misquote (invented lead-in)', chapter: 0, match: stage => isReviewOf(stage, 'settings'),
-    mutate: misquote, replacement: next, message: /Review output repair limit was exhausted: Evidence quote does not occur in its declared source/ },
+    mutate: misquote, replacement: citationNext, message: /Review output repair limit was exhausted: Evidence quote does not occur in its declared source/ },
   // Book outline
   { id: 'book-chapter-count', stage: 'book outline', violation: 'count (2 of 3 chapters)', chapter: 0, match: stage => stage.kind === 'book-outline',
     mutate: output => ({ ...output, chapters: output.chapters.slice(0, 2) }), replacement: next,
@@ -135,7 +137,7 @@ export const injections: readonly Injection[] = [
     mutate: output => ({ ...output, scenes: output.scenes.map((scene: Output) => ({ ...scene, text: scene.text.repeat(2) })) }), replacement: next,
     message: /Repair limit was exhausted for body\/3: The host counted \d+ Story-counted words \(accepted 3000–5000\): \d+ over the maximum/ },
   { id: 'body-review-misquote', stage: 'body review', violation: 'misquote (invented lead-in)', chapter: 1, match: stage => isReviewOf(stage, 'body', 1),
-    mutate: misquote, replacement: next, message: /Review output repair limit was exhausted: Evidence quote does not occur in its declared source/ },
+    mutate: misquote, replacement: citationNext, message: /Review output repair limit was exhausted: Evidence quote does not occur in its declared source/ },
   { id: 'body-review-malformed', stage: 'body review', violation: 'malformed JSON from the provider (same-key capture retry)', chapter: 2, match: stage => isReviewOf(stage, 'body', 2),
     finish: { kind: 'error', failure: { code: 'MALFORMED_RESPONSE', message: 'DeepSeek Messages stream: tool input is invalid JSON' } }, replacement: same,
     message: /could not be decoded \(MALFORMED_RESPONSE\)/ },

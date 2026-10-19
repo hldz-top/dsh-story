@@ -108,6 +108,30 @@ it('reports explicit refused and truncated attempt classifications through the r
   expect('failureKind' in value.attempts[2]!).toBe(false)
 })
 
+it('returns recorded evidence events on attempts through the native run tool schemas (live run run_dbabf085 failed this readback)', async () => {
+  let run: WritingRun
+  const model = new ScriptedModel((_request, index) => index === 0 ? call('story_get_run', { runId: run.id })
+    : index === 1 ? call('story_list_runs', { novelId: run.novelId }) : stop())
+  const h = await setup(model)
+  run = await h.runs.begin(h.actor, h.input)
+  const attempt = await h.runs.prepareAttempt(h.actor, run.id, { key: 'review-fixture', prompt: 'Private full stage prompt', inputRefs: [{ artifactId: h.novel.brief.id, sha256: h.novel.brief.sha256 }], outputSchema: { type: 'object', properties: {}, additionalProperties: false } })
+  await h.runs.associateChild(h.actor, run.id, attempt.id, SessionId(randomUUID()))
+  await h.runs.saveOutput(h.actor, run.id, attempt.id, '{}')
+  const cited = { artifactId: h.novel.brief.id, quote: '钟楼' }
+  await h.runs.recordEvidenceEvents(h.actor, run.id, attempt.id, [
+    { kind: 'reattributed', declared: { artifactId: 'artifact_other', quote: '钟楼' }, admitted: [cited], distance: 0, location: 'checks[0]' },
+    { kind: 'dropped', declared: cited, admitted: [], distance: 0, location: 'checks[1]', reason: 'Evidence quote does not occur in its declared source' },
+    { kind: 'downgraded', declared: cited, admitted: [], distance: 0, location: 'issues[0]', reason: 'blocking continuity issue "i1" made advisory' },
+  ])
+  await h.runs.finish(h.actor, run.id, 'stopped', 'Stopped before native execution')
+  beginConversation(h.agent)
+  await h.agent.whenIdle()
+  const results = recordedResults(model)
+  const value = jsonResult(results[0]) as { attempts: { evidenceEvents?: { kind: string }[] }[] }
+  expect(value.attempts[0]!.evidenceEvents?.map(event => event.kind)).toEqual(['reattributed', 'dropped', 'downgraded'])
+  expect(jsonResult(results[1])).toEqual([value])
+})
+
 const pageSchema = z.strictObject({ runId: z.string(), attemptId: z.string(), sha256: z.string(), bytes: z.number(), totalChars: z.number(), offset: z.number(), limit: z.number(), text: z.string(), nextOffset: z.number(), eof: z.boolean() })
 async function saveRawOutput(h: Awaited<ReturnType<typeof setup>>, run: WritingRun) {
   const attempt = await h.runs.prepareAttempt(h.actor, run.id, { key: 'raw-fixture', prompt: 'Retained private stage prompt', inputRefs: [{ artifactId: h.novel.brief.id, sha256: h.novel.brief.sha256 }], outputSchema: { type: 'object', properties: {}, additionalProperties: false } })

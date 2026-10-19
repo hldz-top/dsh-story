@@ -16,6 +16,12 @@ const boolean = { type: 'boolean', required: true } as const
 const nullableText = { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] } as const
 const strings = { type: 'array', required: true, items: { type: 'string' } } as const
 const inputRefs = { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { artifactId: text, sha256: text } } } as const
+const citedQuote = { type: 'object', additionalProperties: false, properties: { artifactId: text, quote: text } } as const
+/** Host evidence repairs, drops and downgrades recorded while admitting an attempt's output. */
+const evidenceEvents = { type: 'array', items: { type: 'object', additionalProperties: false, properties: {
+  kind: { ...text, enum: ['reattributed', 'segmented', 'snapped', 'dropped', 'downgraded'] }, location: { type: 'string' },
+  declared: { ...citedQuote, required: true }, admitted: { type: 'array', required: true, items: citedQuote }, distance: integer, reason: { type: 'string' },
+} } } as const
 const outputRef = { type: 'object', additionalProperties: false, properties: { attemptId: text, sha256: text, bytes: integer, chars: integer } } as const
 const runSchema = {
   type: 'object', additionalProperties: false,
@@ -38,7 +44,7 @@ const runSchema = {
       id: text, parentSessionId: text, key: text, inputRefs, status: { ...text, enum: ['prepared', 'running', 'succeeded', 'failed', 'unknown'] },
       childSessionId: nullableText, error: nullableText, retryAuthorized: boolean,
       output: { required: true, oneOf: [outputRef, { type: 'null' }] },
-      failureKind: { type: 'string', enum: ['refused', 'truncated'] },
+      failureKind: { type: 'string', enum: ['refused', 'truncated'] }, evidenceEvents,
     } } },
   },
 } as const
@@ -79,8 +85,10 @@ function manuscriptValue(candidate: ManuscriptCandidateView) {
 
 function renderJson<T>(_args: object, value: T) { return [{ type: 'text' as const, text: JSON.stringify(value) }] }
 function runValue(run: WritingRun) {
-  return { ...run, settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(({ failureKind, ...attempt }) => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })),
-    ...(failureKind === undefined ? {} : { failureKind }) })) }
+  return { ...run, settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(({ failureKind, evidenceEvents, ...attempt }) => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })),
+    ...(failureKind === undefined ? {} : { failureKind }),
+    ...(evidenceEvents === undefined ? {} : { evidenceEvents: evidenceEvents.map(({ location, reason, ...event }) => ({ ...event, declared: { ...event.declared }, admitted: event.admitted.map(item => ({ ...item })),
+      ...(location === undefined ? {} : { location }), ...(reason === undefined ? {} : { reason }) })) }) })) }
 }
 
 /**

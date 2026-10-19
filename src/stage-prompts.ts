@@ -6,7 +6,7 @@ import { ENUM_SETTINGS_KINDS, MAX_ENUM_SETTINGS_CONTENT_CHARS, MAX_ENUM_SETTINGS
 /** Business purpose of one independently executed stage. */
 export type StagePromptKind = 'settings' | 'review' | 'book-outline' | 'chapter-outline' | 'body' | 'continuity'
 /** Bounded reader metadata for one exact immutable input version. */
-export interface StagePromptInput { readonly artifactId: ArtifactId; readonly sha256: string; readonly kind: string; readonly chars: number }
+export interface StagePromptInput { readonly artifactId: ArtifactId; readonly sha256: string; readonly kind: string; readonly chars: number; readonly view?: 'prose' }
 /** Host-selected stage and quoted task data; the native child publishes its output schema. */
 export interface StagePromptRequest {
   readonly kind: StagePromptKind

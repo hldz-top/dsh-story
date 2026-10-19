@@ -26,12 +26,13 @@ import { call } from './model.ts'
 import { useStageFixture } from './stage-fixture.ts'
 
 const inputRef = z.object({ artifactId: artifactIdSchema, sha256: z.string() })
-const promptInput = inputRef.extend({ kind: z.enum(artifactKinds), chars: z.number().int().nonnegative() })
+const promptInput = inputRef.extend({ kind: z.enum(artifactKinds), chars: z.number().int().nonnegative(), view: z.literal('prose').optional() })
 const artifactRef = z.strictObject({ id: artifactIdSchema, kind: z.enum(artifactKinds), revision: z.number().int().positive(), sha256: z.string(), chars: z.number().int().nonnegative(), bytes: z.number().int().nonnegative() })
 const promptData = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('research'), novelId: novelIdSchema, briefArtifactId: artifactIdSchema, purpose: z.string(), inputs: z.array(artifactRef), requestId: requestIdSchema, necessity: researchNecessitySchema.optional() }),
   z.object({ kind: z.literal('research-planning'), novelId: novelIdSchema, briefArtifactId: artifactIdSchema, purpose: z.string(), inputs: z.array(artifactRef), requestId: requestIdSchema, outputTarget: z.record(z.string(), z.unknown()) }),
   z.object({ kind: z.enum(['settings', 'review', 'book-outline', 'chapter-outline', 'body', 'continuity']), novelId: novelIdSchema, inputs: z.array(promptInput), task: z.string(), requirements: z.array(z.string()) }),
+  z.object({ kind: z.literal('review-citation-repair'), novelId: novelIdSchema, inputs: z.array(promptInput), items: z.array(z.object({ location: z.string(), claim: z.record(z.string(), z.unknown()), rejected: z.array(z.object({ artifactId: z.string(), quote: z.string(), hostReason: z.string() })) })) }),
 ])
 const taskSchema = z.object({
   revisionInstructions: z.string().optional(), validationError: z.string().nullable().optional(),
@@ -45,11 +46,13 @@ const taskSchema = z.object({
 })
 const pageSchema = z.object({
   novelId: novelIdSchema, artifactId: artifactIdSchema, kind: z.enum(artifactKinds), revision: z.number(), sha256: z.string(),
-  offset: z.number(), nextOffset: z.number(), totalChars: z.number(), text: z.string(), eof: z.boolean(),
+  offset: z.number(), nextOffset: z.number(), totalChars: z.number(), text: z.string(), eof: z.boolean(), view: z.enum(['stored', 'prose']),
 })
 
 /** Exact source text accumulated only from completed native reader pages. */
-export interface WritingFixtureSource { readonly artifactId: ArtifactId; readonly sha256: string; readonly kind: (typeof artifactKinds)[number]; readonly text: string }
+export interface WritingFixtureSource { readonly artifactId: ArtifactId; readonly sha256: string; readonly kind: (typeof artifactKinds)[number]; readonly text: string; readonly view?: 'stored' | 'prose'
+  /** For a prose read, the exact stored text, looked up by the harness (not visible to the child) so tests can identify the source. */
+  readonly stored?: string }
 /** One child has independent task, paging and model-request observations. */
 export interface WritingFixtureStage {
   readonly sessionId: SessionId
@@ -111,11 +114,11 @@ function pendingResult(request: GenerateOptions, callId: string): unknown {
 
 function inputs(state: ChildState) {
   return (state.data.kind === 'research' || state.data.kind === 'research-planning')
-    ? state.data.inputs.map(ref => ({ artifactId: ref.id, sha256: ref.sha256, kind: ref.kind, chars: ref.chars, revision: ref.revision }))
-    : state.data.inputs.map(ref => ({ ...ref, revision: null }))
+    ? state.data.inputs.map(ref => ({ artifactId: ref.id, sha256: ref.sha256, kind: ref.kind, chars: ref.chars, revision: ref.revision, view: undefined as 'prose' | undefined }))
+    : state.data.inputs.map(ref => ({ ...ref, revision: null, view: ref.view }))
 }
 
-function consume(state: ChildState, request: GenerateOptions, correctNativeRejections: boolean): void {
+function consume(state: ChildState, request: GenerateOptions, correctNativeRejections: boolean, storedText: (id: ArtifactId) => string): void {
   if (state.pending === null) return
   if (state.pending.name === 'structured_output' && correctNativeRejections) {
     // Only a native rejection continues the turn; like a model reading the tool error, resubmit the unmodified value in the same turn.
@@ -136,9 +139,11 @@ function consume(state: ChildState, request: GenerateOptions, correctNativeRejec
     state.readPages += 1
     state.text += page.text
     state.offset = page.nextOffset
+    if (page.view !== (ref.view ?? 'stored')) throw new Error(`Native artifact page view ${page.view} differs from the announced input view`)
     if (page.eof) {
-      if (createHash('sha256').update(state.text).digest('hex') !== ref.sha256) throw new Error('Completed native input pages do not match the source digest')
-      state.sources.set(ref.artifactId, { artifactId: ref.artifactId, sha256: ref.sha256, kind: ref.kind, text: state.text })
+      // A prose view is derived text: sha256 identifies the stored version it was derived from, not the served text.
+      if (page.view === 'stored' && createHash('sha256').update(state.text).digest('hex') !== ref.sha256) throw new Error('Completed native input pages do not match the source digest')
+      state.sources.set(ref.artifactId, { artifactId: ref.artifactId, sha256: ref.sha256, kind: ref.kind, text: state.text, view: page.view, ...(page.view === 'prose' ? { stored: storedText(ref.artifactId) } : {}) })
       state.inputIndex += 1
       state.offset = 0
       state.text = ''
@@ -167,6 +172,8 @@ function source(state: ChildState, id: ArtifactId): WritingFixtureSource {
 }
 
 function quoteCandidate(candidate: WritingFixtureSource): string {
+  // Served as reader-facing prose: quote the start of its first prose line, as a model reading plain text would.
+  if (candidate.view === 'prose') return candidate.text.split('\n').find(line => line.trim().length > 0)!.slice(0, 100)
   const value: unknown = JSON.parse(candidate.text)
   switch (candidate.kind) {
     case 'settings-dimension': return StageOutputSchemas.settings.parse(value).facts[0]!.statement
@@ -181,7 +188,7 @@ function quoteCandidate(candidate: WritingFixtureSource): string {
 
 function generate(state: ChildState): object {
   const task = state.task
-  if (task === null || (state.data.kind === 'research' || state.data.kind === 'research-planning')) throw new Error('Research output uses its actual native plan')
+  if (task === null || (state.data.kind === 'research' || state.data.kind === 'research-planning' || state.data.kind === 'review-citation-repair')) throw new Error('Research output uses its actual native plan')
   for (const ref of task.inputRefs) if (source(state, ref.artifactId).sha256 !== ref.sha256) throw new Error('Fixture stage task references unread or changed input')
   const base = { version: 1, inputRefs: task.inputRefs }
   const revision = task.revisionInstructions === undefined ? '' : `修订要求：${task.revisionInstructions}`
@@ -235,17 +242,19 @@ function generate(state: ChildState): object {
  */
 export async function useWritingFixture(options: WritingFixtureOptions = {}) {
   const stages = new Map<SessionId, ChildState>()
+  // Bound once the service and novel exist; children only run after that.
+  let storedText: ((id: ArtifactId) => string) | undefined
   const maxReadChars = options.maxReadChars ?? 512
   const fixture = await useStageFixture(request => {
     const sessionId = required(request.sessionId, 'native child Session ID')
     let state = stages.get(sessionId)
     if (state === undefined) {
       const data = readTask(request)
-      state = { sessionId, data, kind: data.kind, task: data.kind === 'research' || data.kind === 'research-planning' ? null : taskSchema.parse(JSON.parse(data.task)), sources: new Map(), requestCount: 0, readPages: 0, inputIndex: 0, offset: 0, text: '', researchPhase: 0, planId: null, pending: null, nativeRejections: 0 }
+      state = { sessionId, data, kind: data.kind, task: data.kind === 'research' || data.kind === 'research-planning' || data.kind === 'review-citation-repair' ? null : taskSchema.parse(JSON.parse(data.task)), sources: new Map(), requestCount: 0, readPages: 0, inputIndex: 0, offset: 0, text: '', researchPhase: 0, planId: null, pending: null, nativeRejections: 0 }
       stages.set(sessionId, state)
     }
     state.requestCount += 1
-    consume(state, request, options.correctNativeRejections === true)
+    consume(state, request, options.correctNativeRejections === true, id => required(storedText, 'stored text lookup')(id))
     options.onChildRequest?.(state, request)
     const emit = (name: string, args: object) => {
       const callId = `${name}-${state.requestCount}`
@@ -266,6 +275,12 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
       if (state.researchPhase === 2) return emit('story_complete_research', { novelId: data.novelId, planId: state.planId, requestId: data.requestId, findings: [{ questionId: 'fixture-fiction', callIds: [], selections: [], conclusion: `Preserve the fictional premise: ${source(state, data.briefArtifactId).text}`, adequate: true }] })
       if (state.researchPhase === 3) return emit('story_get_research', { novelId: data.novelId, planId: state.planId })
       const output = { planId: state.planId }
+      return emit('structured_output', options.intervene === undefined || state.nativeRejections > 0 ? output : options.intervene(state, output))
+    }
+    if (state.data.kind === 'review-citation-repair') {
+      // Like a model copying from the reviewed candidate (the last listed input): one exact excerpt per listed item.
+      const reviewed = required(state.data.inputs.at(-1), 'reviewed candidate input')
+      const output = { version: 1, items: state.data.items.map(item => ({ location: item.location, evidence: [{ artifactId: reviewed.artifactId, quote: quoteCandidate(source(state, reviewed.artifactId)) }] })) }
       return emit('structured_output', options.intervene === undefined || state.nativeRejections > 0 ? output : options.intervene(state, output))
     }
     const injected = options.injectFinish?.(state)
@@ -297,6 +312,7 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
   const workspace = await fixture.ctx.fs.resolve('.', { cwd: fixture.root })
   const actor: Actor = { sessionId: fixture.parent.session.id, workspace: workspace.displayPath }
   const novel = await service.createNovel(actor, { requestId: parseRequestId('writing-fixture-novel'), title: '雾港航标', brief: '守灯人林澜在虚构雾港追查失踪船只。请完成三章故事，每章三千至五千字。' })
+  storedText = id => service.getArtifact(actor, { novelId: novel.id, artifactId: id }).text
   const input: StartWritingInput = { novelId: novel.id, briefArtifactId: novel.brief.id, requestId: parseRequestId('writing-fixture-run'), settingsRoots: ['a1'], chapterCount: 3, fromChapter: 1, throughChapter: 3, mode: 'write' }
   return { ...fixture, service, runs, runner, actor, novel, input, stages: stages as ReadonlyMap<SessionId, WritingFixtureStage> }
 }

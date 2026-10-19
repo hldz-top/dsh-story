@@ -380,25 +380,74 @@ it('regenerates an over-bound classification settings candidate and carries its 
   expect(repairedChild?.task?.validationError).toContain('A classification dimension allows at most 10 facts')
 })
 
-it('repairs a settings review whose quote adds words to its source and names that citation in the repair prompt', async () => {
+it('repairs a settings review whose quote adds words to its source by rewriting only that citation, not the whole review', async () => {
   // Mirrors live run run_2a372815: the model prefixed "进一步确认" to an exact a4 excerpt.
   let misquoted = false
+  let original: ReturnType<typeof StageOutputSchemas.review.parse> | undefined
   const fixture = await useWritingFixture({ intervene(stage, output) {
     if (stage.kind !== 'review' || misquoted) return output
     misquoted = true
     const review = StageOutputSchemas.review.parse(output)
     const [check, ...rest] = review.checks
-    return { ...review, checks: [{ ...check!, evidence: [{ ...check!.evidence[0]!, quote: `进一步确认${check!.evidence[0]!.quote}` }, ...check!.evidence.slice(1)] }, ...rest] }
+    original = { ...review, checks: [{ ...check!, evidence: [{ ...check!.evidence[0]!, quote: `进一步确认${check!.evidence[0]!.quote}` }] }, ...rest] }
+    return original
   } })
   const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
   if (outcome.status === 'rejected') throw outcome.reason
   expect(outcome.value.error).toBeNull()
   expect(outcome.value.status).toBe('completed')
-  expect(outcome.value.attempts.filter(item => /^settings\/0\/a1\/candidate\/0\/review\/\d+$/.test(item.key)).map(item => item.key))
-    .toEqual(['settings/0/a1/candidate/0/review/0', 'settings/0/a1/candidate/0/review/1'])
-  const repairedChild = [...fixture.stages.values()].find(stage => stage.kind === 'review' && stage.task?.validationError != null)
-  expect(repairedChild?.task?.validationError).toMatch(/^Evidence quote does not occur in its declared source artifact_[0-9a-f-]+: "进一步确认/)
-  expect(repairedChild?.task?.validationError).toContain('character for character')
+  const a1Reviews = outcome.value.attempts.filter(item => item.key.startsWith('settings/0/a1/candidate/0/review/'))
+  expect(a1Reviews.map(item => [item.key, item.status])).toEqual([['settings/0/a1/candidate/0/review/0', 'succeeded'], ['settings/0/a1/candidate/0/review/1/citations', 'succeeded']])
+  // No second whole review was requested: only the citation repair child ran, and it was given exactly the rejected item.
+  expect([...fixture.stages.values()].filter(stage => stage.kind === 'review' && stage.task?.validationError != null)).toEqual([])
+  const repairStage = [...fixture.stages.values()].find(stage => stage.kind === 'review-citation-repair')!
+  expect(repairStage.data.kind === 'review-citation-repair' && repairStage.data.items.map(item => item.location)).toEqual(['checks[0]'])
+  const prompt = await loggedPrompt(fixture, repairStage.sessionId)
+  expect(prompt).toContain('进一步确认')
+  expect(prompt).toMatch(/Evidence quote does not occur in its declared source artifact_[0-9a-f-]+: \\"进一步确认/)
+  // The admitted review is the prior value with only checks[0].evidence replaced.
+  const a1 = fixture.service.getSettings(fixture.actor, fixture.input.novelId).history.find(item => item.dimensionCode === 'a1' && item.review !== null)!
+  const saved = StageOutputSchemas.review.parse(JSON.parse(fixture.service.getArtifact(fixture.actor, { novelId: fixture.input.novelId, artifactId: a1.review!.id }).text))
+  expect({ ...saved, checks: saved.checks.slice(1) }).toEqual({ ...original!, checks: original!.checks.slice(1) })
+  expect({ ...saved.checks[0], evidence: [] }).toEqual({ ...original!.checks[0], evidence: [] })
+  expect(saved.checks[0]!.evidence[0]!.quote).not.toContain('进一步确认')
+})
+
+it('serves every review input as plain prose, never stored JSON, while other stages keep reading stored text', async () => {
+  const fixture = await useWritingFixture()
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.status).toBe('completed')
+  const reviews = [...fixture.stages.values()].filter(stage => stage.kind === 'review')
+  expect(reviews.length).toBeGreaterThan(0)
+  for (const stage of reviews) for (const source of stage.sources.values()) {
+    expect(source.view, `${stage.sessionId} ${source.kind}`).toBe('prose')
+    for (const scaffolding of ['"sceneId"', '"chapterNumber"', '"inputRefs"', '"sha256"']) expect(source.text).not.toContain(scaffolding)
+  }
+  const bodyReview = reviews.find(stage => [...stage.sources.values()].some(source => source.kind === 'body' && source.artifactId === stage.task?.reviewed?.artifactId))!
+  const bodySource = bodyReview.sources.get(bodyReview.task!.reviewed!.artifactId)!
+  expect(bodySource.text).toBe(JSON.parse(bodySource.stored!).scenes.map((scene: { text: string }) => scene.text).join('\n\n'))
+  for (const stage of fixture.stages.values()) if (stage.kind === 'body' || stage.kind === 'continuity') for (const source of stage.sources.values()) expect(source.view).toBe('stored')
+})
+
+it('drops an unresolvable citation from an item that keeps other valid evidence and records the drop on the run attempt', async () => {
+  let injected = false
+  const fixture = await useWritingFixture({ intervene(stage, output) {
+    if (stage.kind !== 'review' || injected) return output
+    injected = true
+    const review = StageOutputSchemas.review.parse(output)
+    const [check, ...rest] = review.checks
+    return { ...review, checks: [{ ...check!, evidence: [...check!.evidence, { artifactId: check!.evidence[0]!.artifactId, quote: '这句话从未出现在任何输入中。' }] }, ...rest] }
+  } })
+  const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+  if (outcome.status === 'rejected') throw outcome.reason
+  expect(outcome.value.status).toBe('completed')
+  const first = outcome.value.attempts.find(item => item.key === 'settings/0/a1/candidate/0/review/0')!
+  expect(outcome.value.attempts.some(item => item.key.startsWith('settings/0/a1/candidate/0/review/1'))).toBe(false)
+  expect(first.evidenceEvents).toEqual([expect.objectContaining({ kind: 'dropped', location: 'checks[0]', declared: expect.objectContaining({ quote: '这句话从未出现在任何输入中。' }), admitted: [],
+    reason: expect.stringMatching(/^Evidence quote does not occur in its declared source/) })])
+  // Durable, not just logged: the stored run carries it.
+  expect(fixture.runs.get(fixture.actor, outcome.value.id).attempts.find(item => item.id === first.id)?.evidenceEvents).toHaveLength(1)
 })
 
 /** Real e1 planning capture from live run run_dbe969a5: 13 questions against maxResearchQuestions 12. */
