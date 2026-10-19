@@ -38,6 +38,8 @@ const guardrails: Record<string, readonly string[]> = {
 const allGuardrails = Object.values(guardrails).flat()
 /** Distinctive phrase of the version-3 AI-tone review sentence. */
 const AI_TONE_PHRASE = 'task.aiToneMarkers'
+/** Distinctive phrase of the version-4 AI-tone body-writing rule. */
+const AI_TONE_WRITING_PHRASE = 'Keep the narration free of AI tone'
 
 describe('version 1 is frozen', () => {
   it('rebuilds every pre-versioning prompt byte for byte, with the version omitted or explicit', () => {
@@ -67,13 +69,14 @@ describe('version 3 AI-tone review', () => {
 })
 
 describe('version 2 guardrails', () => {
-  it('is followed by version 3 for new runs', () => { expect(CURRENT_PROMPT_VERSION).toBe(3) })
+  it('is followed by version 4 for new runs', () => { expect(CURRENT_PROMPT_VERSION).toBe(4) })
 
   it('appends each sentence only to its own stage', () => {
     for (const kind of kinds) {
       const prompt = buildStagePrompt({ ...base, kind, promptVersion: 2 })
       for (const phrase of allGuardrails) expect(prompt.includes(phrase), `${kind}: ${phrase}`).toBe((guardrails[kind] ?? []).includes(phrase))
       expect(prompt, kind).not.toContain(AI_TONE_PHRASE)
+      expect(prompt, kind).not.toContain(AI_TONE_WRITING_PHRASE)
     }
   })
 
@@ -106,6 +109,22 @@ function recorder() {
     seen.push({ stage, prompt, request: JSON.stringify(request) })
   } }
 }
+
+describe('version 4 AI-tone writing rule', () => {
+  it('adds the short rule to the body stage only, on top of version 3', () => {
+    for (const kind of kinds) {
+      const v3 = buildStagePrompt({ ...base, kind, promptVersion: 3 })
+      const v4 = buildStagePrompt({ ...base, kind, promptVersion: 4 })
+      expect(v3, kind).not.toContain(AI_TONE_WRITING_PHRASE)
+      expect(v4.includes(AI_TONE_WRITING_PHRASE), kind).toBe(kind === 'body')
+      if (kind !== 'body') expect(v4, kind).toBe(v3)
+    }
+    const body = buildStagePrompt({ ...base, kind: 'body', promptVersion: 4 })
+    expect(body).toContain('ban on technical metaphors comes first')
+    expect(body).toContain('technical or financial metaphors')
+    expect(body.split('\n\n').filter(paragraph => paragraph.includes(AI_TONE_WRITING_PHRASE))).toHaveLength(1)
+  })
+})
 
 describe('runs keep their prompt version', () => {
   it('resumes a version-1 run with version-1 prompts, schemas and task data', { timeout: 120_000 }, async () => {
@@ -142,13 +161,28 @@ describe('runs keep their prompt version', () => {
     expect(task).not.toHaveProperty('aiToneMarkers')
   })
 
-  it('starts new runs on version 3 and hands body reviews host-measured beats and AI-tone markers', { timeout: 120_000 }, async () => {
+  it('resumes a version-3 run without the version-4 writing rule', { timeout: 120_000 }, async () => {
+    const record = recorder()
+    const fixture = await useWritingFixture({ maxReadChars: 8192, onChildRequest: record.onChildRequest })
+    const run = await fixture.runs.begin(fixture.actor, { ...fixture.input, chapterCount: 1, throughChapter: 1, revision: null,
+      executionLimits: fixture.runner.limits, serviceLimits: { ...fixture.service.limits, ...fixture.service.researchLimits } }, 3)
+    await fixture.runs.finish(fixture.actor, run.id, 'stopped', 'Stored on prompt version 3.')
+    const outcome = await fixture.run(exec => fixture.runner.resume(exec, run.id, false))
+    if (outcome.status === 'rejected') throw outcome.reason
+    expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 3 })
+    expect(record.seen.some(item => item.stage.kind === 'body')).toBe(true)
+    for (const { prompt } of record.seen) expect(prompt).not.toContain(AI_TONE_WRITING_PHRASE)
+  })
+
+  it('starts new runs on version 4 and hands body reviews host-measured beats and AI-tone markers', { timeout: 120_000 }, async () => {
     const record = recorder()
     const fixture = await useWritingFixture({ maxReadChars: 8192, onChildRequest: record.onChildRequest })
     const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, chapterCount: 1, throughChapter: 1 }))
     if (outcome.status === 'rejected') throw outcome.reason
-    expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 3 })
+    expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 4 })
     expect(record.seen.find(item => item.stage.kind === 'body')?.prompt).toContain('tool or equipment list in the settings')
+    expect(record.seen.find(item => item.stage.kind === 'body')?.prompt).toContain(AI_TONE_WRITING_PHRASE)
+    for (const item of record.seen.filter(item => item.stage.kind !== 'body')) expect(item.prompt).not.toContain(AI_TONE_WRITING_PHRASE)
     expect(record.seen.find(item => item.stage.kind === 'chapter-outline')?.request).toContain('stateNotes')
     const bodyReview = record.seen.find(item => item.stage.kind === 'review' && typeof item.stage.task?.measuredWordCount === 'number')
     expect(bodyReview?.prompt).toContain('task.measuredBeats')
