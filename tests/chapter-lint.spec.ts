@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { assembleChapter, chapterFromMarkdown, lintChapter, panelLimits, requiredLiterals, type LintBody, type LintOutline } from '../src/chapter-lint.ts'
+import { assembleChapter, chapterFromMarkdown, lintChapter, panelLimits, requiredLiterals, TECH_METAPHOR_TERMS, type LintBody, type LintOutline } from '../src/chapter-lint.ts'
 
 // Acceptance spec: /workspace/dsh-story-notes/p1-lint-expectations.md (QA Lead, 2026-10-19 18:09 Asia/Taipei).
 // Fixtures are the stored artifact texts of 第七号协议 ch1: v1 artifact_230c4d0c (sha256 c755b9a5…), v2 artifact_82f3048a
@@ -104,7 +104,7 @@ describe('no false positives', () => {
     for (const body of [v1, v2]) {
       const report = lintChapter(body)
       expect(report.typos.some(typo => typo.wrong === '掉水' && typo.context.includes('掉压'))).toBe(false)
-      expect(report.similes).toEqual([])
+      expect(report.metaphors).toEqual([])
     }
   })
 
@@ -112,16 +112,42 @@ describe('no false positives', () => {
     expect(lintChapter('他的眼睛还停在【】上。\n\n【任务完成】').panels.count).toBe(1)
   })
 
-  it('reports nothing for a chapter without outline, typos or similes', () => {
+  it('reports nothing for a chapter without outline, typos or metaphors', () => {
     expect(lintChapter('他把扳手放回工具包。门框是凉的。').findings).toEqual([])
   })
 })
 
-describe('technology and finance similes (advisory)', () => {
-  it('flags a 「比…还」 comparison with a credit-rating object and leaves physical comparisons alone', () => {
-    const report = lintChapter('「这条路的气密性比我的信用评级还差。」他签过的责任单比他修过的门还多。')
-    expect(report.similes.map(simile => simile.text)).toEqual(['比我的信用评级还差'])
-    expect(report.findings.map(finding => [finding.severity, finding.code])).toEqual([['advisory', 'tech-finance-simile']])
+describe('technical metaphors (advisory)', () => {
+  it('flags the banned example sentence by its term list', () => {
+    const report = lintChapter('「这条路的气密性比我的信用评级还差。」他抬头看了一眼。')
+    expect(report.metaphors.map(item => [item.sentence, item.terms])).toEqual([['「这条路的气密性比我的信用评级还差', ['气密性', '信用评级', '信用', '评级']]])
+    expect(report.findings.map(finding => [finding.severity, finding.code])).toEqual([['advisory', 'tech-metaphor']])
+  })
+
+  it('reports 0 for both drafts, including every 气密胶 tool mention', () => {
+    for (const [body, count] of [[v1, 1], [v2, 2]] as const) {
+      expect(assembleChapter(body).split('气密胶').length - 1).toBe(count)
+      expect(lintChapter(body).metaphors).toEqual([])
+    }
+  })
+
+  it('needs a comparison marker as well as a term', () => {
+    expect(lintChapter('他把应急锁环、气密胶、对接环密封件一件件码进工具包。带宽不够。').metaphors).toEqual([])
+    expect(lintChapter('他像往常一样拧开气密胶。').metaphors).toEqual([])
+    expect(TECH_METAPHOR_TERMS).not.toContain('气密')
+    expect(lintChapter('那条缝像一台掉线的服务器似的。').metaphors.map(item => item.terms)).toEqual([['服务器']])
+    expect(lintChapter('他喘得比服务器宕机时还急。').metaphors.map(item => item.terms)).toEqual([['服务器']])
+  })
+
+  it('ignores comparison characters inside ordinary words and literal uses of a term', () => {
+    for (const sentence of ['气密性好像有点问题。', '比如气密性，他每班都查。', '舱门的气密性无比重要。', '他比较了两次信用评级。', '舱门的气密性检测通过了。']) {
+      expect(lintChapter(sentence).metaphors, sentence).toEqual([])
+    }
+  })
+
+  it('leaves ordinary comparisons and genre words alone', () => {
+    const clean = '他签过的责任单比他修过的门还多。压力比刚才低了一格。气密胶比平时稠。他不确定这东西要不要付利息。比如这道缝。'
+    expect(lintChapter(clean).metaphors).toEqual([])
   })
 })
 

@@ -21,10 +21,10 @@ export interface LintOutline {
 export interface TypoRule { readonly wrong: string; readonly right: string }
 /** A named passage whose first occurrence is reported as a position. */
 export interface LintAnchor { readonly label: string; readonly pattern: string }
-export interface LintOptions { readonly outline?: LintOutline; readonly typos?: readonly TypoRule[]; readonly anchors?: readonly LintAnchor[] }
+export interface LintOptions { readonly outline?: LintOutline; readonly typos?: readonly TypoRule[]; readonly anchors?: readonly LintAnchor[]; readonly metaphorTerms?: readonly string[] }
 
 export type LintSeverity = 'error' | 'info' | 'advisory'
-export interface LintFinding { readonly check: 'panels' | 'literals' | 'positions' | 'typos' | 'similes'; readonly severity: LintSeverity; readonly code: string; readonly message: string }
+export interface LintFinding { readonly check: 'panels' | 'literals' | 'positions' | 'typos' | 'metaphors'; readonly severity: LintSeverity; readonly code: string; readonly message: string }
 export interface PanelLine { readonly index: number; readonly offset: number; readonly percent: number; readonly text: string }
 export interface Located { readonly offset: number; readonly percent: number; readonly context: string }
 
@@ -38,7 +38,7 @@ export interface ChapterLintReport {
     readonly anchors: readonly { readonly label: string; readonly match: (Located & { readonly text: string }) | null }[]
   }
   readonly typos: readonly (TypoRule & Located)[]
-  readonly similes: readonly (Located & { readonly text: string })[]
+  readonly metaphors: readonly (Located & { readonly sentence: string; readonly terms: readonly string[] })[]
   readonly findings: readonly LintFinding[]
 }
 
@@ -55,8 +55,20 @@ const PANEL_LINE = /^【[^\n]*】$/gmu
 const META_UNIT = /^\s*(?:[–\-~～/]\s*\d|字|拍|条|次|%|％|章|段|步|个|句|处|成|倍|分之)/u
 const LITERAL = /(?<![\p{L}\p{N}_.:：–\-~～/])([A-Z]?\d+(?::\d{2})?)(?![\p{L}\p{N}_:：])/gu
 const META_PREFIX = new Set(['第', '–', '-', '~', '～', '/'])
-/** A 「比…还」 comparison whose object is a finance or technology term, e.g. 「这条路的气密性比我的信用评级还差」. */
-const TECH_FINANCE_SIMILE = /比[^。！？!?\n，,；;「」]{0,14}?(?:信用|评级|利息|利率|贷款|房贷|股价|股票|汇率|余额|账户|存款|工资|KPI|带宽|内存|硬盘|算力|网速|信号格|电量|服务器|宽带|流量|分辨率|帧率|版本号)[^。！？!?\n，,；;「」]{0,8}?还[^。！？!?\n，,；;」]{0,4}/gu
+/**
+ * Technology and finance terms that turn a 「比」 comparison into a technical metaphor, as in the banned example
+ * 「这条路的气密性比我的信用评级还差」. Seeded from qa-ch1-v2-style.md §六.2 (气密性、信用评级、带宽、内存、算力、协议栈)
+ * plus close finance/IT neighbours. Ordinary words of this genre (压力、协议、气密胶、读数) are deliberately absent;
+ * a term only counts inside a sentence that also contains a comparison construction ({@link COMPARISON}).
+ */
+export const TECH_METAPHOR_TERMS: readonly string[] = ['气密性', '信用评级', '信用', '评级', '带宽', '内存', '算力', '协议栈', '利率', '贷款', '房贷', '股价', '汇率', 'KPI', '服务器', '网速', '硬盘', '缓存', 'CPU', '帧率', '分辨率', '版本号']
+/**
+ * Comparison constructions, not bare characters: 「X比Y还/更/都…」, 「像X一样/似的/一般」, and the unambiguous 如同、仿佛、好比、
+ * 犹如、宛如、宛若. Excluded on purpose: 比如、比较、比方、比例、比赛、比分、比重、比率、对比、无比 (no comparison) and 好像
+ * (“seems”). Known limits: a 「像X」 metaphor without 一样/似的/一般 and comparisons spanning more than 16 characters are
+ * not matched; a listed term elsewhere in a matched sentence still counts.
+ */
+const COMPARISON = /(?<![无对])比(?![如较方例赛分重率])[^，,。！？!?\n]{1,16}?[还更都]|(?<!好)像[^，,。！？!?\n]{1,16}?(?:一样|似的|一般)|如同|仿佛|好比|犹如|宛如|宛若/u
 const CONTEXT = 12
 
 /** @returns The chapter text exactly as reviewers and the exported .md see it. */
@@ -195,10 +207,17 @@ export function lintChapter(chapter: string | LintBody, options: LintOptions = {
   const typos = (options.typos ?? DEFAULT_TYPOS).flatMap(rule => occurrences(text, rule.wrong, points).map(found => ({ ...rule, ...found })))
   for (const typo of typos) findings.push({ check: 'typos', severity: 'error', code: 'typo', message: `错字「${typo.wrong}」→「${typo.right}」（${typo.percent}%）：${typo.context}` })
 
-  const similes = [...text.matchAll(TECH_FINANCE_SIMILE)].map(match => ({ ...points.locate(match.index, [...match[0]].length), text: match[0] }))
-  for (const simile of similes) findings.push({ check: 'similes', severity: 'advisory', code: 'tech-finance-simile', message: `技术/金融比喻「${simile.text}」（${simile.percent}%）` })
+  const terms = options.metaphorTerms ?? TECH_METAPHOR_TERMS
+  const metaphors: (Located & { sentence: string; terms: string[] })[] = []
+  for (const match of text.matchAll(/[^。！？!?\n]+/gu)) {
+    const sentence = match[0]
+    if (!COMPARISON.test(sentence)) continue
+    const hits = terms.filter(term => sentence.includes(term))
+    if (hits.length > 0) metaphors.push({ ...points.locate(match.index, [...sentence].length), sentence: sentence.trim(), terms: hits })
+  }
+  for (const metaphor of metaphors) findings.push({ check: 'metaphors', severity: 'advisory', code: 'tech-metaphor', message: `技术比喻（${metaphor.terms.join('、')}，${metaphor.percent}%）：${metaphor.sentence}` })
 
-  return { chars: points.length, panels: { count: lines.length, nominal, max, lines, duplicates }, literals: { required, taskPanelDigit }, positions: { scenes, obligations, anchors }, typos, similes, findings }
+  return { chars: points.length, panels: { count: lines.length, nominal, max, lines, duplicates }, literals: { required, taskPanelDigit }, positions: { scenes, obligations, anchors }, typos, metaphors, findings }
 }
 
 function occurrences(text: string, needle: string, points: Points): Located[] {
