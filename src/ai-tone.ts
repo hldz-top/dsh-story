@@ -2,15 +2,16 @@
  * Host-side AI-tone markers for chapter narration, adapted from lieflat-less-ai-tone
  * (https://github.com/larashero3-dotcom/lieflat-less-ai-tone, commit 27d2923, MIT License, Copyright (c) 2026 shiujan;
  * full notice in third_party/lieflat-less-ai-tone.LICENSE). The patterns follow the skill's locatable trigger markers
- * (SKILL.md rules 1, 2, 4, 5, 8/9, 10 and 11; regexes after scripts/compare-human-ai.py and scripts/check-structure.py).
+ * (SKILL.md rules 1, 2, 4, 8/9, 10 and 11; regexes after scripts/compare-human-ai.py and scripts/check-structure.py).
  *
  * Only narration is scanned: 「」 and “” dialogue and standalone 【】 panel lines are removed first, because the skill
  * leaves dialogue, quotations and genre formatting alone. Rules the skill exempts for fiction are not ported: adjacent
- * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Counts are evidence for an advisory
+ * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Rule 5 (提示性冒号) is not ported either:
+ * in fiction it mostly hit in-story form fields such as report lines. Counts are evidence for an advisory
  * style review, never a gate; this module computes no chapter positions.
  */
 
-export type AiToneRule = 'reversal' | 'enumeration' | 'dash' | 'cue-colon' | 'opener' | 'nominalization' | 'long-attributive' | 'when-clause' | 'topic-shell' | 'connective' | 'restatement' | 'zero-subject-comment'
+export type AiToneRule = 'reversal' | 'enumeration' | 'dash' | 'opener' | 'nominalization' | 'long-attributive' | 'when-clause' | 'topic-shell' | 'connective' | 'restatement' | 'zero-subject-comment'
 export interface AiToneMarker { readonly rule: AiToneRule; readonly skillRule: string; readonly count: number; readonly perThousandHan: number; readonly examples: readonly string[] }
 export interface AiToneReport { readonly source: 'lieflat-less-ai-tone@27d2923 (MIT)'; readonly narrationHan: number; readonly markers: readonly AiToneMarker[] }
 
@@ -19,7 +20,6 @@ const patterns: readonly { readonly rule: Exclude<AiToneRule, 'zero-subject-comm
   { rule: 'reversal', skillRule: '1 翻案腔', pattern: new RegExp(`(?:不是|并非|不在于)${SPAN}{1,20}，?(?:而是|而在于)|与其说[^。！？\\n]{1,20}不如说|看似[^。！？\\n]{1,20}实则|你以为[^。！？\\n]{1,20}其实|说到底|回头才发现|答案恰恰相反`, 'gu') },
   { rule: 'enumeration', skillRule: '2 顿号罗列过密', pattern: /[^，。！？；：、\n]{1,14}、[^，。！？；：、\n]{1,14}、[^，。！？；：、\n]{1,14}/gu },
   { rule: 'dash', skillRule: '4 破折号', pattern: /——/gu },
-  { rule: 'cue-colon', skillRule: '5 提示性冒号', pattern: /(?:一句话(?:总结|说|概括)|简单说|说白了|总结|小结|结论|核心(?:是|在于|观点)?|关键(?:是|在于)?|重点(?:是)?|原因(?:如下|有|在于)?|问题(?:是|在于)?|答案(?:是)?|本质(?:是|上)?|定义(?:是)?|换句话说|也就是说)[：:]/gu },
   { rule: 'opener', skillRule: '9 禁用起手式', pattern: /说白了|说穿了|先说结论/gu },
   { rule: 'nominalization', skillRule: '8 名词化概括', pattern: /(?:完成|实现|进行|开展)了?(?:对)?[^，。\n]{0,10}的(?:优化|提升|调整|分析|改造|升级)/gu },
   { rule: 'long-attributive', skillRule: '10 过长前置定语', pattern: /(?:一个|一种|一套|这种|这个)[^，。、；：！？\n]{15,}的[\u4e00-\u9fff]{2,5}/gu },

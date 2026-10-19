@@ -10,7 +10,6 @@ describe('detectAiTone', () => {
     ['reversal', '真正的壁垒不是技术，而是认知。'],
     ['enumeration', '他检查了阀门、管线、仪表，然后坐下。'],
     ['dash', '答案其实很简单——专注。'],
-    ['cue-colon', '一句话总结：这个方案成本太高。'],
     ['opener', '说白了，这个项目没有预算。'],
     ['nominalization', '团队完成了对流程的优化。'],
     ['long-attributive', '这是一个能够让团队在不增加人力的情况下显著提升审核速度的工具。'],
@@ -34,6 +33,10 @@ describe('detectAiTone', () => {
     expect(narrationOf(text)).not.toContain('说白了')
   })
 
+  it('has no cue-colon rule: form fields and summary colons are not markers', () => {
+    expect(detectAiTone('A4 舱段 · 15:57 · 原因：阀门老化。一句话总结：这个方案成本太高。').markers).toEqual([])
+  })
+
   it('leaves the patterns the skill keeps for humans alone', () => {
     expect(detectAiTone('他为什么不报？门像一张嘴。被认为最稳的阀门也漏了。他慢慢地、一点一点地拧。').markers.filter(marker => marker.rule !== 'enumeration')).toEqual([])
   })
@@ -51,7 +54,7 @@ describe('detectAiTone', () => {
   it('reports the ch1 v1 dash habit and keeps the v2 draft nearly clean', () => {
     const body = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/ai-tone/${name}`, import.meta.url), 'utf8')) as { scenes: { text: string }[] }
     const chapter = (name: string) => body(name).scenes.map(scene => scene.text).join('\n\n')
-    expect(rules(chapter('ch1-v1-body.json'))).toEqual({ enumeration: 4, dash: 14, 'cue-colon': 2 })
-    expect(rules(chapter('ch1-v2-body.json'))).toEqual({ enumeration: 2, 'cue-colon': 1 })
+    expect(rules(chapter('ch1-v1-body.json'))).toEqual({ enumeration: 4, dash: 14 })
+    expect(rules(chapter('ch1-v2-body.json'))).toEqual({ enumeration: 2 })
   })
 })

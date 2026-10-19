@@ -70,7 +70,7 @@ const stageInstructions: Record<StagePromptKind, readonly string[]> = {
  */
 const aiToneGuardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
   review: [
-    'When task.aiToneMarkers is present, review the narration for AI tone using those host-detected markers (after lieflat-less-ai-tone): reversal framing (不是…而是), dense 、 lists, revealing dashes, cue colons, set openers (说白了), nominalised summaries, translationese (当…时, 对于…来说, sentence-initial 然而/因此/此外, 这意味着) and zero-subject paragraph comments. Report each real instance as an advisory style issue quoting the narration; ignore dialogue and panels, and never treat questions, metaphors, sentence-length rhythm, passive voice or long sentences as AI tone. Markers can be false positives, such as form fields like 原因：; AI tone is never blocking.',
+    'When task.aiToneMarkers is present, review the narration for AI tone using those host-detected markers (after lieflat-less-ai-tone): reversal framing (不是…而是), dense 、 lists, revealing dashes, set openers (说白了), nominalised summaries, translationese (当…时, 对于…来说, sentence-initial 然而/因此/此外, 这意味着) and zero-subject paragraph comments. Report each real instance as an advisory style issue quoting the narration; ignore dialogue and panels, and never treat questions, metaphors, sentence-length rhythm, passive voice or long sentences as AI tone. Markers can be false positives; AI tone is never blocking.',
   ],
 }
 
