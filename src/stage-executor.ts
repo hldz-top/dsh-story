@@ -38,6 +38,8 @@ const STRUCTURED_OUTPUT_TOOL = 'structured_output'
 // ToolRuntime's reserved programmatic-calling transport. It only sub-dispatches tools that are themselves visible to the
 // caller, and each nested call passes through the same per-child execution admission below.
 const RUN_CODE_TOOL = 'run_code'
+/** Calls to tool names the child was never shown that are denied as tool errors before such a call ends the stage. */
+export const MAX_UNMOUNTED_TOOL_CALLS = 3
 // Provider-neutral failure codes an adapter may use for a declined or safety-filtered response.
 const REFUSAL_CODES: ReadonlySet<string> = new Set(['REFUSAL', 'CONTENT_FILTER'])
 // The DSH 0.2.0-rc.2 DeepSeek Messages adapter has no refusal finish reason: a provider `refusal` (or `content_filter`)
@@ -98,6 +100,7 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
   let childId: SessionId | undefined
   let childAgent: ToolExecution['agent']
   let requests = 0
+  let unmountedCalls = 0
   // The exact tool surface a stage child may use. The host's inherited-tool restriction cannot filter registrations in
   // the child's OWN scope (for example a per-Agent delegation tool installed when the child is created), so the stage
   // boundary re-checks visibility before every model request and admission before every tool execution.
@@ -144,6 +147,14 @@ export async function executeStage(ctx: Context, exec: ToolExecution, request: S
       await admission.promise
       signal.throwIfAborted()
       if (!permittedTools.has(execution.name) && !(execution.name === RUN_CODE_TOOL && execution.parent === undefined)) {
+        // A name the child was never shown (for example `bash`, suggested by the harness system prompt) is a model
+        // hallucination with nothing behind it: deny just that call as an ordinary tool error so the child can continue,
+        // within a small budget. A tool that IS mounted in the child's scope outside the allow list still ends the stage.
+        const visible = childAgent !== undefined && ctx.tools.schemas(childAgent).some(tool => tool.name === execution.name)
+        if (!visible && unmountedCalls < MAX_UNMOUNTED_TOOL_CALLS) {
+          unmountedCalls += 1
+          throw new Error(`Tool ${execution.name} is not available in this writing stage. Use only the listed tools (${[...permittedTools].join(', ')}); draft the text yourself and return it with ${STRUCTURED_OUTPUT_TOOL}.`)
+        }
         const error = new StageExecutionError('stage-tool-scope', `Writing stage child is not permitted to call ${execution.name}; writing stages must not dispatch further subagents or use tools outside their allow list.`)
         controller.abort(error)
         throw error

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { FinishReason, ToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { executeStage, type StageExecutionConfig } from '../src/stage-executor.ts'
+import { executeStage, MAX_UNMOUNTED_TOOL_CALLS, type StageExecutionConfig } from '../src/stage-executor.ts'
 import { call } from './support/model.ts'
 import { attachWaitingStageTool, useStageFixture } from './support/stage-fixture.ts'
 
@@ -507,5 +507,28 @@ it('classifies a turn blocked before its model step as an explicit refused stage
   }, config))
   expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-refused', message: 'Writing stage was refused (refusal)' } })
   expect(fixture.childRequests).toHaveLength(0)
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
+})
+
+it('denies a hallucinated, never-mounted tool call as a tool error and lets the stage finish (run_d3fc3046 body candidate called bash)', async () => {
+  const fixture = await useStageFixture((_request, index) => index === 0
+    ? call('bash', { command: 'mkdir -p /workspace/dsh-run/ws3 && echo ok' })
+    : call('structured_output', { prose: 'Drafted without a shell.' }))
+  const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
+    attemptId: 'attempt-hallucinated-bash', prompt: 'Write the chapter yourself.', outputSchema, onStarted: async () => {},
+  }, { ...config, allowedTools: [] }))
+  expect(outcome).toMatchObject({ status: 'fulfilled', value: { structured: { prose: 'Drafted without a shell.' } } })
+  expect(fixture.childRequests).toHaveLength(2)
+  expect(JSON.stringify(fixture.childRequests[1])).toContain('Tool bash is not available in this writing stage')
+  expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
+})
+
+it(`ends the stage once a child keeps calling never-mounted tools beyond ${MAX_UNMOUNTED_TOOL_CALLS} denials`, async () => {
+  const fixture = await useStageFixture(() => call('bash', { command: 'wc -m chapter.md' }))
+  const outcome = await fixture.run(exec => executeStage(fixture.ctx, exec, {
+    attemptId: 'attempt-repeated-bash', prompt: 'Write the chapter yourself.', outputSchema, onStarted: async () => {},
+  }, { ...config, allowedTools: [], maxStageRequests: 10 }))
+  expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'stage-tool-scope', message: expect.stringContaining('bash') } })
+  expect(fixture.childRequests).toHaveLength(MAX_UNMOUNTED_TOOL_CALLS + 1)
   expect(fixture.ctx.agents.list()).toEqual([fixture.parent])
 })
