@@ -190,3 +190,24 @@ export class SettingsIncompleteError extends HarnessError {
     this.missing = Object.freeze(codes)
   }
 }
+
+/** One imported settings head named by an import refusal or an import-aware stop. */
+export interface ImportItem { readonly dimensionCode: string; readonly artifactId: ArtifactId; readonly pendingReview: boolean }
+/** Stable failure code for an author import, or a resume, refused because of writing-run state. */
+export const IMPORT_REFUSED = 'import-refused'
+/** run-active: the novel has a running or interrupted run; pending-review: a resumed run would skip the review an import awaits. */
+export type ImportRefusalReason = 'run-active' | 'pending-review'
+/** A refused import or resume; like {@link SettingsIncompleteError} its message ends with one JSON line `{"code":"import-refused","reason":...}`. */
+export class ImportRefusedError extends HarnessError {
+  constructor(readonly reason: ImportRefusalReason, message: string, readonly importItems: readonly ImportItem[] = []) {
+    super(`${message}\n${JSON.stringify({ code: IMPORT_REFUSED, reason, ...(importItems.length === 0 ? {} : { importItems }) })}`, IMPORT_REFUSED)
+    this.name = 'ImportRefusedError'
+  }
+}
+/** A blocking settings-collection review that would regenerate imported author text; the run stops instead. Ends with `{"code":"review-blocked","importItems":[...]}`. */
+export class ImportReviewBlockedError extends HarnessError {
+  constructor(readonly importItems: readonly ImportItem[]) {
+    super(`The settings collection review is blocking and repair would regenerate imported settings (${importItems.map(item => item.dimensionCode).join(', ')}); stopped without regenerating any dimension. Correct the imported text and import it again, then start a new story_update.\n${JSON.stringify({ code: 'review-blocked', importItems })}`, 'review-blocked')
+    this.name = 'ImportReviewBlockedError'
+  }
+}

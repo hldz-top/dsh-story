@@ -37,6 +37,8 @@ export interface Config extends ResearchLimits, RunExecutionLimits {
   previewDirectory: string
   /** Operator-only: skip the required-settings gate for smoke tests. Not a tool argument. Default false. */
   allowIncompleteSettings: boolean
+  /** Operator-only: register story_settings_import. Enable only for an import, then turn it off. Default false: the tool is absent from the tool schema. */
+  allowSettingsImport: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -53,6 +55,7 @@ export const Config: z<Config> = z.object({
   maxReadChars: z.number().default(4096),
   previewDirectory: z.string().default('.dsh-story'),
   allowIncompleteSettings: z.boolean().default(false),
+  allowSettingsImport: z.boolean().default(false),
   maxResearchQuestions: z.number().default(12),
   maxResearchCalls: z.number().default(12),
   maxResearchSources: z.number().default(24),
@@ -117,5 +120,5 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.provide('storyRunner', runner)
   registerWritingTools(ctx, service, config.previewDirectory)
   registerResearchTools(ctx, service)
-  registerRunTools(ctx, service, runner)
+  registerRunTools(ctx, service, runner, { allowSettingsImport: config.allowSettingsImport })
 }

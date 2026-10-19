@@ -25,12 +25,13 @@ async function verifyProjection(ctx: Context, exec: ToolExecution, target: FsTar
  * @param novel - Ownership-checked novel metadata.
  * @param artifact - Ownership-checked exact stored version.
  * @param directory - Configured relative projection directory.
+ * @param imported - The artifact is a settings dimension adopted through author import.
  * @returns Persistable metadata used by the existing document preview.
  */
 export async function projectArtifact(
-  ctx: Context, exec: ToolExecution, actor: Actor, novel: NovelView, artifact: Artifact, directory: string,
+  ctx: Context, exec: ToolExecution, actor: Actor, novel: NovelView, artifact: Artifact, directory: string, imported = false,
 ): Promise<StoryArtifactPreview> {
-  const path = await projectDocument(ctx, exec, actor, `${directory}/${novel.id}/${artifact.id}.md`, artifactMarkdown(artifact), [legacyArtifactMarkdown(artifact)])
+  const path = await projectDocument(ctx, exec, actor, `${directory}/${novel.id}/${artifact.id}.md`, artifactMarkdown(artifact, { imported }), [legacyArtifactMarkdown(artifact)])
   return {
     kind: 'story-artifact-preview', version: 1,
     novelId: novel.id, artifactId: artifact.id, revision: artifact.revision,

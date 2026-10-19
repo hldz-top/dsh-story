@@ -24,7 +24,7 @@ import { call, ScriptedModel, stop } from './support/model.ts'
 const executionLimits = { maxRepairAttempts: 1, maxParallelStages: 1, maxStageRequests: 2, stageTimeoutMs: 1000, maxDelegationDepth: 1, minChapterWords: 3000, maxChapterWords: 5000, stageProvider: 'unmounted-fixture-provider' }
 const researchLimits = { maxResearchQuestions: 8, maxResearchCalls: 4, maxResearchSources: 8, maxEvidenceChars: 2000, maxResearchLogEvents: 200 }
 
-async function setup(model: ScriptedModel, runnerOptions: WritingRunnerOptions = { allowIncompleteSettings: true }) {
+async function setup(model: ScriptedModel, runnerOptions: WritingRunnerOptions = { allowIncompleteSettings: true }, runToolOptions: { allowSettingsImport?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-story-run-tools-'))
   const cwd = join(root, 'author')
   await mkdir(cwd)
@@ -44,7 +44,7 @@ async function setup(model: ScriptedModel, runnerOptions: WritingRunnerOptions =
   const runner = new WritingRunner(ctx, service, runs, executionLimits, new StageDeliveries(ctx, service, runs, '.dsh-story'), runnerOptions)
   ctx.effect(() => () => runner.close())
   ctx.effect(() => ctx.llm.registerAdapter(['fixture'], model))
-  const registration = await ctx.plugin({ name: 'run-tool-fixture-registration', inject: ['tools', 'fs'], apply(scope: Context) { registerRunTools(scope, service, runner) } })
+  const registration = await ctx.plugin({ name: 'run-tool-fixture-registration', inject: ['tools', 'fs'], apply(scope: Context) { registerRunTools(scope, service, runner, runToolOptions) } })
   const harness = await mountAgentLoopTestHarness(ctx)
   const agent = await harness.create(SessionId(randomUUID()), { provider: 'fixture', model: 'deterministic' }, { cwd })
   const resolved = await ctx.fs.resolve('.', { cwd })
@@ -417,4 +417,26 @@ it('returns explicit missing legacy limits through the native tool schema and re
   expect(JSON.stringify(results[1])).toContain('legacy runs without a snapshot cannot resume')
   expect(runs.get(h.actor, run.id)).toEqual(before)
   expect(runs.readOutput(h.actor, run.id, attempt.id).text).toBe('潮🌊汐城钟楼')
+})
+
+it('G1: keeps story_settings_import out of the tool schema unless the operator enables allowSettingsImport', async () => {
+  const off = await setup(new ScriptedModel(() => stop()))
+  expect(off.ctx.tools.get('story_settings_import')).toBeUndefined()
+  expect(off.ctx.tools.get('story_get_settings')).toBeDefined()
+  const on = await setup(new ScriptedModel(() => stop()), { allowIncompleteSettings: true }, { allowSettingsImport: true })
+  expect(on.ctx.tools.get('story_settings_import')).toBeDefined()
+})
+
+it('G2: reports an import refused by an unfinished run with a machine-readable last line through the real tool loop', async () => {
+  let args: Record<string, unknown> = {}
+  const model = new ScriptedModel((_request, index) => index === 0 ? call('story_settings_import', args) : stop())
+  const h = await setup(model, { allowIncompleteSettings: true }, { allowSettingsImport: true })
+  await h.runs.begin(h.actor, h.input)
+  args = { novelId: h.novel.id, requestId: 'import-a1', dimensionCode: 'a1', expectedAppliedId: h.novel.brief.id, output: JSON.stringify({ version: 1, dimensionCode: 'a1', facts: [], contentMarkdown: 'x' }) }
+  beginConversation(h.agent)
+  await h.agent.whenIdle()
+  const result = recordedResults(model)[0]
+  expect(result?.isError).toBe(true)
+  const text = result?.content[0]?.type === 'text' ? result.content[0].text : ''
+  expect(JSON.parse(text.split('\n').at(-1) ?? '')).toEqual({ code: 'import-refused', reason: 'run-active' })
 })
