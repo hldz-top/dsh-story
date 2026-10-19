@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { SettingsIncompleteError } from '../src/contracts.ts'
 import { missingRequiredSettings, REQUIRED_NOVEL_SETTINGS } from '../src/settings-plan.ts'
 import { openRunStore, RunStoreError } from '../src/run-store.ts'
@@ -120,6 +120,40 @@ it('keeps the run-state refusal for a completed run whose settings are incomplet
   expect(reason).not.toBeInstanceOf(SettingsIncompleteError)
   expect(reason).toBeInstanceOf(RunStoreError)
   expect(reason).toMatchObject({ code: 'run-state', message: 'Completed runs cannot resume' })
+  expect(runs.get(fixture.actor, run.id)).toEqual(before)
+  expect(runs.list(fixture.actor, fixture.novel.id)).toEqual([before])
+  expect(fixture.stages.size).toBe(0)
+})
+
+it('checks required settings before the present tool and the captured limits on write and resume', async () => {
+  const fixture = await useWritingFixture({ allowIncompleteSettings: true })
+  const input = runInput(fixture, ['e1'])
+  // An old e1-only run whose captured research limits no longer match the deployment, so resume would also fail run-limits.
+  const run = await fixture.runs.begin(fixture.actor, { ...input, serviceLimits: { ...input.serviceLimits, maxResearchCalls: input.serviceLimits.maxResearchCalls + 1 } })
+  await fixture.runs.finish(fixture.actor, run.id, 'stopped', 'Run stopped before the gate.')
+  const { runs, runnerWith } = await restart(fixture)
+  const before = runs.get(fixture.actor, run.id)
+  const gated = runnerWith({ allowIncompleteSettings: false })
+  const ungated = runnerWith({ allowIncompleteSettings: true })
+  const write = { ...fixture.input, settingsRoots: ['e1'] }
+  const refusedFor = (missing: string[]) => ({ status: 'rejected', reason: { name: 'SettingsIncompleteError', code: 'settings-incomplete', missing } })
+  const noPresent = { status: 'rejected', reason: { message: 'Writing requires the native present tool in this Agent scope' } }
+
+  const tools = fixture.ctx.tools
+  const get = tools.get.bind(tools)
+  const hidden = vi.spyOn(tools, 'get').mockImplementation(((name: string, ...rest: unknown[]) => name === 'present' ? undefined : (get as (...args: unknown[]) => unknown)(name, ...rest)) as typeof tools.get)
+  try {
+    // Without the gate these requests fail on the missing present tool; with it they must report the settings first.
+    expect(await fixture.run(exec => ungated.resume(exec, run.id, true))).toMatchObject(noPresent)
+    expect(await fixture.run(exec => ungated.start(exec, write))).toMatchObject(noPresent)
+    expect(await fixture.run(exec => gated.resume(exec, run.id, true))).toMatchObject(refusedFor(['a3', 'a4', 'a5', 'g1', 'g2']))
+    expect(await fixture.run(exec => gated.start(exec, write))).toMatchObject(refusedFor(['a3', 'a4', 'a5', 'g1', 'g2']))
+  } finally { hidden.mockRestore() }
+
+  // With present visible, the ungated resume fails on the changed limits; the gated one still reports the settings.
+  const limits = await fixture.run(exec => ungated.resume(exec, run.id, true))
+  expect(limits).toMatchObject({ status: 'rejected', reason: { name: 'RunStoreError', code: 'run-limits' } })
+  expect(await fixture.run(exec => gated.resume(exec, run.id, true))).toMatchObject(refusedFor(['a3', 'a4', 'a5', 'g1', 'g2']))
   expect(runs.get(fixture.actor, run.id)).toEqual(before)
   expect(runs.list(fixture.actor, fixture.novel.id)).toEqual([before])
   expect(fixture.stages.size).toBe(0)
