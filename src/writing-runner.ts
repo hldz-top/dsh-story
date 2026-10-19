@@ -112,13 +112,13 @@ export class WritingRunner {
   /**
    * New requests must select every required novel dimension (catalog requiredFor: novel_writing) in their settingsRoots
    * closure before any settings, outline or chapter work starts, unless the operator set allowIncompleteSettings in the plugin config.
-   * A resume continues an already admitted run and is not re-gated.
+   * A resume is re-gated too, so runs admitted with incomplete settings cannot continue unless the operator bypass is set.
    */
   private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
     if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
-    if (!resuming && this.options.allowIncompleteSettings !== true) {
+    if (this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
       if (missing.length > 0) throw new SettingsIncompleteError(missing)
     }

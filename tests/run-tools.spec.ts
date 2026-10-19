@@ -13,7 +13,8 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import * as Present from '@deepseek-ai/dsh-tool-present'
 import { expect, it, onTestFinished } from 'vitest'
 import { z } from 'zod'
-import { parseRequestId, type Actor } from '../src/contracts.ts'
+import { parseRequestId, SettingsIncompleteError, type Actor } from '../src/contracts.ts'
+import { missingRequiredSettings } from '../src/settings-plan.ts'
 import { openWritingService } from '../src/service.ts'
 import { openRunStore, type BeginRunInput, type WritingRun } from '../src/run-store.ts'
 import { WritingRunner, type WritingRunnerOptions } from '../src/writing-runner.ts'
@@ -229,6 +230,26 @@ it.each([
   expect(h.agent.session.snapshotEvents().findLast(event => event.type === 'tool/result')?.data).toMatchObject({ error: { name: 'SettingsIncompleteError', code: 'settings-incomplete' } })
   expect(JSON.stringify(result)).not.toContain('allowIncompleteSettings')
   expect(h.runs.list(h.actor, input.novelId)).toEqual([])
+})
+
+it('refuses story_resume of a run with incomplete required settings as a settings-incomplete tool error and keeps the run', async () => {
+  let run: WritingRun
+  const model = new ScriptedModel((_request, index) => index === 0 ? call('story_resume', { runId: run.id, retryUnknown: true }) : stop())
+  const h = await setup(model, {})
+  run = await h.runs.begin(h.actor, h.input)
+  const stopped = await h.runs.finish(h.actor, run.id, 'stopped', 'Retained run admitted before the gate.')
+  beginConversation(h.agent)
+  await h.agent.whenIdle()
+  const result = recordedResults(model)[0]
+  expect(result).toMatchObject({ isError: true })
+  const codes = ['a2', 'a3', 'a4', 'a5', 'e1', 'g1', 'g2']
+  expect(result?.content).toEqual([{ type: 'text', text: `Error: ${new SettingsIncompleteError(missingRequiredSettings(['a1'])).message}` }])
+  const text = result?.content[0]?.type === 'text' ? result.content[0].text : ''
+  expect(JSON.parse(text.split('\n').at(-1) ?? '')).toEqual({ code: 'settings-incomplete', missing: codes })
+  expect(h.agent.session.snapshotEvents().findLast(event => event.type === 'tool/result')?.data).toMatchObject({ error: { name: 'SettingsIncompleteError', code: 'settings-incomplete' } })
+  expect(JSON.stringify(result)).not.toContain('allowIncompleteSettings')
+  expect(h.runs.get(h.actor, run.id)).toEqual(stopped)
+  expect(h.runs.list(h.actor, h.novel.id)).toEqual([stopped])
 })
 
 it.each([{ fromChapter: 0 }, { fromChapter: 3, throughChapter: 2 }, { throughChapter: 4 }, { settingsRoots: ['e8'] }, { settingsRoots: [] }, { settingsRoots: ['missing'] }])('refuses an invalid writing scope %j before preparing native work', async change => {
