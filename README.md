@@ -10,12 +10,23 @@ DSH Story is a standalone TypeScript plugin for researched settings, book and ch
 
 ## Table of Contents
 
+- [Installation](#installation)
 - [Writing workflow](#writing-workflow)
 - [Reading and previews](#reading-and-previews)
 - [Local development](#local-development)
 - [Host integration](#host-integration)
 - [Limits and distribution](#limits-and-distribution)
 - [Further reading](#further-reading)
+
+## Installation
+
+The npm package is `dsh-story-weaver`. Install it into a DSH profile with the DSH CLI (requires Node ≥22.19, DSH 0.2.x and pnpm on `PATH`):
+
+```sh
+dsh plugin --profile web add dsh-story-weaver
+```
+
+Use `dsh-story-weaver@next` for release candidates. In the DSH web UI you can instead open Plugins → Add plugin and enter `dsh-story-weaver`. Remove it with `dsh plugin --profile web remove dsh-story-weaver`.
 
 ## Writing workflow
 
@@ -58,7 +69,7 @@ The writing service owns immutable documents and applied references; a separate 
 
 One host owns each writing facility; simultaneous writer processes sharing storage are not supported by the verified deployment. Native fixtures establish execution and persistence behavior, not literary quality or large-book performance. The required three-chapter real-model run, full browser acceptance and final human review remain pending.
 
-The manifest declares a built DSH composition bundle. No verified fixed-version private installation address is supplied yet. Distribution is designed around the existing DSH CLI and a prebuilt private release; [the installation study](docs/research/private-cli-install-research.md) separates that design from actual release and authentication evidence. Browser, OS-protocol and Desktop installer enhancements are outside scope.
+The manifest declares a built DSH composition bundle, distributed as the prebuilt npm package `dsh-story-weaver` (see [Installation](#installation)). The earlier [private installation study](docs/research/private-cli-install-research.md) is kept for reference. Browser, OS-protocol and Desktop installer enhancements are outside scope.
 
 ## Further reading
 
