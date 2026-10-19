@@ -10,7 +10,10 @@ function fulfilled<T>(outcome: PromiseSettledResult<T>): T {
   return outcome.value
 }
 
-it('replays a completed request into its new card and rebuilds missing retained output without child work', async () => {
+/** The two full end-to-end replay cases take 12–23 s alone and up to ~60 s on a loaded CI runner; give only them headroom over the 60 s default. */
+const SLOW_REPLAY = { timeout: 120_000 }
+
+it('replays a completed request into its new card and rebuilds missing retained output without child work', SLOW_REPLAY, async () => {
   const fixture = await useWritingFixture({ maxReadChars: 8192 })
   const input = fixture.input
   const completed = fulfilled(await fixture.run(exec => fixture.runner.start(exec, input)))
@@ -61,7 +64,7 @@ it('retains saved research after failed native capture and reuses its history wi
   expect(expected.map(artifactId => fixture.service.getArtifact(fixture.actor, { novelId: fixture.novel.id, artifactId }))).toEqual(originals)
 })
 
-it('delivers all eight reused reader documents without internal artifacts or new child requests', async () => {
+it('delivers all eight reused reader documents without internal artifacts or new child requests', SLOW_REPLAY, async () => {
   const fixture = await useWritingFixture({ maxReadChars: 8192 })
   const input = fixture.input
   const completed = fulfilled(await fixture.run(exec => fixture.runner.start(exec, input)))
