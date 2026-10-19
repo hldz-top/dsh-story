@@ -1,5 +1,7 @@
-import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { assembleChapter, chapterFromMarkdown, lintChapter, panelLimits, requiredLiterals, TECH_METAPHOR_TERMS, type LintBody, type LintOutline } from '../src/chapter-lint.ts'
@@ -135,12 +137,13 @@ describe('technical metaphors (advisory)', () => {
     expect(lintChapter('他把应急锁环、气密胶、对接环密封件一件件码进工具包。带宽不够。').metaphors).toEqual([])
     expect(lintChapter('他像往常一样拧开气密胶。').metaphors).toEqual([])
     expect(TECH_METAPHOR_TERMS).not.toContain('气密')
-    expect(lintChapter('那条缝像一台掉线的服务器似的。').metaphors.map(item => item.terms)).toEqual([['服务器']])
+    expect(lintChapter('他像往常一样检查舱门的气密性。').metaphors).toEqual([])
+    expect(lintChapter('这条路的气密性比我的信用评级还差。').metaphors).toHaveLength(1)
     expect(lintChapter('他喘得比服务器宕机时还急。').metaphors.map(item => item.terms)).toEqual([['服务器']])
   })
 
   it('ignores comparison characters inside ordinary words and literal uses of a term', () => {
-    for (const sentence of ['气密性好像有点问题。', '比如气密性，他每班都查。', '舱门的气密性无比重要。', '他比较了两次信用评级。', '舱门的气密性检测通过了。']) {
+    for (const sentence of ['气密性好像有点问题。', '气密性好像纸一样薄。', '那条缝像一台掉线的服务器似的。', '他的耐心如同老旧服务器。', '比如气密性，他每班都查。', '舱门的气密性无比重要。', '他比较了两次信用评级。', '舱门的气密性检测通过了。']) {
       expect(lintChapter(sentence).metaphors, sentence).toEqual([])
     }
   })
@@ -158,5 +161,39 @@ describe('scripts/chapter-lint.mjs', () => {
     const report = JSON.parse(output) as ReturnType<typeof lintChapter>
     expect(report.panels.duplicates).toEqual([[9, 10]])
     expect(report.typos.map(typo => typo.wrong)).toEqual(['公窄', '从头上到尾'])
+  })
+})
+
+describe('chapter-lint CLI input errors (qa-pr12-lint.md G1, G2, Q1, Q2)', () => {
+  const script = fileURLToPath(new URL('../scripts/chapter-lint.mjs', import.meta.url))
+  const fixture = (name: string) => fileURLToPath(new URL(name, dir))
+  const scratch = mkdtempSync(join(tmpdir(), 'chapter-lint-'))
+  const file = (name: string, content: string | Uint8Array) => { const path = join(scratch, name); writeFileSync(path, content); return path }
+  const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', timeout: 20_000 })
+  const store = file('store.json', JSON.stringify({ tables: { artifacts: { outline: { text: readFileSync(new URL('ch1-outline.json', dir), 'utf8') } } } }))
+
+  it.each([
+    ['{} as the body', [file('empty.json', '{}')]],
+    ['the outline as the body', [fixture('ch1-outline.json')]],
+    ['the body as the outline', [fixture('ch1-v1-body.json'), '--outline', fixture('ch1-v1-body.json')]],
+    ['a bad --anchor regex', [fixture('ch1-v1.md'), '--anchor', '坏=([']],
+    ['typos that is not an array', [fixture('ch1-v1.md'), '--typos', file('typos-object.json', '{"a":1}')]],
+    ['a --store body id naming an outline', ['--store', store, '--body-id', 'outline']],
+    ['a typo with an empty wrong value', [fixture('ch1-v1.md'), '--typos', file('typos-empty.json', '[{"wrong":"","right":"x"}]')]],
+    ['a GBK-encoded chapter', [file('gbk.md', Uint8Array.from([0x23, 0x20, 0xb5, 0xda, 0xd2, 0xbb, 0xd5, 0xc2, 0x0a]))]],
+  ])('exits 2 with one stderr line and no stack for %s', (_name, args) => {
+    const result = run(...args)
+    expect(result.status).toBe(2)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toMatch(/^chapter-lint: [^\n]+\n$/)
+    expect(result.stderr).not.toMatch(/\bat |node:internal/)
+  })
+
+  it('prints usage for --help and -h', () => {
+    for (const flag of ['--help', '-h']) {
+      const result = run(flag)
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('Usage:')
+    }
   })
 })

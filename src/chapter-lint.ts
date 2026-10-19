@@ -63,12 +63,13 @@ const META_PREFIX = new Set(['第', '–', '-', '~', '～', '/'])
  */
 export const TECH_METAPHOR_TERMS: readonly string[] = ['气密性', '信用评级', '信用', '评级', '带宽', '内存', '算力', '协议栈', '利率', '贷款', '房贷', '股价', '汇率', 'KPI', '服务器', '网速', '硬盘', '缓存', 'CPU', '帧率', '分辨率', '版本号']
 /**
- * Comparison constructions, not bare characters: 「X比Y还/更/都…」, 「像X一样/似的/一般」, and the unambiguous 如同、仿佛、好比、
- * 犹如、宛如、宛若. Excluded on purpose: 比如、比较、比方、比例、比赛、比分、比重、比率、对比、无比 (no comparison) and 好像
- * (“seems”). Known limits: a 「像X」 metaphor without 一样/似的/一般 and comparisons spanning more than 16 characters are
- * not matched; a listed term elsewhere in a matched sentence still counts.
+ * The one comparison construction counted: 「X比Y还/更/都…」 within 16 characters. Excluded on purpose: 比如、比较、比方、
+ * 比例、比赛、比分、比重、比率、对比、无比 (no comparison). 像/如同/仿佛-style metaphors are deliberately left to the review
+ * prompts: 「像往常一样」 and 「好像」 make them too noisy for a lint. Known limits: comparisons spanning more than 16 characters
+ * are not matched; a listed term elsewhere in a matched sentence still counts, so literal comparisons (「这扇门的气密性比上一扇还好」)
+ * are reported too, which is why the finding is advisory.
  */
-const COMPARISON = /(?<![无对])比(?![如较方例赛分重率])[^，,。！？!?\n]{1,16}?[还更都]|(?<!好)像[^，,。！？!?\n]{1,16}?(?:一样|似的|一般)|如同|仿佛|好比|犹如|宛如|宛若/u
+const COMPARISON = /(?<![无对])比(?![如较方例赛分重率])[^，,。！？!?\n]{1,16}?[还更都]/u
 const CONTEXT = 12
 
 /** @returns The chapter text exactly as reviewers and the exported .md see it. */
@@ -158,6 +159,7 @@ export function lintChapter(chapter: string | LintBody, options: LintOptions = {
   const points = new Points(text)
   const findings: LintFinding[] = []
   const { outline } = options
+  for (const typo of options.typos ?? []) if (typeof typo?.wrong !== 'string' || typo.wrong.length === 0) throw new Error('every typo entry needs a nonempty "wrong" string')
 
   const lines: PanelLine[] = [...text.matchAll(PANEL_LINE)].map((match, index) => {
     const offset = points.offset(match.index)
@@ -221,6 +223,7 @@ export function lintChapter(chapter: string | LintBody, options: LintOptions = {
 }
 
 function occurrences(text: string, needle: string, points: Points): Located[] {
+  if (needle.length === 0) throw new Error('cannot search for an empty string')
   const found: Located[] = []
   for (let index = text.indexOf(needle); index >= 0; index = text.indexOf(needle, index + needle.length)) found.push(points.locate(index, [...needle].length))
   return found
