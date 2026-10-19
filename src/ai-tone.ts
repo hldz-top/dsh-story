@@ -6,8 +6,7 @@
  *
  * Only narration is scanned: 「」 and “” dialogue and standalone 【】 panel lines are removed first, because the skill
  * leaves dialogue, quotations and genre formatting alone. Rules the skill exempts for fiction are not ported: adjacent
- * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Rule 5 (提示性冒号) is not ported either:
- * in fiction it mostly hit in-story form fields such as report lines. Counts are evidence for an advisory
+ * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Counts are evidence for an advisory
  * style review, never a gate; this module computes no chapter positions.
  */
 
