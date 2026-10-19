@@ -15,8 +15,7 @@ import { openRunStore } from '../src/run-store.ts'
 import { StageDeliveries, registerStageDeliveryProjection } from '../src/stage-deliveries.ts'
 import { useStageFixture } from './support/stage-fixture.ts'
 import { testManuscriptLimits, testResearchLimits } from './support/storage.ts'
-import { call, stop } from './support/model.ts'
-import { executeStage } from '../src/stage-executor.ts'
+import { stop } from './support/model.ts'
 
 async function setup(reply = () => stop()) {
   const fixture = await useStageFixture(reply)
@@ -89,50 +88,6 @@ it('deduplicates concurrent requests and reconstruction while preserving distinc
     expect(await readFile(original.path, 'utf8')).toContain('EXACT END')
     expect(ctx.sessionProjections.snapshot(parent.session).values['story-stage-deliveries']).toEqual(before)
     expect(parent.session.ownEvents().filter(event => event.type === 'deliverables/presented')).toHaveLength(2)
-  })
-  if (outcome.status === 'rejected') throw outcome.reason
-})
-
-it('publishes the complete rejected native output with an explicit source identity and safe literal rendering', async () => {
-  const rawText = '```\n# untrusted heading\n<script>alert(1)</script>\n' + 'Raw output '.repeat(3000) + 'OUTPUT END'
-  const fixture = await setup(() => call('structured_output', { text: rawText }))
-  const { ctx, parent, publisher, writingRun: run, novel, runs, actor } = fixture
-  const outcome = await fixture.run(async exec => {
-    const attempt = await runs.prepareAttempt(actor, run.id, { key: 'body/1', prompt: 'Return the exact raw fixture text.',
-      inputRefs: [{ artifactId: novel.brief.id, sha256: novel.brief.sha256 }],
-      outputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
-    })
-    const stage = await executeStage(ctx, exec, { attemptId: attempt.id, prompt: 'Return the raw output.',
-      outputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
-      onStarted: async childId => { await runs.associateChild(actor, run.id, attempt.id, childId) },
-    }, { stageProvider: 'stage-spawn', maxDelegationDepth: 2, allowedTools: [], maxStageRequests: 3, stageTimeoutMs: 5000 })
-    const text = JSON.stringify(stage.structured)
-    await runs.saveOutput(actor, run.id, attempt.id, text)
-    await publisher.publishRejectedOutput(exec, run.id, attempt.id, 'Required body fields are missing.')
-    const delivery = ctx.sessionProjections.snapshot(parent.session).values['story-stage-deliveries']!.calls[0]!.deliveries[0]!
-    expect(delivery.source).toEqual({ kind: 'rejected-output', attemptId: attempt.id })
-    expect(delivery.description).toContain('Rejected')
-    const markdown = await readFile(delivery.path, 'utf8')
-    expect(markdown).toContain(text)
-    expect(markdown).toContain('## Admission failure\n\nRequired body fields are missing.\n\n## Complete response\n\n````text\n')
-    expect(markdown).toContain(`## Provenance\n\n- Run: ${run.id}\n- Attempt: ${attempt.id}\n- Stage: body/1\n`)
-    expect(markdown).toContain('OUTPUT END')
-    expect(runs.readOutput(actor, run.id, attempt.id).text).toBe(text)
-    expect(fixture.service.getNovel(actor, novel.id)).toEqual(novel)
-
-    const fence = (value: string) => {
-      const length = Math.max(3, ...[...value.matchAll(/`+/g)].map(match => match[0].length + 1))
-      return `${'`'.repeat(length)}text\n${value}\n${'`'.repeat(length)}`
-    }
-    const legacy = ['# Rejected stage output', 'This raw model response failed writing-stage admission. It is not an applied writing artifact.',
-      '## Admission failure', fence('Required body fields are missing.'), '## Complete response', fence(text), '## Provenance',
-      fence(`Run: ${run.id}\nAttempt: ${attempt.id}\nStage: body/1\nSHA-256: ${runs.readOutput(actor, run.id, attempt.id).sha256}\nUTF-8 bytes: ${Buffer.byteLength(text)}`),
-    ].join('\n\n') + '\n'
-    await writeFile(delivery.path, legacy, 'utf8')
-    await publisher.publishRejectedOutput(exec, run.id, attempt.id, 'Required body fields are missing.')
-    expect(await readFile(delivery.path, 'utf8')).toBe(legacy)
-    await writeFile(delivery.path, legacy.replace('Required body', 'Edited body'), 'utf8')
-    await expect(publisher.publishRejectedOutput(exec, run.id, attempt.id, 'Required body fields are missing.')).rejects.toThrow(/Preview differs/)
   })
   if (outcome.status === 'rejected') throw outcome.reason
 })

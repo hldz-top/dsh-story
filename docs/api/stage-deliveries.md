@@ -7,7 +7,7 @@ description: "Generic native full-document delivery, four-kind automatic runner 
 
 The [stage publisher](../../src/stage-deliveries.ts) makes an exact stored version accessible from its owning Story tool card. It materializes the complete immutable Markdown projection, executes the Host's native `present` tool, verifies the committed delivery event, and awaits Session durability. Publication does not request human review or change an artifact's candidate, reviewed, or applied state.
 
-The automatic [runner policy](writing-runner.md#stage-presentation) selects only `settings`, `book-outline`, `chapter-outline` and `body`. A complete settings collection is distinct from an individual settings dimension. Eligible candidate and repair versions may appear before application. A fresh three-chapter run without repairs produces eight documents. Research, dimensions, reviews, continuity and rejected raw responses remain available for audits and explicit reads; the automatic runner does not publish them.
+The automatic [runner policy](writing-runner.md#stage-presentation) selects only `settings`, `book-outline`, `chapter-outline` and `body`. A complete settings collection is distinct from an individual settings dimension. Eligible candidate and repair versions may appear before application. A fresh three-chapter run without repairs produces eight documents. Research, dimensions, reviews and continuity remain available for audits and explicit reads; the automatic runner does not publish them. Rejected raw responses are not published.
 
 The [native API investigation](../research/stage-artifact-presentation.md) and [dependency record](../development/stage-preview-dependencies.md) explain the released DSH interfaces. Final browser and installation acceptance remain in [migration validation](../development/migration-validation.md).
 
@@ -18,15 +18,14 @@ Call `registerStageDeliveryProjection(ctx)` once in the plugin's owning scope. I
 | Method | Required inputs | Completion |
 | --- | --- | --- |
 | `publishArtifact` | Actual owning `ToolExecution`, exact `runId`, its `novelId`, published `artifactId`. | Full artifact preview and native delivery are durable. |
-| `publishRejectedOutput` | Actual owning `ToolExecution`, exact `runId`, saved `attemptId`, nonblank admission-error text. | Full rejected native response and its diagnostic preview are durable. |
 
-Both methods return `Promise<void>` and propagate failures. These are generic publisher APIs: `publishArtifact` can render stored artifact kinds beyond the four automatic kinds, and `publishRejectedOutput` remains available to explicit callers. Their availability does not authorize automatic display of internal results. The runner owns its four-kind selection and awaits each eligible publication before continuing the dependent stage. Its existing cancellation and shutdown lifecycle owns in-flight publication; the publisher starts no detached work. The Host must supply native tools, filesystem, Session storage, and Session projections. Availability of `present` is checked in the actual Agent scope; its normal runtime policy and cancellation still apply.
+`publishArtifact` returns `Promise<void>` and propagates failures. It is a generic publisher API that can render stored artifact kinds beyond the four automatic kinds; its availability does not authorize automatic display of internal results. Rejected outputs are not published. The runner owns its four-kind selection and awaits each eligible publication before continuing the dependent stage. Its existing cancellation and shutdown lifecycle owns in-flight publication; the publisher starts no detached work. The Host must supply native tools, filesystem, Session storage, and Session projections. Availability of `present` is checked in the actual Agent scope; its normal runtime policy and cancellation still apply.
 
 Artifact publication verifies workspace ownership, run/novel association, the exact stored artifact and its projection. Descriptions identify the actual artifact kind, dimension or chapter where applicable, and revision. Review descriptions identify the exact reviewed artifact. Research, candidates, reviews and repaired versions retain their own identities.
 
-Rejected output is read through `RunStore.readOutput`, which verifies the saved text against its digest and the run's captured output limit. Its separate `rejected/<attemptId>.md` path contains the complete response, supplied admission failure, and attempt provenance. The raw response is machine output, so it stays verbatim inside a dynamic literal fence. The admission failure and provenance are [readable inert Markdown](readable-markdown.md) instead, so neither can become a heading or active markup. It is explicitly a rejected response, never a fabricated writing artifact. A different diagnostic cannot overwrite an existing immutable projection of the same attempt.
+Rejected outputs are not published. The raw response stays in the run store and is read explicitly through `RunStore.readOutput`.
 
-Both document paths use the [existing projection owner](../../src/projection.ts): resolve within the calling workspace, apply its filesystem policy, create only when absent, and compare actual projected bytes when present. Deleted files can be rebuilt; edited files and escaped paths fail without changing authoritative content. The Markdown read limit uses its actual rendered byte length, including metadata, rather than the underlying JSON artifact size.
+Artifact preview paths use the [existing projection owner](../../src/projection.ts): resolve within the calling workspace, apply its filesystem policy, create only when absent, and compare actual projected bytes when present. Deleted files can be rebuilt; edited files and escaped paths fail without changing authoritative content. The Markdown read limit uses its actual rendered byte length, including metadata, rather than the underlying JSON artifact size.
 
 ## Native event and replay
 
@@ -49,7 +48,7 @@ The [browser-safe parser](../../src/stage-delivery.ts) accepts a complete versio
 | `runId` | Durable writing run owning the source. |
 | `source.kind` | Exactly `artifact` or `rejected-output`. |
 | `source.artifactId` | Required only for an immutable writing artifact. |
-| `source.attemptId` | Required only for a rejected raw response. |
+| `source.attemptId` | Required only for a historical rejected raw response receipt. |
 | `path` | Exact nonblank file path, passed unchanged to the Session's `openFile`. |
 | `description` | Recorded nonblank human description of the delivered version. |
 | `eventSeq` | Nonnegative safe integer identifying its native delivery event. |
@@ -58,7 +57,7 @@ The existing Story card reads this projection through `useProjection`, selects i
 
 ## Local evidence
 
-The focused public-runtime suite covers complete file readback, native delivery persisted before the parent tool result, JSONL cold projection replay, parallel deduplication, deleted-file reconstruction, distinct versions, a full rejected native-child response, edited-file refusal, policy denial, cancellation quiescence, missing native receipts and a new owning call. The existing six projection regressions remain included.
+The focused public-runtime suite covers complete file readback, native delivery persisted before the parent tool result, JSONL cold projection replay, parallel deduplication, deleted-file reconstruction, distinct versions, edited-file refusal, policy denial, cancellation quiescence, missing native receipts and a new owning call. The existing six projection regressions remain included.
 
 ```sh
 node node_modules/vitest/vitest.mjs run tests/stage-delivery.spec.ts tests/stage-deliveries.spec.ts tests/projection.spec.ts --configLoader runner --cache=false
