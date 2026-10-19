@@ -68,6 +68,8 @@ export interface WritingFixtureStage {
 }
 /** Optional deterministic interventions affect model output, never bypass native tools or stores. */
 export interface WritingFixtureOptions {
+  /** Operator-side required-settings bypass (plugin config allowIncompleteSettings). Default true: most fixtures run partial settings. */
+  readonly allowIncompleteSettings?: boolean
   readonly backend?: 'json' | 'sqlite'
   readonly maxReadChars?: number
   readonly executionLimits?: Partial<RunExecutionLimits>
@@ -307,7 +309,7 @@ export async function useWritingFixture(options: WritingFixtureOptions = {}) {
   fixture.ctx.effect(() => () => runs.close())
   registerWritingTools(fixture.ctx, service, '.dsh-story')
   registerResearchTools(fixture.ctx, service)
-  const runner = new WritingRunner(fixture.ctx, service, runs, executionLimits, new StageDeliveries(fixture.ctx, service, runs, '.dsh-story'))
+  const runner = new WritingRunner(fixture.ctx, service, runs, executionLimits, new StageDeliveries(fixture.ctx, service, runs, '.dsh-story'), { allowIncompleteSettings: options.allowIncompleteSettings ?? true })
   fixture.ctx.effect(() => () => runner.close())
   const workspace = await fixture.ctx.fs.resolve('.', { cwd: fixture.root })
   const actor: Actor = { sessionId: fixture.parent.session.id, workspace: workspace.displayPath }

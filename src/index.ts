@@ -35,6 +35,8 @@ export interface Config extends ResearchLimits, RunExecutionLimits {
   maxReadChars: number
   /** Slash-separated relative directory; empty, dot and parent segments are invalid. */
   previewDirectory: string
+  /** Operator-only: skip the required-settings gate for smoke tests. Not a tool argument. Default false. */
+  allowIncompleteSettings: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -50,6 +52,7 @@ export const Config: z<Config> = z.object({
   maxArtifactBytes: z.number().default(1_048_576),
   maxReadChars: z.number().default(4096),
   previewDirectory: z.string().default('.dsh-story'),
+  allowIncompleteSettings: z.boolean().default(false),
   maxResearchQuestions: z.number().default(12),
   maxResearchCalls: z.number().default(12),
   maxResearchSources: z.number().default(24),
@@ -109,7 +112,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   })
   runs = await openRunStore(ctx.storageDomain, { maxAttempts: config.maxRunAttempts, maxOutputBytes: config.maxArtifactBytes })
   registerStageDeliveryProjection(ctx)
-  runner = new WritingRunner(ctx, service, runs, executionLimits, new StageDeliveries(ctx, service, runs, config.previewDirectory))
+  runner = new WritingRunner(ctx, service, runs, executionLimits, new StageDeliveries(ctx, service, runs, config.previewDirectory), { allowIncompleteSettings: config.allowIncompleteSettings })
   ctx.provide('story', service)
   ctx.provide('storyRunner', runner)
   registerWritingTools(ctx, service, config.previewDirectory)

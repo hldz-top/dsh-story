@@ -1,7 +1,7 @@
 /** Public identifiers, requests, and immutable writing-service results. */
 import { brandString, type Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import type { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { HarnessError, type ToolCallId } from '@deepseek-ai/dsh-llm'
 import { z } from 'zod'
 
 /** Server-generated novel identity, independent of a Session or filesystem path. */
@@ -172,4 +172,21 @@ export type WritingErrorCode = 'novel-not-found' | 'workspace-mismatch' | 'artif
 /** A rejected writing command; no success result is substituted. */
 export class WritingError extends Error {
   constructor(readonly code: WritingErrorCode, message: string, options?: ErrorOptions) { super(message, options); this.name = 'WritingError' }
+}
+/** Stable failure code for a new writing request whose settingsRoots closure lacks required novel settings. */
+export const SETTINGS_INCOMPLETE = 'settings-incomplete'
+/**
+ * A refused new writing request. It extends HarnessError so the host records `error: { name, code: 'settings-incomplete' }`
+ * on the tool result outside model content. The message keeps the human sentence and ends with one JSON line
+ * `{"code":"settings-incomplete","missing":[...]}`, because tool error text is the only channel that carries the missing codes.
+ */
+export class SettingsIncompleteError extends HarnessError {
+  /** Missing required codes in catalog order. */
+  readonly missing: readonly string[]
+  constructor(missing: readonly { readonly code: string; readonly name: string }[]) {
+    const codes = missing.map(item => item.code)
+    super(`Required novel settings are missing: ${missing.map(item => `${item.code} (${item.name})`).join(', ')}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.length === 1 ? 'it' : 'them'}; ["a4", "a5", "g2"] covers every required setting.\n${JSON.stringify({ code: SETTINGS_INCOMPLETE, missing: codes })}`, SETTINGS_INCOMPLETE)
+    this.name = 'SettingsIncompleteError'
+    this.missing = Object.freeze(codes)
+  }
 }

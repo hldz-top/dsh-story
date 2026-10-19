@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { nativeStageOutputSchema } from './native-stage-schema.ts'
-import { WritingError, parseArtifactId, parseRequestId, type Actor, type ArtifactRef } from './contracts.ts'
+import { SettingsIncompleteError, WritingError, parseArtifactId, parseRequestId, type Actor, type ArtifactRef } from './contracts.ts'
 import type { WritingService } from './service.ts'
 import { RunStoreError, type AttemptFailureKind, type RunStore, type BeginRunInput, type RunExecutionLimits, type RunServiceLimits, type RunId, type WritingRun, type WritingAttempt } from './run-store.ts'
 import { executeStage, StageExecutionError, type StageRequest, type StageResult } from './stage-executor.ts'
@@ -12,7 +12,7 @@ import { buildStagePrompt, type StagePromptKind } from './stage-prompts.ts'
 import { buildResearchPrompt, validateResearchStageResult, RESEARCH_STAGE_OUTPUT_SCHEMA, researchStageTools, researchToolAuthorization } from './research-stage.ts'
 import { buildResearchPlanningPrompt, researchNecessity, RESEARCH_PLANNING_OUTPUT_SCHEMA, type ResearchNecessity } from './research-planning.ts'
 import { StageValidationRejection } from './stage-rejection.ts'
-import { planSettings } from './settings-plan.ts'
+import { missingRequiredSettings, planSettings } from './settings-plan.ts'
 import { settingsCatalog, type SettingsDimensionKind } from './settings-catalog.ts'
 import { EvidenceRejection, StageOutputSchemas, type BodyOutput, type ReviewCategory, type StageInputRef } from './stage-output.ts'
 import { countStoryWords } from './body-text.ts'
@@ -25,6 +25,11 @@ import type { StageDeliveries } from './stage-deliveries.ts'
 
 /** Author-selected scope; deployment execution limits are captured by the runner. */
 export type StartWritingInput = Omit<BeginRunInput, 'executionLimits' | 'serviceLimits' | 'revision' | 'mode'> & { readonly mode: 'write' | 'update' }
+/** Operator-side runner settings; never reachable through tool arguments. */
+export interface WritingRunnerOptions {
+  /** Skip the required-settings gate. Plugin config only, default false; for smoke and unit tests. Not stored with runs. */
+  readonly allowIncompleteSettings?: boolean
+}
 interface Invocation { readonly actor: Actor; readonly exec: ToolExecution; readonly run: WritingRun; readonly controller: AbortController }
 interface CapturedStage extends StageResult { readonly attempt: WritingAttempt }
 interface ActiveRun { readonly controller: AbortController; readonly done: Promise<WritingRun> }
@@ -39,7 +44,7 @@ export class WritingRunner {
   private readonly replayShutdown = new Error('Writing preview replay was cancelled by plugin shutdown.')
   private closed = false
   /** @param ctx - Existing DSH capabilities. @param service - Version owner. @param runs - Durable run owner. @param limits - Explicit deployment limits copied into new runs. @param deliveries - Awaited native document publisher. */
-  constructor(private readonly ctx: Context, private readonly service: WritingService, readonly runs: RunStore, readonly limits: RunExecutionLimits, private readonly deliveries: StageDeliveries) {}
+  constructor(private readonly ctx: Context, private readonly service: WritingService, readonly runs: RunStore, readonly limits: RunExecutionLimits, private readonly deliveries: StageDeliveries, private readonly options: WritingRunnerOptions = {}) {}
 
   /** @param exec - Calling native tool. @param input - Explicit novel, brief and chapter scope. @returns Terminal progress after all native work has stopped. */
   async start(exec: ToolExecution, input: StartWritingInput): Promise<WritingRun> {
@@ -104,10 +109,19 @@ export class WritingRunner {
     if (failures.length > 0) throw new AggregateError(failures, 'Writing runs could not finish shutdown')
   }
 
+  /**
+   * New requests must select every required novel dimension (catalog requiredFor: novel_writing) in their settingsRoots
+   * closure before any settings, outline or chapter work starts, unless the operator set allowIncompleteSettings in the plugin config.
+   * A resume continues an already admitted run and is not re-gated.
+   */
   private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
     if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
+    if (!resuming && this.options.allowIncompleteSettings !== true) {
+      const missing = missingRequiredSettings(input.settingsRoots)
+      if (missing.length > 0) throw new SettingsIncompleteError(missing)
+    }
     planSettings(input.settingsRoots)
     if (input.mode === 'write' && !resuming) {
       const settings = this.service.getSettings(actor, input.novelId)

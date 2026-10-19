@@ -99,3 +99,16 @@ export function summarizeSettingsCatalog(catalog: readonly SettingsDimension[] =
       }
     })
 }
+
+/** Dimensions the original Story novel wizard required (catalog requiredFor contains novel_writing), in catalog order. */
+export const REQUIRED_NOVEL_SETTINGS: readonly string[] = settingsCatalog.filter(dimension => dimension.enabled && dimension.requiredFor.includes('novel_writing')).map(dimension => dimension.code)
+
+/**
+ * @param roots - Requested settings roots; their dependency closure is what a run generates or reuses.
+ * @param catalog - Dimensions and their requiredFor markers.
+ * @returns Required novel dimensions absent from the closure, in catalog order; empty when complete, every one when roots is empty.
+ */
+export function missingRequiredSettings(roots: readonly string[], catalog: readonly SettingsDimension[] = settingsCatalog): readonly SettingsDimension[] {
+  const selected = new Set(roots.length === 0 ? [] : planSettings(roots, catalog).selectedCodes)
+  return catalog.filter(dimension => dimension.enabled && dimension.requiredFor.includes('novel_writing') && !selected.has(dimension.code))
+}
