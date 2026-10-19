@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { artifactIdSchema, type ArtifactId } from './contracts.ts'
 import type { SettingsDimensionKind } from './settings-catalog.ts'
 import { echo, parseModelOutput, StageValidationRejection } from './stage-rejection.ts'
+import { reportQuoteRepair, resolveEvidenceQuote } from './evidence-quote.ts'
 
 /** A catalog classification dimension records a label and its grounds, not world-building detail. The single source for this set; stage-prompts.ts imports it rather than declaring its own copy. */
 export const ENUM_SETTINGS_KINDS: ReadonlySet<SettingsDimensionKind> = new Set(['enum_single', 'enum_multi'])
@@ -94,6 +95,11 @@ function unique(values: readonly string[], label: string): void {
   }
 }
 
+function nonempty<T>(values: T[]): [T, ...T[]] {
+  if (values.length === 0) throw new StageValidationRejection('Evidence must cite at least one quote')
+  return values as [T, ...T[]]
+}
+
 function list(values: readonly string[]): string { return values.length === 0 ? 'none' : values.map(value => echo(value)).join(', ') }
 
 function matchingInputs(actual: readonly StageInputRef[], expected: readonly StageInputRef[]): void {
@@ -117,63 +123,32 @@ function matchingObligations(actual: readonly string[], expected: readonly strin
 
 /** Code points of a rejected quote echoed back in the repair message. */
 const QUOTE_ECHO_CHARS = 120
-/** Separates decoded JSON string values so a normalized quote cannot silently span two fields. */
-const FIELD_BREAK = '\u0000'
 
-/**
- * Comparison key for quotation membership. It discards only representation differences a faithful copy can introduce:
- * Unicode compatibility forms (full-width/half-width, NFKC), whitespace and line breaks, typographic versus straight
- * quote marks, and Markdown emphasis/code markers. Wording, order and all other punctuation stay exact, so an added,
- * dropped or reworded character still fails.
- */
-export function evidenceQuoteKey(value: string): string {
-  return value.normalize('NFKC')
-    .replace(/[\u2018\u2019\u201A\u201B\u2032]/gu, "'")
-    .replace(/[\u201C\u201D\u201E\u201F\u2033]/gu, '"')
-    .replace(/[*`]/gu, '')
-    .replace(/\s+/gu, '')
-}
-
-function jsonStrings(value: unknown, into: string[]): void {
-  if (typeof value === 'string') into.push(value)
-  else if (Array.isArray(value)) for (const item of value) jsonStrings(item, into)
-  else if (value !== null && typeof value === 'object') for (const item of Object.values(value)) jsonStrings(item, into)
-}
-
-/** Stored structured artifacts are JSON, which the model reads with escaped line breaks and quote marks; also match against their decoded string values. */
-function sourceKeys(text: string): readonly string[] {
-  const keys = [evidenceQuoteKey(text)]
-  if (/^\s*[[{]/u.test(text)) {
-    let parsed: unknown
-    try { parsed = JSON.parse(text) } catch { return keys }
-    const strings: string[] = []
-    jsonStrings(parsed, strings)
-    if (strings.length > 0) keys.push(strings.map(evidenceQuoteKey).join(FIELD_BREAK))
-  }
-  return keys
-}
-
-/** @param quote - Model-cited excerpt. @param text - Host-verified source text. @returns Whether the excerpt occurs in the source up to representation-only differences. */
-export function evidenceQuoteOccurs(quote: string, text: string): boolean {
-  if (text.includes(quote)) return true
-  const key = evidenceQuoteKey(quote)
-  return key.length > 0 && sourceKeys(text).some(source => source.includes(key))
-}
+export { evidenceQuoteKey, evidenceQuoteOccurs } from './evidence-quote.ts'
 
 function quoteEcho(quote: string): string {
   const chars = [...quote]
   return JSON.stringify(chars.length <= QUOTE_ECHO_CHARS ? quote : `${chars.slice(0, QUOTE_ECHO_CHARS).join('')}…`)
 }
 
-function checkEvidence(citations: readonly EvidenceCitation[], sources: readonly EvidenceSource[], admitted: readonly ArtifactId[]): void {
+/** @returns The admitted citations: exact ones unchanged, deterministic host repairs applied (see evidence-quote.ts); otherwise a repairable rejection with a copy hint. */
+function checkEvidence(citations: readonly EvidenceCitation[], sources: readonly EvidenceSource[], admitted: readonly ArtifactId[]): EvidenceCitation[] {
+  const accepted: EvidenceCitation[] = []
   for (const citation of citations) {
-    if (!admitted.includes(citation.artifactId)) throw new StageValidationRejection(`Evidence names an artifact outside the stage inputs: ${echo(citation.artifactId)}; cite only ${list(admitted)}`)
-    const source = sources.find(item => item.artifactId === citation.artifactId)
-    if (source === undefined || !evidenceQuoteOccurs(citation.quote, source.text)) {
+    const resolution = resolveEvidenceQuote(citation, sources, admitted)
+    if (resolution.status === 'rejected') {
+      if (!admitted.includes(citation.artifactId)) throw new StageValidationRejection(`Evidence names an artifact outside the stage inputs: ${echo(citation.artifactId)}; cite only ${list(admitted)}.${resolution.hint}`)
       throw new StageValidationRejection(`Evidence quote does not occur in its declared source ${citation.artifactId}: ${quoteEcho(citation.quote)}. `
-        + 'Copy each quote character for character as one contiguous excerpt of that artifact; do not add lead-in words, paraphrase, or join separate passages.')
+        + `Copy each quote character for character as one contiguous excerpt of that artifact; do not add lead-in words, paraphrase, or join separate passages.${resolution.hint}`)
+    }
+    if (resolution.repair !== undefined) reportQuoteRepair(resolution.repair)
+    for (const item of resolution.citations) {
+      const artifactId = admitted.find(id => id === item.artifactId)
+      if (artifactId === undefined) throw new StageValidationRejection(`Evidence names an artifact outside the stage inputs: ${echo(item.artifactId)}; cite only ${list(admitted)}`)
+      accepted.push({ artifactId, quote: item.quote })
     }
   }
+  return accepted
 }
 
 /** @param value - Model JSON value. @param expected - Requested dimension and exact upstream versions. @returns A detached validated settings candidate; structural only — a persisted or replayed candidate must always still parse. */
@@ -217,13 +192,13 @@ export function parseReviewOutput(value: unknown, expected: {
   const missingChecks = expected.requiredChecks.filter(category => !output.checks.some(check => check.category === category))
   if (missingChecks.length > 0) throw new StageValidationRejection(`Review is missing a required check: ${missingChecks.join(', ')} (required: ${expected.requiredChecks.join(', ')})`)
   const admitted = [output.reviewed.artifactId, ...output.inputRefs.map(ref => ref.artifactId)]
-  for (const check of output.checks) checkEvidence(check.evidence, expected.evidenceSources, admitted)
-  for (const issue of output.issues) {
+  const checks = output.checks.map(check => ({ ...check, evidence: nonempty(checkEvidence(check.evidence, expected.evidenceSources, admitted)) }))
+  const issues = output.issues.map(issue => {
     if (issue.category === 'style' && issue.severity !== 'advisory') throw new StageValidationRejection(`Style suggestions must remain advisory: issue ${echo(issue.id)} is ${issue.severity}`)
     if (issue.category !== 'style' && issue.severity !== 'blocking') throw new StageValidationRejection(`${issue.category} issues must be blocking: issue ${echo(issue.id)} is ${issue.severity}`)
-    checkEvidence(issue.evidence, expected.evidenceSources, admitted)
-  }
-  return output
+    return { ...issue, evidence: nonempty(checkEvidence(issue.evidence, expected.evidenceSources, admitted)) }
+  })
+  return { ...output, checks: nonempty(checks), issues }
 }
 
 /** @param value - Model book outline JSON. @param expected - Exact inputs and requested total chapter count. @returns A complete ordered book plan with unique obligation IDs. */
@@ -290,12 +265,13 @@ export function parseContinuityOutput(value: unknown, expected: {
   if (!admitted.includes(expected.reviewedBodyId) || !expected.evidenceSources.some(source => source.artifactId === expected.reviewedBodyId)) {
     throw new StageValidationRejection(`Reviewed body must be a declared input with source text: include ${expected.reviewedBodyId} in inputRefs`)
   }
-  for (const event of output.timeline) checkEvidence(event.evidence, expected.evidenceSources, admitted)
-  for (const obligation of output.obligations) {
-    if (obligation.status === 'fulfilled' && !obligation.evidence.some(citation => citation.artifactId === expected.reviewedBodyId)) {
+  const timeline = output.timeline.map(event => ({ ...event, evidence: nonempty(checkEvidence(event.evidence, expected.evidenceSources, admitted)) }))
+  const obligations = output.obligations.map(obligation => {
+    const evidence = checkEvidence(obligation.evidence, expected.evidenceSources, admitted)
+    if (obligation.status === 'fulfilled' && !evidence.some(citation => citation.artifactId === expected.reviewedBodyId)) {
       throw new StageValidationRejection(`A fulfilled obligation requires evidence from the actual reviewed body: obligation ${echo(obligation.id)} cites no quote from ${expected.reviewedBodyId}`)
     }
-    checkEvidence(obligation.evidence, expected.evidenceSources, admitted)
-  }
-  return output
+    return { ...obligation, evidence }
+  })
+  return { ...output, timeline, obligations }
 }

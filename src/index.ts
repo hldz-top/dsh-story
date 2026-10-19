@@ -12,6 +12,7 @@ import { WritingRunner } from './writing-runner.ts'
 import { registerRunTools } from './run-tools.ts'
 import { StageDeliveries, registerStageDeliveryProjection } from './stage-deliveries.ts'
 import type { ResearchLimits } from './contracts.ts'
+import { onQuoteRepair } from './evidence-quote.ts'
 
 export { openWritingService, WritingService } from './service.ts'
 export * from './contracts.ts'
@@ -90,6 +91,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     maxResearchLogEvents: config.maxResearchLogEvents,
   }
   const service = await openWritingService(ctx.storageDomain, { maxArtifactBytes: config.maxArtifactBytes, maxReadChars: config.maxReadChars }, researchLimits, { minChapterWords: config.minChapterWords, maxChapterWords: config.maxChapterWords })
+  const logger = ctx.logger('dsh-story')
+  const stopQuoteLog = onQuoteRepair(repair => logger.info('evidence quote %s: %s', repair.kind, JSON.stringify({
+    declared: repair.declared.artifactId, admitted: repair.admitted.map(item => item.artifactId), distance: repair.distance,
+    from: [...repair.declared.quote].slice(0, 80).join(''), to: repair.admitted.map(item => [...item.quote].slice(0, 80).join('')) })))
+  ctx.effect(() => stopQuoteLog)
   let runs: Awaited<ReturnType<typeof openRunStore>> | undefined
   let runner: WritingRunner | undefined
   ctx.effect(() => async () => {
