@@ -121,3 +121,29 @@ describe('drop and downgrade apply in every review stage, with recorded events a
     expect(events.find(event => event.kind === 'downgraded')?.reason).toMatch(/^blocking \S+ issue "qa-invented" made advisory: /)
   })
 })
+
+describe('host-repaired evidence in a generated manuscript candidate stays verifiable', () => {
+  it('a continuity candidate whose quote is reattributed is stored with a receipt over the admitted output, so the manuscript reads back (live run run_dbabf085)', async () => {
+    let target: { declared: string, quote: string } | undefined
+    const fixture = await useWritingFixture({ intervene(stage, output) {
+      if (stage.kind !== 'continuity' || target) return output
+      const continuity = StageOutputSchemas.continuity.parse(output)
+      const [entry, ...rest] = continuity.timeline
+      const evidence = entry!.evidence[0]!
+      const other = [...stage.sources.values()].find(source => source.artifactId !== evidence.artifactId && !source.text.includes(evidence.quote))!
+      target = { declared: other.artifactId, quote: evidence.quote }
+      return { ...continuity, timeline: [{ ...entry!, evidence: [{ ...evidence, artifactId: other.artifactId }, ...entry!.evidence.slice(1)] }, ...rest] }
+    } })
+    const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, throughChapter: 1 }))
+    if (outcome.status === 'rejected') throw outcome.reason
+    expect(target).toBeDefined()
+    expect(outcome.value.error).toBeNull()
+    expect(outcome.value.status).toBe('completed')
+    const manuscript = fixture.service.getManuscript(fixture.actor, fixture.input.novelId)
+    const continuity = manuscript.history.filter(item => item.target.kind === 'continuity')
+    expect(continuity.length).toBeGreaterThan(0)
+    const stored = StageOutputSchemas.continuity.parse(JSON.parse(fixture.service.getArtifact(fixture.actor, { novelId: fixture.input.novelId, artifactId: continuity[0]!.artifact.id }).text))
+    expect(stored.timeline[0]!.evidence[0]!.artifactId).not.toBe(target!.declared)
+    expect(stored.timeline[0]!.evidence[0]!.quote).toBe(target!.quote)
+  })
+})

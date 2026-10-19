@@ -191,12 +191,19 @@ export class ManuscriptStore {
     const target = manuscriptTargetSchema.parse(request.target)
     if (target.kind === 'settings') throw new WritingError('invalid-input', 'This manuscript stage output is not yet available')
     const parsed = parseModelOutput(StageOutputSchemas[target.kind], request.output, `${target.kind} output`)
-    const hash = digest([target, request.researchPlanId, request.childSessionId, { ...parsed, inputRefs: [...parsed.inputRefs].sort((a, b) => a.artifactId < b.artifactId ? -1 : a.artifactId > b.artifactId ? 1 : 0) }, ...(request.revisionOf === undefined ? [] : [request.revisionOf])])
+    // The receipt covers the admitted output (after host evidence repair), which is exactly what is stored and re-verified on readback.
+    const receipt = (output: typeof parsed) => digest([target, request.researchPlanId, request.childSessionId, { ...output, inputRefs: [...output.inputRefs].sort((a, b) => a.artifactId < b.artifactId ? -1 : a.artifactId > b.artifactId ? 1 : 0) }, ...(request.revisionOf === undefined ? [] : [request.revisionOf])])
     const replay = novel.manuscriptHistory.find(item => item.request.requestId === request.requestId)
-    if (replay !== undefined) { sameRequest(replay.request.hash, hash); return this.view(actor, novel, replay) }
+    if (replay !== undefined) {
+      let replayHash: string | null = null
+      try { replayHash = receipt(this.generatedOutput(actor, novel, target, replay.inputRefs, request.researchPlanId, parsed, request.revisionOf ?? null).output) } catch { /* not the same admitted request */ }
+      sameRequest(replay.request.hash, replayHash ?? '')
+      return this.view(actor, novel, replay)
+    }
     const context = this.manuscriptInputs(actor, request)
     const refs = context.inputRefs.map(inputRef)
     const { output } = this.generatedOutput(actor, novel, target, refs, request.researchPlanId, parsed, request.revisionOf ?? null)
+    const hash = receipt(output)
     checkModelArtifactBytes(JSON.stringify(output), this.owner.limits.maxArtifactBytes, `${target.kind} output`)
     const artifact = this.artifact(novel.id, target.kind, JSON.stringify(output))
     await this.domain.table('artifacts').put(artifact.id, artifact)
