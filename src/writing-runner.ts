@@ -423,6 +423,8 @@ export class WritingRunner {
       ...('length' in candidate ? { measuredWordCount: candidate.wordCount, measuredLength: candidate.length } : {}),
       // Version-1 runs keep their original task text; later runs hand the body review host-measured positions to cite.
       ...('beats' in candidate && candidate.beats !== null && promptVersionOf(inv.run) >= 2 ? { measuredBeats: candidate.beats } : {}),
+      // Version 3 body reviews also get host-detected AI-tone markers in narration (advisory evidence only).
+      ...('aiTone' in candidate && candidate.aiTone !== null && promptVersionOf(inv.run) >= 3 ? { aiToneMarkers: candidate.aiTone } : {}),
       ...(settingsDimensionKind === undefined ? {} : { dimensionKind: settingsDimensionKind }),
       ...(settingsCollectionKinds === undefined ? {} : { dimensionKinds: settingsCollectionKinds }) },
       [candidate.artifact], settingsDimensionKind, settingsCollectionKinds, reviewedKind)
