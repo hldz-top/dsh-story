@@ -453,7 +453,8 @@ export class ManuscriptStore {
       if (source.sha256 !== ref.sha256) throw new WritingError('corrupt-artifact', 'Manuscript review input hash differs from saved content')
       return { artifactId: source.id, text: source.kind === 'body' ? assembleBody(StageOutputSchemas.body.parse(JSON.parse(source.text))) : source.text }
     })
-    return parseReviewOutput(value, { reviewed: inputRef(candidate.artifact), inputRefs: candidate.inputRefs, requiredChecks: requiredChecks(candidate.target.kind), evidenceSources })
+    return parseReviewOutput(value, { reviewed: inputRef(candidate.artifact), inputRefs: candidate.inputRefs, requiredChecks: requiredChecks(candidate.target.kind), evidenceSources,
+      acceptAdvisoryCompleteness: candidate.target.kind === 'settings' })
   }
 
   private passingReview(actor: Actor, novel: NovelRecord, candidate: ManuscriptRecord, reviewId: ArtifactId): void {

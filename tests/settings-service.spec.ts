@@ -147,6 +147,28 @@ it.each(['json', 'sqlite'] as const)('%s adopts only the exact nonblocking revie
   expect(refs.at(-1)?.id).toBe(candidate.artifact.id)
 })
 
+it.each(['json', 'sqlite'] as const)('%s accepts and adopts a settings review whose only finding is an advisory completeness note', async backend => {
+  const { h, actor, novel, candidate } = await createCandidate(backend)
+  const exact = { novelId: novel.id, candidateId: candidate.artifact.id }
+  const evidence = [{ artifactId: candidate.artifact.id, quote: 'Mystery.' }]
+  const output = { version: 1, reviewed: { artifactId: candidate.artifact.id, sha256: candidate.artifact.sha256 }, inputRefs: candidate.inputRefs,
+    checks: [{ category: 'completeness', summary: 'The genre is specified.', evidence }, { category: 'consistency', summary: 'The genre matches the creative brief.', evidence }],
+    issues: [{ id: 'trace', category: 'completeness', severity: 'advisory', location: 'Genre', message: 'Traceability note only.', evidence }] }
+  const reviewed = await h.service.saveSettingsReview(actor, { ...exact, expectedReviewId: null, requestId: parseRequestId('advisory-review'), output, childSessionId: brandString<SessionId>('reviewer') })
+  expect(reviewed.status).toBe('reviewed')
+  if (reviewed.review === null) throw new Error('Missing review')
+  expect(await h.service.applySettingsCandidate(actor, { ...exact, reviewId: reviewed.review.id, expectedAppliedId: null })).toMatchObject({ status: 'applied' })
+  await h.restart()
+  expect(h.service.getSettings(actor, novel.id).applied).toHaveLength(1)
+  const consistency = { ...output, issues: [{ ...output.issues[0]!, id: 'drift', category: 'consistency' }] }
+  const other = await createCandidate(backend)
+  await expect(other.h.service.saveSettingsReview(other.actor, { novelId: other.novel.id, candidateId: other.candidate.artifact.id, expectedReviewId: null, requestId: parseRequestId('consistency-review'),
+    output: { ...consistency, reviewed: { artifactId: other.candidate.artifact.id, sha256: other.candidate.artifact.sha256 }, inputRefs: other.candidate.inputRefs,
+      checks: consistency.checks.map(check => ({ ...check, evidence: [{ artifactId: other.candidate.artifact.id, quote: 'Mystery.' }] })),
+      issues: consistency.issues.map(item => ({ ...item, evidence: [{ artifactId: other.candidate.artifact.id, quote: 'Mystery.' }] })) },
+    childSessionId: brandString<SessionId>('reviewer') })).rejects.toThrow(/consistency issues must be blocking/)
+})
+
 it.each(['json', 'sqlite'] as const)('%s preserves a blocked candidate and rejects stale adoption', async backend => {
   const { h, actor, novel, candidate } = await createCandidate(backend)
   const exact = { novelId: novel.id, candidateId: candidate.artifact.id }
