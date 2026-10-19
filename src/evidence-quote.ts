@@ -4,7 +4,8 @@
  * A quotation is admitted unchanged when it occurs in its declared source up to representation-only differences.
  * Otherwise the host repairs exactly three well-defined, deterministic defects, never wording:
  * - re-attribution: the text occurs verbatim in exactly one other admitted input, so only `artifactId` is corrected;
- * - segmentation: an ellipsis joins excerpts that each occur on their own, so the citation splits into one per excerpt;
+ * - segmentation: an ellipsis joins excerpts that each occur on their own, or the quote was copied from an artifact's raw
+ *   JSON (field names and identifiers around prose values), so the citation splits into one per prose excerpt;
  * - snapping: the closest equal-length source window differs by at most max(1, 5% of the quote) edits and is unique,
  *   so the quote is replaced by those exact source characters.
  * Every repair is reported to the registered listener. Anything else stays a repairable rejection whose message names
@@ -203,6 +204,24 @@ function closestExcerpt(quote: string, sources: readonly QuoteSource[]): { artif
   return { artifactId: best.artifactId, excerpt: best.excerpt }
 }
 
+/**
+ * A quote copied from the raw JSON of a structured artifact (for example `{"sceneId":"s1","text":"他回到终端上…"}`)
+ * carries field names and identifiers the reader never sees. Returns its prose string values (keys and bare identifiers
+ * dropped, escapes decoded, a trailing cut-off literal kept), or null when the quote is not such a fragment.
+ */
+function jsonFragmentValues(quote: string): string[] | null {
+  if (!/"\s*:\s*["[{]/u.test(quote)) return null
+  const values: string[] = []
+  for (const match of quote.matchAll(/"((?:[^"\\]|\\.)*)(?:"|$)(\s*:)?/gu)) {
+    if (match[2] !== undefined) continue
+    let value: string
+    try { value = JSON.parse(`"${match[1]!.replace(/\\$/u, '')}"`) as string } catch { return null }
+    if (/^[\w.:-]*$/u.test(value) || evidenceQuoteKey(value).length < MIN_SEGMENT_CHARS) continue
+    values.push(value)
+  }
+  return values.length === 0 ? null : values
+}
+
 type Single = { readonly citation: QuoteCitation; readonly kind: 'exact' | 'reattributed' | 'snapped'; readonly distance: number } | { readonly holders: readonly string[] }
 
 function resolveSingle(quote: string, declared: QuoteSource | undefined, admitted: readonly QuoteSource[]): Single {
@@ -231,6 +250,20 @@ export function resolveEvidenceQuote(citation: QuoteCitation, sources: readonly 
   const segments = citation.quote.split(ELLIPSIS).filter(segment => segment.trim().length > 0)
   if (single.holders.length === 0 && segments.length >= 2 && segments.every(segment => evidenceQuoteKey(segment).length >= MIN_SEGMENT_CHARS)) {
     const parts = segments.map(segment => resolveSingle(segment, declared, allowed))
+    if (parts.every(part => 'citation' in part)) {
+      const citations: QuoteCitation[] = []
+      let distance = 0
+      for (const part of parts) {
+        if (!('citation' in part)) continue
+        distance += part.distance
+        if (!citations.some(item => item.artifactId === part.citation.artifactId && item.quote === part.citation.quote)) citations.push(part.citation)
+      }
+      return { status: 'admitted', citations, repair: { kind: 'segmented', declared: citation, admitted: citations, distance } }
+    }
+  }
+  const values = jsonFragmentValues(citation.quote)
+  if (single.holders.length === 0 && values !== null) {
+    const parts = values.map(value => resolveSingle(value, declared, allowed))
     if (parts.every(part => 'citation' in part)) {
       const citations: QuoteCitation[] = []
       let distance = 0

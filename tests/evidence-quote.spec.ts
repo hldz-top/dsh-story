@@ -114,6 +114,16 @@ describe('host repair of near-exact quotes', () => {
     expect(unique).toMatchObject({ status: 'admitted', citations: [{ artifactId: 'artifact_a', quote: '甲板七号舱门的密封圈已经老化' }], repair: { kind: 'snapped' } })
   })
 
+  it('splits a quote copied from raw body JSON into its prose (run_b7e8a00f chapter 1 body review)', () => {
+    // The reviewer read the stored body artifact as JSON and quoted the field scaffolding; the evidence source is the assembled prose.
+    const body = { artifactId: 'artifact_body', text: '……\n\n他回到终端上，把自己这一班读过的压力曲线调出来。屏幕上那条线很平。' }
+    const quote = '{"sceneId":"ch1-s8-contradiction-and-close","text":"他回到终端上，把自己这一班读过的压力曲线调出来。'
+    expect(resolveEvidenceQuote({ artifactId: 'artifact_body', quote }, [body], ['artifact_body'])).toMatchObject({
+      status: 'admitted', citations: [{ artifactId: 'artifact_body', quote: '他回到终端上，把自己这一班读过的压力曲线调出来。' }], repair: { kind: 'segmented' } })
+    // Prose values that do not occur stay rejected.
+    expect(resolveEvidenceQuote({ artifactId: 'artifact_body', quote: '{"sceneId":"s1","text":"他从未回到终端，也没有调出任何曲线。"}' }, [body], ['artifact_body']).status).toBe('rejected')
+  })
+
   it('does not snap short quotes', () => {
     expect(resolveEvidenceQuote({ artifactId: 'artifact_a', quote: '甲板八号' }, [{ artifactId: 'artifact_a', text: '甲板七号舱门' }], ['artifact_a']).status).toBe('rejected')
   })
