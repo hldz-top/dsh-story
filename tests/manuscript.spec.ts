@@ -77,6 +77,24 @@ it.each(['json', 'sqlite'] as const)('%s adopts a settings collection only after
   expect(h.service.getManuscript(actor, novel.id)).toEqual({ heads: [applied], history: [applied], appliedChapters: [] })
 })
 
+it.each(['json', 'sqlite'] as const)('%s adopts a settings collection whose review holds only an advisory completeness note', async backend => {
+  const { h, actor, novel } = await preparedSettings(backend)
+  const candidate = await h.service.assembleSettings(actor, { novelId: novel.id, requestId: parseRequestId('assemble'), selectedCodes: ['a1'] })
+  const evidence = [{ artifactId: candidate.artifact.id, quote: 'Mystery.' }]
+  const output = { version: 1, reviewed: { artifactId: candidate.artifact.id, sha256: candidate.artifact.sha256 }, inputRefs: candidate.inputRefs,
+    checks: [{ category: 'completeness', summary: 'All selected dimensions are present.', evidence }, { category: 'consistency', summary: 'Dimensions agree.', evidence }],
+    issues: [{ id: 'trace', category: 'completeness', severity: 'advisory', location: 'a1', message: 'Traceability note only.', evidence }] }
+  const reviewed = await h.service.saveManuscriptReview(actor, { novelId: novel.id, candidateId: candidate.artifact.id, expectedReviewId: null,
+    requestId: parseRequestId('collection-review'), childSessionId: reviewer, output })
+  expect(reviewed.status).toBe('reviewed')
+  if (reviewed.review === null) throw new Error('Missing collection review')
+  expect(await h.service.applyManuscriptCandidate(actor, { novelId: novel.id, candidateId: candidate.artifact.id, reviewId: reviewed.review.id, expectedAppliedId: null })).toMatchObject({ status: 'applied' })
+  await h.restart()
+  expect(h.service.getManuscript(actor, novel.id).heads).toHaveLength(1)
+  await expect(h.service.saveManuscriptReview(actor, { novelId: novel.id, candidateId: candidate.artifact.id, expectedReviewId: reviewed.review.id, requestId: parseRequestId('consistency-review'), childSessionId: reviewer,
+    output: { ...output, issues: [{ ...output.issues[0]!, id: 'drift', category: 'consistency' }] } })).rejects.toThrow(/consistency issues must be blocking/)
+})
+
 async function reviewVersion(h: Awaited<ReturnType<typeof useStorage>>, actor: Actor, novelId: NovelId,
   candidate: ManuscriptCandidateView, requestId: string, quote: string) {
   const evidence = [{ artifactId: candidate.artifact.id, quote }]
@@ -115,6 +133,27 @@ it.each(['json', 'sqlite'] as const)('%s persists a reviewed book plan with exac
   expect((await h.service.saveManuscriptCandidate(actor, request)).artifact).toEqual(applied.artifact)
   expect(h.service.getManuscript(actor, novel.id).heads.map(item => item.artifact.id)).toEqual([settings.artifact.id, book.artifact.id])
   expect(() => h.service.manuscriptInputs(actor, { novelId: novel.id, target: { kind: 'chapter-outline', chapterNumber: 2 }, researchPlanId })).toThrow()
+})
+
+function advisoryCompletenessReview(h: Awaited<ReturnType<typeof useStorage>>, actor: Actor, novelId: NovelId, candidate: ManuscriptCandidateView, requestId: string, quote: string) {
+  const evidence = [{ artifactId: candidate.artifact.id, quote }]
+  return h.service.saveManuscriptReview(actor, { novelId, candidateId: candidate.artifact.id, expectedReviewId: candidate.review?.id ?? null,
+    requestId: parseRequestId(requestId), childSessionId: reviewer, output: { version: 1,
+      reviewed: { artifactId: candidate.artifact.id, sha256: candidate.artifact.sha256 }, inputRefs: candidate.inputRefs,
+      checks: ['completeness', 'consistency', 'obligations', 'continuity', 'length'].map(category => ({ category, summary: 'The relevant requirement is met.', evidence })),
+      issues: [{ id: 'trace', category: 'completeness', severity: 'advisory', location: 'Plan', message: 'Traceability note only.', evidence }] } })
+}
+
+it.each(['json', 'sqlite'] as const)('%s still rejects an advisory completeness note in a book-outline review', async backend => {
+  const { h, actor, novel, researchPlanId } = await appliedCollection(backend)
+  const target = { kind: 'book-outline' as const, chapterCount: 2 }
+  const context = h.service.manuscriptInputs(actor, { novelId: novel.id, target, researchPlanId })
+  const output = { version: 1, inputRefs: context.inputRefs.map(ref => ({ artifactId: ref.id, sha256: ref.sha256 })), contentMarkdown: 'Solve the mystery.', ending: 'Find the key.',
+    characterArcs: [{ character: 'Keeper', development: 'Faces the truth.' }], chapters: [1, 2].map(chapterNumber => ({ chapterNumber,
+      title: `Chapter ${chapterNumber}`, purpose: 'Find the log.', targetWords: 3000, obligations: [{ id: `o${chapterNumber}`, description: 'The log is recovered.' }] })) }
+  const book = await h.service.saveManuscriptCandidate(actor, { novelId: novel.id, requestId: parseRequestId('book'), target, researchPlanId, childSessionId: child, output })
+  await expect(advisoryCompletenessReview(h, actor, novel.id, book, 'book-review', 'Solve the mystery.')).rejects.toThrow(/^completeness issues must be blocking/)
+  expect(h.service.getManuscript(actor, novel.id).history.find(item => item.artifact.id === book.artifact.id)?.review).toBeNull()
 })
 
 async function appliedBook(backend: StorageKind) {
@@ -194,6 +233,11 @@ async function reviewedBody(backend: StorageKind, text = `The keeper found the l
   const bodyReview = await reviewVersion(h, actor, novel.id, body, 'body-review', 'found the log')
   return { ...fixture, body, bodyReview, text }
 }
+
+it.each(['json', 'sqlite'] as const)('%s still rejects an advisory completeness note in a body review', async backend => {
+  const { h, actor, novel, body, bodyReview } = await reviewedBody(backend)
+  await expect(advisoryCompletenessReview(h, actor, novel.id, { ...body, review: bodyReview.candidate.review }, 'body-review-2', 'found the log')).rejects.toThrow(/^completeness issues must be blocking/)
+})
 
 it.each(['json', 'sqlite'] as const)('%s applies body, actual continuity and obligation outcomes together before chapter two', async backend => {
   const { h, actor, novel, body, bodyReview, researchPlanId } = await reviewedBody(backend)
