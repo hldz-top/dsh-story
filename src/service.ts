@@ -584,7 +584,7 @@ export class WritingService {
       return { artifactId: artifact.id, text: artifact.text }
     })
     return parseReviewOutput(output, { reviewed: { artifactId: candidate.artifact.id, sha256: candidate.artifact.sha256 }, inputRefs: candidate.inputRefs,
-      requiredChecks: ['completeness', 'consistency'], evidenceSources: sources })
+      requiredChecks: ['completeness', 'consistency'], evidenceSources: sources, acceptAdvisoryCompleteness: true })
   }
 
   private validateSettings(actor: Actor, novel: NovelRecord, candidate: SettingsRecord, seen = new Set<ArtifactId>()): void {

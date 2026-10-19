@@ -77,6 +77,24 @@ it.each(['json', 'sqlite'] as const)('%s adopts a settings collection only after
   expect(h.service.getManuscript(actor, novel.id)).toEqual({ heads: [applied], history: [applied], appliedChapters: [] })
 })
 
+it.each(['json', 'sqlite'] as const)('%s adopts a settings collection whose review holds only an advisory completeness note', async backend => {
+  const { h, actor, novel } = await preparedSettings(backend)
+  const candidate = await h.service.assembleSettings(actor, { novelId: novel.id, requestId: parseRequestId('assemble'), selectedCodes: ['a1'] })
+  const evidence = [{ artifactId: candidate.artifact.id, quote: 'Mystery.' }]
+  const output = { version: 1, reviewed: { artifactId: candidate.artifact.id, sha256: candidate.artifact.sha256 }, inputRefs: candidate.inputRefs,
+    checks: [{ category: 'completeness', summary: 'All selected dimensions are present.', evidence }, { category: 'consistency', summary: 'Dimensions agree.', evidence }],
+    issues: [{ id: 'trace', category: 'completeness', severity: 'advisory', location: 'a1', message: 'Traceability note only.', evidence }] }
+  const reviewed = await h.service.saveManuscriptReview(actor, { novelId: novel.id, candidateId: candidate.artifact.id, expectedReviewId: null,
+    requestId: parseRequestId('collection-review'), childSessionId: reviewer, output })
+  expect(reviewed.status).toBe('reviewed')
+  if (reviewed.review === null) throw new Error('Missing collection review')
+  expect(await h.service.applyManuscriptCandidate(actor, { novelId: novel.id, candidateId: candidate.artifact.id, reviewId: reviewed.review.id, expectedAppliedId: null })).toMatchObject({ status: 'applied' })
+  await h.restart()
+  expect(h.service.getManuscript(actor, novel.id).heads).toHaveLength(1)
+  await expect(h.service.saveManuscriptReview(actor, { novelId: novel.id, candidateId: candidate.artifact.id, expectedReviewId: reviewed.review.id, requestId: parseRequestId('consistency-review'), childSessionId: reviewer,
+    output: { ...output, issues: [{ ...output.issues[0]!, id: 'drift', category: 'consistency' }] } })).rejects.toThrow(/consistency issues must be blocking/)
+})
+
 async function reviewVersion(h: Awaited<ReturnType<typeof useStorage>>, actor: Actor, novelId: NovelId,
   candidate: ManuscriptCandidateView, requestId: string, quote: string) {
   const evidence = [{ artifactId: candidate.artifact.id, quote }]

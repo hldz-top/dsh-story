@@ -246,6 +246,8 @@ export function checkSettingsDimensionScope(output: SettingsDimensionOutput, kin
 /** @param value - Model review JSON. @param expected - Exact target, required checks, and host-verified sources. @returns A review with cited evidence; adoption remains host-owned. */
 export function parseReviewOutput(value: unknown, expected: {
   reviewed: StageInputRef; inputRefs: readonly StageInputRef[]; requiredChecks: readonly ReviewCategory[]; evidenceSources: readonly EvidenceSource[]
+  /** Settings reviews only: keep an advisory completeness note as a recorded, nonblocking finding instead of rejecting the whole review. */
+  readonly acceptAdvisoryCompleteness?: boolean
 }): ReviewOutput {
   const output = parseModelOutput(admittedReviewSchema, value, 'Review output')
   matchingInputs(output.inputRefs, expected.inputRefs)
@@ -263,6 +265,7 @@ export function parseReviewOutput(value: unknown, expected: {
       continue
     }
     if (issue.category === 'style' && issue.severity !== 'advisory') throw new StageValidationRejection(`Style suggestions must remain advisory: issue ${echo(issue.id)} is ${issue.severity}`)
+    if (issue.category === 'completeness' && issue.severity === 'advisory' && expected.acceptAdvisoryCompleteness === true) continue
     if (issue.category !== 'style' && issue.severity !== 'blocking') throw new StageValidationRejection(`${issue.category} issues must be blocking: issue ${echo(issue.id)} is ${issue.severity}`)
   }
   // Every non-evidence rule has passed: an evidence rejection below is the value's only defect.
