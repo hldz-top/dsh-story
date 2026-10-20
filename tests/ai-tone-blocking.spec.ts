@@ -1,6 +1,6 @@
 /** aiToneBlocking (prompt version 5): host-decided blocking of AI tone in body reviews, its stop conditions and resume rules. */
 import { describe, expect, it } from 'vitest'
-import { hasAiToneMarker } from '../src/ai-tone.ts'
+import { aiToneHits, detectAiTone } from '../src/ai-tone.ts'
 import { AiToneReviewBlockedError, ImportReviewBlockedError, parseArtifactId } from '../src/contracts.ts'
 import { buildStagePrompt, CURRENT_PROMPT_VERSION, type StagePromptKind } from '../src/stage-prompts.ts'
 import * as Story from '../src/index.ts'
@@ -49,9 +49,27 @@ describe('prompt version 5', () => {
 })
 
 describe('host markers and the structured stop line', () => {
-  it('blocks only spans that carry a host AI-tone marker', () => {
-    for (const span of ['说白了，雾港没有灯', '这不是灯，而是路标', '甲、乙、丙', '灯塔——亮了', '这意味着航道安全', '然而，雾散了']) expect(hasAiToneMarker(span), span).toBe(true)
-    for (const span of ['林澜走向灯塔', '「说白了，不是灯而是路标」', '雾港的夜很长']) expect(hasAiToneMarker(span), span).toBe(false)
+  it('locates detector hits in narration context only', () => {
+    const hit = (text: string) => aiToneHits(text).hits.map(item => [item.rule, aiToneHits(text).narration.slice(item.start, item.end)])
+    expect(hit('林澜说：「这不是灯，而是路标。」')).toEqual([])
+    expect(hit('这不是灯，而是路标。')).toEqual([['reversal', '不是灯，而是']])
+    expect(hit('船上有缆绳、铁锚、油灯。')).toEqual([['enumeration', '绳、铁锚、油']])
+    expect(hit('雨停了，因此，他走了。')).toEqual([])
+    expect(hit('雨停了。因此，他走了。')).toEqual([['connective', '因此，']])
+    expect(hit('林澜回到灯塔下面，开始记录今晚的航标。\n他看起来很累，却没有停下手里的笔。')).toEqual([])
+    expect(hit('林澜回到灯塔下面，开始记录今晚的航标。\n看起来一切都很平静，海面没有船。')).toEqual([['zero-subject-comment', '看起来']])
+    // Same marker text in two places gets two identities.
+    const twice = aiToneHits('雾起了。然而，灯灭了。夜深了很久很久。然而，船到了。').hits
+    expect(twice).toHaveLength(2)
+    expect(twice[0]!.keys.some(key => twice[1]!.keys.includes(key))).toBe(false)
+  })
+
+  it('cuts marker excerpts on code points, never splitting a surrogate pair', () => {
+    const emoji = '😀'.repeat(9)
+    const examples = detectAiTone(`${emoji}说白了${emoji}`).markers.flatMap(marker => marker.examples)
+    expect(examples).toEqual([`${'😀'.repeat(8)}说白了${'😀'.repeat(8)}`])
+    for (const example of examples) expect(example.isWellFormed()).toBe(true)
+    expect(aiToneHits(`${'𠀀'.repeat(9)}然而，雾散了`).hits.every(item => item.keys.every(key => key.isWellFormed()))).toBe(true)
   })
 
   it('ends an AI-tone stop with reason and spans and no importItems, sharing the review-blocked union with import stops', () => {
@@ -81,6 +99,8 @@ interface Script {
   readonly prefix: (attempt: number) => string
   /** Quotes the body reviewer reports as AI tone, by body-review number. */
   readonly quotes: (review: number) => readonly string[]
+  /** Narration appended to scene 1, by body attempt; far from the prefix, so it changes the body without touching prefix hits. */
+  readonly suffix?: (attempt: number) => string
 }
 
 /** A fixture whose bodies carry scripted narration and whose body reviews report scripted AI-tone quotes. */
@@ -98,8 +118,10 @@ async function scripted(script: Script, options: WritingFixtureOptions = {}) {
       if (isBody(stage)) {
         bodyTasks.push(stage.task?.validationError)
         const body = output as { scenes: { sceneId: string; text: string }[] }
-        const prefix = script.prefix(bodies++)
-        return { ...body, scenes: body.scenes.map((scene, index) => index === 0 ? { ...scene, text: `${prefix}${scene.text}` } : scene) }
+        const prefix = script.prefix(bodies)
+        const suffix = script.suffix?.(bodies) ?? ''
+        bodies++
+        return { ...body, scenes: body.scenes.map((scene, index) => index === 0 ? { ...scene, text: `${prefix}${scene.text}${suffix}` } : scene) }
       }
       if (isBodyReview(stage)) {
         const artifactId = stage.task?.reviewed?.artifactId ?? ''
@@ -116,6 +138,9 @@ async function write(fixture: Awaited<ReturnType<typeof useWritingFixture>>): Pr
   const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, chapterCount: 1, throughChapter: 1 }))
   if (outcome.status === 'rejected') throw outcome.reason
   return outcome.value
+}
+function reviewBlocks(fixture: Awaited<ReturnType<typeof useWritingFixture>>, run: WritingRun) {
+  return fixture.runs.get(fixture.actor, run.id).attempts.filter(attempt => /^body\/1\/candidate\/\d+\/review\//u.test(attempt.key) && attempt.status === 'succeeded').map(attempt => attempt.aiToneBlock?.reason ?? null)
 }
 function applied(fixture: Awaited<ReturnType<typeof useWritingFixture>>): boolean {
   return fixture.service.getManuscript(fixture.actor, fixture.novel.id).appliedChapters.some(item => item.chapterNumber === 1)
@@ -139,6 +164,7 @@ describe('stop conditions (aiToneBlocking on, the default)', () => {
     const run = await write(fixture)
     expect(run.status).toBe('completed')
     expect(bodyTasks).toHaveLength(1)
+    expect(reviewBlocks(fixture, run)).toEqual([null])
     const chapter = fixture.service.getManuscript(fixture.actor, fixture.novel.id).appliedChapters.find(item => item.chapterNumber === 1)
     const review = JSON.parse(fixture.service.getArtifact(fixture.actor, { novelId: fixture.novel.id, artifactId: chapter!.bodyReview.id }).text) as { issues: { id: string; severity: string }[] }
     expect(review.issues.filter(issue => issue.id.startsWith('ai-tone')).map(issue => issue.severity)).toEqual(['advisory', 'advisory'])
@@ -151,6 +177,7 @@ describe('stop conditions (aiToneBlocking on, the default)', () => {
     expect(lastLine(run.error)).toEqual({ code: 'review-blocked', reason: 'ai-tone-repeat', spans: ['说白了'] })
     expect(counts()).toEqual({ bodies: 2, reviews: 2 })
     expect(applied(fixture)).toBe(false)
+    expect(reviewBlocks(fixture, run)).toEqual(['ai-tone', 'ai-tone-repeat'])
   })
 
   it('(b) stops for human review when the repaired body is unchanged and AI tone is reported again', { timeout: 120_000 }, async () => {
@@ -172,8 +199,54 @@ describe('stop conditions (aiToneBlocking on, the default)', () => {
     expect(line).not.toHaveProperty('importItems')
     expect(counts()).toEqual({ bodies: 3, reviews: 3 })
     expect(applied(fixture)).toBe(false)
+    expect(reviewBlocks(fixture, run)).toEqual(['ai-tone', 'ai-tone', 'ai-tone-exhausted'])
     // Every body and review call is an ordinary durable attempt counted against the run's attempt budget.
     expect(fixture.runs.get(fixture.actor, run.id).attempts.filter(attempt => attempt.key.startsWith('body/1/candidate/') && !attempt.key.includes('/review') && !attempt.key.includes('/research'))).toHaveLength(3)
+  })
+
+  for (const [label, prefix, quote] of [
+    ['a fragment of dialogue', '林澜低声说：「这不是灯，而是路标。」', '不是灯，而是路标'],
+    ['a commentary word that does not open a paragraph', '林澜看起来很累，却没有停下。', '看起来很累'],
+    ['a connective after a comma', '雨停了，因此，他走了。', '因此，他走了'],
+  ] as const) {
+    it(`does not block ${label}`, { timeout: 120_000 }, async () => {
+      const { fixture, bodyTasks } = await scripted({ prefix: () => prefix, quotes: review => review === 0 ? [quote] : [] })
+      const run = await write(fixture)
+      expect(run.status).toBe('completed')
+      expect(bodyTasks).toHaveLength(1)
+      expect(reviewBlocks(fixture, run)).toEqual([null])
+    })
+  }
+
+  for (const [label, prefix, quote] of [
+    ['reversal framing in narration', '这不是灯，而是路标。', '不是灯，而是路标'],
+    ['a connective that opens a sentence', '雨停了。因此，他走了。', '因此，他走了'],
+    // Decided by the user 2026-10-20: one dash or one 、 enumeration blocks, no density threshold.
+    ['a single dash', '灯塔——终于亮了。', '灯塔——终于亮了'],
+    ['a single 、 enumeration', '船上有缆绳、铁锚、油灯。', '缆绳、铁锚、油灯'],
+  ] as const) {
+    it(`still blocks ${label}`, { timeout: 120_000 }, async () => {
+      const { fixture, bodyTasks } = await scripted({ prefix: attempt => attempt === 0 ? prefix : '雨停了，他走了。', quotes: review => review === 0 ? [quote] : [] })
+      const run = await write(fixture)
+      expect(run.status).toBe('completed')
+      expect(bodyTasks).toHaveLength(2)
+      expect(lastLine(bodyTasks[1])).toEqual({ code: 'review-blocked', reason: 'ai-tone', spans: [quote] })
+    })
+  }
+
+  it('(b) treats a different instance with the same short marker text as new, not a repeat', { timeout: 120_000 }, async () => {
+    const prefixes = ['雾起了。然而，灯灭了。', '雾起了，灯灭了。夜深了。然而，船到了。', '雾起了，灯灭了，船到了。']
+    const { fixture, counts } = await scripted({ prefix: attempt => prefixes[attempt]!, quotes: review => review < 2 ? ['然而，'] : [] }, { executionLimits: { maxRepairAttempts: 2 } })
+    const run = await write(fixture)
+    expect(run.status).toBe('completed')
+    expect(counts()).toEqual({ bodies: 3, reviews: 3 })
+  })
+
+  it('(b) recognises the same instance when the reviewer quotes it with a different length', { timeout: 120_000 }, async () => {
+    const { fixture, counts } = await scripted({ prefix: () => '说白了，雾港的灯不亮。', suffix: attempt => `第${attempt}夜。`, quotes: review => [review === 0 ? '说白了' : '说白了，雾港'] }, { executionLimits: { maxRepairAttempts: 3 } })
+    const run = await write(fixture)
+    expect(lastLine(run.error)).toEqual({ code: 'review-blocked', reason: 'ai-tone-repeat', spans: ['说白了，雾港'] })
+    expect(counts()).toEqual({ bodies: 2, reviews: 2 })
   })
 
   it('stops with reason ai-tone when no repair attempt is configured', { timeout: 120_000 }, async () => {
@@ -238,6 +311,8 @@ describe('resume rules', () => {
     expect(stopped).toMatchObject({ promptVersion: 5, executionLimits: { aiToneBlocking: false } })
     const outcome = await fixture.run(exec => fixture.runner.resume(exec, stopped.id, false))
     expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'run-limits', message: expect.stringContaining('Restore the captured writing and research limits before resuming') } })
+    if (outcome.status !== 'rejected') throw new Error('Resume was not refused')
+    expect(lastLine((outcome.reason as Error).message)).toEqual({ code: 'run-limits', mismatched: [{ key: 'aiToneBlocking', saved: false, current: true }] })
     expect(fixture.childRequests).toEqual([])
     expect(fixture.runs.get(fixture.actor, stopped.id)).toEqual(stopped)
   })

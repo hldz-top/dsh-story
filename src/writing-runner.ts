@@ -6,11 +6,11 @@ import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { nativeStageOutputSchema } from './native-stage-schema.ts'
 import { AiToneReviewBlockedError, aiToneRepairInstruction, ImportRefusedError, ImportReviewBlockedError, SettingsIncompleteError, WritingError, parseArtifactId, parseRequestId, type Actor, type ArtifactRef, type ImportItem } from './contracts.ts'
 import type { WritingService } from './service.ts'
-import { RunStoreError, type AttemptFailureKind, type RunStore, type BeginRunInput, type RunExecutionLimits, type RunServiceLimits, type RunId, type WritingRun, type WritingAttempt } from './run-store.ts'
+import { RunLimitsError, RunStoreError, type AiToneBlockRecord, type AttemptFailureKind, type RunLimitMismatch, type RunStore, type BeginRunInput, type RunExecutionLimits, type RunServiceLimits, type RunId, type WritingRun, type WritingAttempt } from './run-store.ts'
 import { executeStage, StageExecutionError, type StageRequest, type StageResult } from './stage-executor.ts'
 import { AI_TONE_ISSUE_PREFIX, buildStagePrompt, type PromptVersion, type StagePromptKind } from './stage-prompts.ts'
 import { proseView } from './prose-view.ts'
-import { hasAiToneMarker } from './ai-tone.ts'
+import { aiToneHits } from './ai-tone.ts'
 import { buildResearchPrompt, validateResearchStageResult, RESEARCH_STAGE_OUTPUT_SCHEMA, researchStageTools, researchToolAuthorization } from './research-stage.ts'
 import { buildResearchPlanningPrompt, researchNecessity, RESEARCH_PLANNING_OUTPUT_SCHEMA, type ResearchNecessity } from './research-planning.ts'
 import { StageValidationRejection } from './stage-rejection.ts'
@@ -199,37 +199,57 @@ export class WritingRunner {
    * The resume limits comparison: the seven service limits, the two chapter-word bounds and, as the tenth item,
    * aiToneBlocking. Runs before prompt version 5 never recorded the switch and compare as off, so they resume under any
    * current setting and keep advisory AI tone; a version-5 run without the recorded value is corrupt and is refused.
+   * A refusal names every differing key ({@link RunLimitsError}).
    */
   private requireRunLimits(run: WritingRun): void {
     const bounds = this.service.manuscriptLimits
-    if (!isDeepStrictEqual(run.serviceLimits, this.serviceLimits())
-      || bounds.minChapterWords !== run.executionLimits.minChapterWords || bounds.maxChapterWords !== run.executionLimits.maxChapterWords
-      || (promptVersionOf(run) >= 5 && aiToneBlockingOf(run) !== this.aiToneBlocking)) {
-      throw new RunStoreError('run-limits', 'Restore the captured writing and research limits before resuming; legacy runs without a snapshot cannot resume')
+    const current = this.serviceLimits()
+    const mismatched: RunLimitMismatch[] = []
+    for (const key of Object.keys(current) as (keyof RunServiceLimits)[]) {
+      const saved = run.serviceLimits?.[key] ?? null
+      if (saved !== current[key]) mismatched.push({ key, saved, current: current[key] })
     }
+    for (const key of ['minChapterWords', 'maxChapterWords'] as const) if (run.executionLimits[key] !== bounds[key]) mismatched.push({ key, saved: run.executionLimits[key], current: bounds[key] })
+    if (promptVersionOf(run) >= 5 && aiToneBlockingOf(run) !== this.aiToneBlocking) mismatched.push({ key: 'aiToneBlocking', saved: aiToneBlockingOf(run), current: this.aiToneBlocking })
+    if (mismatched.length > 0) throw new RunLimitsError(mismatched)
   }
 
   /** The deployment's switch for new runs; the plugin config default is on. */
   private get aiToneBlocking(): boolean { return this.limits.aiToneBlocking ?? true }
 
   /**
-   * Blocking AI-tone spans of one reviewed body, decided here in host code (the reviewer files every style issue as advisory,
-   * which admission enforces): the exact quotes of style issues whose id starts with "ai-tone" that occur verbatim in the
-   * body's reader-facing text and themselves carry a host-detected AI-tone marker. An AI-tone issue without such a quote, or
-   * one the host downgraded because its evidence was found nowhere, stays a recorded advisory finding. Empty unless the run
-   * froze aiToneBlocking on (prompt version 5+) and the body review received host markers.
+   * The host's AI-tone decision for one reviewed body, made in code (the reviewer files every style issue as advisory, which
+   * admission enforces). The same detector as the review's task.aiToneMarkers runs on the body's narration view; a quote of
+   * a style issue whose id starts with "ai-tone" blocks only when one of its verbatim occurrences in that narration fully
+   * covers a detector hit. Quotes inside dialogue, commentary words that do not open a paragraph and connectives that do not
+   * open a sentence therefore never block. An AI-tone issue without such a quote, or one the host downgraded because its
+   * evidence was found nowhere, stays a recorded advisory finding. One covered hit is enough for every rule, including a
+   * single dash or 、 enumeration (no density threshold; decided by the user 2026-10-20). Inactive unless the run froze aiToneBlocking on (prompt
+   * version 5+) and the review received host markers.
+   * @returns The blocking spans with the identities of the hits each covers (for repeat detection), and the body's text.
    */
-  private aiToneSpans(inv: Invocation, candidate: ManuscriptCandidateView): string[] {
-    if (candidate.target.kind !== 'body' || candidate.review === null || candidate.aiTone === null || !aiToneBlockingOf(inv.run)) return []
+  private aiToneGate(inv: Invocation, candidate: ManuscriptCandidateView): { readonly spans: ReadonlyMap<string, readonly string[]>; readonly body: string } | null {
+    if (candidate.target.kind !== 'body' || candidate.review === null || candidate.aiTone === null || !aiToneBlockingOf(inv.run)) return null
     const body = proseView('body', this.service.getArtifact(inv.actor, { novelId: inv.run.novelId, artifactId: candidate.artifact.id }).text)
+    const { narration, hits } = aiToneHits(body)
     const review = JSON.parse(this.service.getArtifact(inv.actor, { novelId: inv.run.novelId, artifactId: candidate.review.id }).text) as { issues: readonly { id: string; category: string; evidence: readonly { artifactId: string; quote: string }[]; hostDowngrade?: unknown }[] }
-    const spans = review.issues.filter(issue => issue.category === 'style' && issue.id.startsWith(AI_TONE_ISSUE_PREFIX) && issue.hostDowngrade === undefined)
-      .flatMap(issue => issue.evidence.filter(item => item.artifactId === candidate.artifact.id && item.quote.trim().length > 0 && body.includes(item.quote) && hasAiToneMarker(item.quote)).map(item => item.quote))
-    return [...new Set(spans)]
+    const spans = new Map<string, string[]>()
+    for (const issue of review.issues) {
+      if (issue.category !== 'style' || !issue.id.startsWith(AI_TONE_ISSUE_PREFIX) || issue.hostDowngrade !== undefined) continue
+      for (const { artifactId, quote } of issue.evidence) {
+        if (artifactId !== candidate.artifact.id || quote.trim().length === 0) continue
+        const covered = coveredHits(narration, quote, hits)
+        if (covered.length === 0) continue
+        spans.set(quote, [...new Set([...spans.get(quote) ?? [], ...covered.flatMap(hit => hit.keys)])])
+      }
+    }
+    return { spans, body }
   }
 
-  private bodyText(inv: Invocation, candidate: ManuscriptCandidateView): string {
-    return proseView('body', this.service.getArtifact(inv.actor, { novelId: inv.run.novelId, artifactId: candidate.artifact.id }).text)
+  /** Mark the latest admitted review of this candidate as AI-tone blocked, so the block is visible on the stored run record. */
+  private async markAiToneBlock(inv: Invocation, stageKey: string, block: AiToneBlockRecord): Promise<void> {
+    const review = this.runs.get(inv.actor, inv.run.id).attempts.findLast(attempt => attempt.key.startsWith(`${stageKey}/review/`) && attempt.status === 'succeeded')
+    if (review !== undefined) await this.runs.recordAiToneBlock(inv.actor, inv.run.id, review.id, { reason: block.reason, spans: block.spans.slice(0, 20) })
   }
 
   private requirePresentation(exec: ToolExecution): void {
@@ -424,7 +444,7 @@ export class WritingRunner {
     let repairMode: RepairMode | undefined
     let validationError: string | null = null
     // AI-tone gate state (body, prompt version 5, aiToneBlocking on): the previous reviewed round's blocking spans and body text.
-    let previousAiTone: { readonly spans: readonly string[]; readonly body: string } | null = null
+    let previousAiTone: { readonly hitKeys: ReadonlySet<string>; readonly body: string } | null = null
     let aiToneSpans: string[] = []
     for (let repair = 0; repair <= inv.run.executionLimits.maxRepairAttempts; repair++) {
       const stageKey = `${key}/candidate/${repair}`
@@ -445,15 +465,22 @@ export class WritingRunner {
       const reviewed = await this.reviewManuscript(inv, stageKey, candidate, context.requiredChecks)
       const unfulfilled = target.kind === 'continuity' ? StageOutputSchemas.continuity.parse(result.structured).obligations.filter(item => item.status !== 'fulfilled') : []
       const incomplete = unfulfilled.length > 0
-      aiToneSpans = this.aiToneSpans(inv, reviewed)
-      if (aiToneSpans.length > 0) {
-        const body = this.bodyText(inv, reviewed)
-        // A repair that keeps a reported span, or returns the body unchanged, would only spend attempts: stop for a human.
+      const gate = this.aiToneGate(inv, reviewed)
+      aiToneSpans = [...gate?.spans.keys() ?? []]
+      if (gate !== null && aiToneSpans.length > 0) {
+        // A repair that leaves a reported instance in place (the same detector hit, identified by its surrounding narration,
+        // whatever span length the reviewer quotes), or returns the body unchanged, would only spend attempts: stop for a human.
         if (previousAiTone !== null) {
-          const repeated = body === previousAiTone.body ? aiToneSpans : aiToneSpans.filter(span => previousAiTone?.spans.includes(span))
-          if (repeated.length > 0) throw new AiToneReviewBlockedError('ai-tone-repeat', repeated, key)
+          const prior = previousAiTone
+          const repeated = gate.body === prior.body ? aiToneSpans : aiToneSpans.filter(span => (gate.spans.get(span) ?? []).some(hitKey => prior.hitKeys.has(hitKey)))
+          if (repeated.length > 0) {
+            await this.markAiToneBlock(inv, stageKey, { reason: 'ai-tone-repeat', spans: repeated })
+            throw new AiToneReviewBlockedError('ai-tone-repeat', repeated, key)
+          }
         }
-        previousAiTone = { spans: aiToneSpans, body }
+        previousAiTone = { hitKeys: new Set([...gate.spans.values()].flat()), body: gate.body }
+        const last = repair === inv.run.executionLimits.maxRepairAttempts
+        await this.markAiToneBlock(inv, stageKey, { reason: !last ? 'ai-tone' : repair === 0 ? 'ai-tone' : 'ai-tone-exhausted', spans: aiToneSpans })
       } else previousAiTone = null
       if (reviewed.status !== 'blocked' && reviewed.review !== null && reviewed.length?.blocking !== true && !incomplete && aiToneSpans.length === 0) return reviewed
       if (aiToneSpans.length > 0) { validationError = `${reviewed.status === 'blocked' ? 'Resolve the blocking issues in the exact supplied review. ' : ''}${aiToneRepairInstruction(aiToneSpans)}`; repairMode = 'review' }
@@ -685,6 +712,14 @@ export class WritingRunner {
   }
 }
 
+/** @returns The hits fully covered by at least one verbatim occurrence of the quote in the narration view. */
+function coveredHits<T extends { readonly start: number; readonly end: number }>(narration: string, quote: string, hits: readonly T[]): T[] {
+  const covered = new Set<T>()
+  for (let at = narration.indexOf(quote); at >= 0; at = narration.indexOf(quote, at + 1)) {
+    for (const hit of hits) if (hit.start >= at && hit.end <= at + quote.length) covered.add(hit)
+  }
+  return [...covered]
+}
 function requestId(run: WritingRun, key: string) { return parseRequestId(`${run.id}:${createHash('sha256').update(key).digest('hex')}`) }
 /** @returns The prompt version a run started with; runs stored before versioning are version 1. */
 function promptVersionOf(run: WritingRun): PromptVersion { return run.promptVersion ?? 1 }

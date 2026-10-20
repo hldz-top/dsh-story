@@ -57,6 +57,31 @@ describe('version 1 is frozen', () => {
   })
 })
 
+/** SHA-256 of every version-4 prompt and output schema for the request above (computed on #22 head d7edafb), so later edits cannot silently change what resumed v4 runs rebuild. */
+const frozenV4: Record<string, string> = {
+  'settings': '665f40d01dc0b8663aa8a00c64abaf1013f7ffd89430d6065ffdf394e23c6c87',
+  'review': 'c465e5f1f7a6dc09f66c3504c0e2efa503b0871e92cc38f1a03456d09304c87a',
+  'book-outline': '7100a4c61a77ddecd3e35d714e395297db81c2a1ebe052274d71bda6bc9b65e0',
+  'chapter-outline': 'ccc93e46f610fcd8a4aa2d63b4a8147bb832d0313833a264a8a132d52a745eaf',
+  'body': 'e8ccabfe084b9f215c915a31353df9187e46f0fb33aa74a1daaf06bfb3e9a998',
+  'continuity': 'a9798b274e9f7b347f476ac25dcca939a48a5fdba07185cd2c6db1d4716d3c9d',
+  'review/body': '48aa58cd632cc1c1f81a984282debb8dd73b451c41e97966e278ca37745fd773',
+  'schema/settings': '86f66293e41cd6e5b92d64ddf6f3a39536affacde2e0c2e4ce60a05fca94c88b',
+  'schema/review': '9731f7a748dd104095730772ad5cd0885a45340c865f1d7d0b75da95336c09c3',
+  'schema/book-outline': '62d1e8b93ee5b030549ba85fd483fc7fa12e409a63d224ee07fe0c26fd2ce0d2',
+  'schema/chapter-outline': '0285fb25e15cbfed01a7b157e83bdb5061ffeda3a999d11c6b2b69518d2f8ef5',
+  'schema/body': '21d5342669c4439400a3ff71b4bc16f297d262abfb823ac9f1868f57a32152f3',
+  'schema/continuity': 'ee4f82a9defc694c00b3c0b506310ae3ab5a998b5b9214bf291da121417b8ae0'
+}
+
+describe('version 4 is frozen', () => {
+  it('rebuilds every version-4 prompt and schema byte for byte', () => {
+    for (const kind of kinds) expect(sha(buildStagePrompt({ ...base, kind, promptVersion: 4 })), kind).toBe(frozenV4[kind])
+    expect(sha(buildStagePrompt({ ...base, kind: 'review', reviewedKind: 'body', promptVersion: 4 }))).toBe(frozenV4['review/body'])
+    for (const kind of kinds) expect(sha(JSON.stringify(nativeStageOutputSchema(kind, 4))), kind).toBe(frozenV4[`schema/${kind}`])
+  })
+})
+
 describe('version 3 AI-tone review', () => {
   it('adds the AI-tone sentence only to reviews of a body', () => {
     for (const reviewedKind of kinds) {

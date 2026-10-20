@@ -45,6 +45,7 @@ const runSchema = {
       childSessionId: nullableText, error: nullableText, retryAuthorized: boolean,
       output: { required: true, oneOf: [outputRef, { type: 'null' }] },
       failureKind: { type: 'string', enum: ['refused', 'truncated'] }, evidenceEvents,
+      aiToneBlock: { type: 'object', additionalProperties: false, properties: { reason: { ...text, enum: ['ai-tone', 'ai-tone-repeat', 'ai-tone-exhausted'] }, spans: strings } },
     } } },
   },
 } as const
@@ -85,8 +86,8 @@ function manuscriptValue(candidate: ManuscriptCandidateView) {
 }
 
 function renderJson<T>(_args: object, value: T) { return [{ type: 'text' as const, text: JSON.stringify(value) }] }
-function runValue({ promptVersion, executionLimits: { aiToneBlocking, ...executionLimits }, ...run }: WritingRun) {
-  return { ...run, ...(promptVersion === undefined ? {} : { promptVersion }), executionLimits: { ...executionLimits, ...(aiToneBlocking === undefined ? {} : { aiToneBlocking }) }, settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(({ failureKind, evidenceEvents, ...attempt }) => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })),
+function runValue({ promptVersion, ...run }: WritingRun) {
+  return { ...run, ...(promptVersion === undefined ? {} : { promptVersion }), settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(({ failureKind, evidenceEvents, ...attempt }) => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })),
     ...(failureKind === undefined ? {} : { failureKind }),
     ...(evidenceEvents === undefined ? {} : { evidenceEvents: evidenceEvents.map(({ location, reason, ...event }) => ({ ...event, declared: { ...event.declared }, admitted: event.admitted.map(item => ({ ...item })),
       ...(location === undefined ? {} : { location }), ...(reason === undefined ? {} : { reason }) })) }) })) }
