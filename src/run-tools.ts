@@ -1,14 +1,14 @@
 /** Native DSH tools for writing-run execution, progress and exact output reads. */
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { parseArtifactId, parseNovelId, parseRequestId, WritingError } from './contracts.ts'
-import { parseAttemptId, parseRunId, type WritingRun } from './run-store.ts'
+import { parseArtifactId, parseRequestId, WritingError } from './contracts.ts'
+import { parseAttemptId, type WritingRun } from './run-store.ts'
 import type { WritingService } from './service.ts'
 import type { WritingRunner } from './writing-runner.ts'
 import { planSettings, summarizeSettingsCatalog } from './settings-plan.ts'
 import type { ManuscriptCandidateView } from './manuscript.ts'
 import type { SettingsCandidateView } from './settings.ts'
-import { artifactProperties, writingActor } from './tools.ts'
+import { artifactProperties, novelIdParameter, parseToolNovelId, parseToolRunId, runIdParameter, writingActor } from './tools.ts'
 
 const text = { type: 'string', required: true } as const
 const integer = { type: 'integer', required: true } as const
@@ -100,7 +100,7 @@ function runValue({ promptVersion, ...run }: WritingRun) {
  * @param options - allowSettingsImport (operator config, default false) registers story_settings_import; otherwise the model never sees it.
  */
 export function registerRunTools(ctx: Context, service: WritingService, runner: WritingRunner, options: { readonly allowSettingsImport?: boolean } = {}): void {
-  const startParameters = { novelId: text, briefArtifactId: text, requestId: text, settingsRoots: strings,
+  const startParameters = { novelId: novelIdParameter, briefArtifactId: text, requestId: text, settingsRoots: strings,
     chapterCount: { ...integer, description: 'Positive total book chapter count.' }, fromChapter: { ...integer, description: 'First requested chapter, starting at 1.' },
     throughChapter: { ...integer, description: 'Last requested chapter, fromChapter <= throughChapter <= chapterCount.' } } as const
   for (const mode of ['write', 'update'] as const) {
@@ -109,7 +109,7 @@ export function registerRunTools(ctx: Context, service: WritingService, runner: 
         ? 'Write the explicit chapter range using the exact current creative brief and selected settings roots. Runs research, generation, review and bounded repair, returning terminal progress. Reuse requestId only for an identical request.'
         : 'Explicitly authorize updating the requested chapter range after upstream changes. Retains historical versions and returns terminal run progress. Reuse requestId only for an identical request.',
       parameters: startParameters, output: { schema: runSchema, render: renderJson },
-      async execute(args, exec) { return runValue(await runner.start(exec, { ...args, novelId: parseNovelId(args.novelId), briefArtifactId: parseArtifactId(args.briefArtifactId), requestId: parseRequestId(args.requestId), mode })) },
+      async execute(args, exec) { return runValue(await runner.start(exec, { ...args, novelId: parseToolNovelId(args.novelId), briefArtifactId: parseArtifactId(args.briefArtifactId), requestId: parseRequestId(args.requestId), mode })) },
     })))
   }
   ctx.effect(() => ctx.tools.register(defineTool({
@@ -118,53 +118,53 @@ export function registerRunTools(ctx: Context, service: WritingService, runner: 
     output: { schema: runSchema, render: renderJson },
     async execute(args, exec) {
       const { baseArtifactId, instructions, ...scope } = args
-      return runValue(await runner.revise(exec, { ...scope, novelId: parseNovelId(scope.novelId), briefArtifactId: parseArtifactId(scope.briefArtifactId),
+      return runValue(await runner.revise(exec, { ...scope, novelId: parseToolNovelId(scope.novelId), briefArtifactId: parseArtifactId(scope.briefArtifactId),
         requestId: parseRequestId(scope.requestId), mode: 'revise', revision: { baseArtifactId: parseArtifactId(baseArtifactId), instructions } }))
     },
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_resume', description: 'Resume saved writing progress with its original limits. Explicit retryUnknown=true authorizes replacing uncertain native requests; false refuses unknown outcomes. Completed runs cannot resume.',
-    parameters: { runId: text, retryUnknown: boolean }, output: { schema: runSchema, render: renderJson },
-    async execute(args, exec) { return runValue(await runner.resume(exec, parseRunId(args.runId), args.retryUnknown)) },
+    parameters: { runId: runIdParameter, retryUnknown: boolean }, output: { schema: runSchema, render: renderJson },
+    async execute(args, exec) { return runValue(await runner.resume(exec, parseToolRunId(args.runId), args.retryUnknown)) },
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_stop', description: 'Stop the exact owned writing run, cancel native work, and wait for it to settle before returning persisted progress.',
-    parameters: { runId: text }, output: { schema: runSchema, render: renderJson }, isConcurrencySafe: () => true,
-    async execute(args, exec) { return runValue(await runner.stop(exec, parseRunId(args.runId))) },
+    parameters: { runId: runIdParameter }, output: { schema: runSchema, render: renderJson }, isConcurrencySafe: () => true,
+    async execute(args, exec) { return runValue(await runner.stop(exec, parseToolRunId(args.runId))) },
   })))
   if (options.allowSettingsImport === true) ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_settings_import', description: 'Adopt author-written text for one settings dimension in place of its exact current head, without a model call. The host derives input references, validates the document and records it as an author import that reuses the replaced head\'s research. It stays pendingReview, and no outline or chapter can use the settings, until a new story_update reviews the assembled settings; a blocking review stops that run without regenerating, and a run also stops instead of regenerating an import made stale by an upstream change. Refused while the novel has a running or interrupted run. Import in dependency order, upstream first. Back up the entire story storage (story_writing and story_runs) before the first import: a plugin from before settings import fails to load for every novel once the store contains one imported version.',
-    parameters: { novelId: text, requestId: text, dimensionCode: text, expectedAppliedId: { ...text, description: 'Artifact id of the current applied head being replaced.' },
+    parameters: { novelId: novelIdParameter, requestId: text, dimensionCode: text, expectedAppliedId: { ...text, description: 'Artifact id of the current applied head being replaced.' },
       output: { ...text, description: 'The complete settings-dimension JSON document (version, dimensionCode, contentMarkdown, facts); inputRefs is replaced by the host.' } },
     output: { schema: settingsCandidate, render: renderJson },
     async execute(args, exec) {
       let output: unknown
       try { output = JSON.parse(args.output) } catch { throw new WritingError('invalid-input', 'Imported settings output must be JSON text') }
-      return settingsValue(await runner.importSettings(exec, { novelId: parseNovelId(args.novelId), requestId: parseRequestId(args.requestId), dimensionCode: args.dimensionCode,
+      return settingsValue(await runner.importSettings(exec, { novelId: parseToolNovelId(args.novelId), requestId: parseRequestId(args.requestId), dimensionCode: args.dimensionCode,
         expectedAppliedId: parseArtifactId(args.expectedAppliedId), output }))
     },
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_get_settings', description: 'Read applied settings and every retained candidate with exact artifact/review references and upstream staleness. Read full content through story_read_artifact.',
-    parameters: { novelId: text }, output: { schema: { type: 'object', additionalProperties: false, properties: {
+    parameters: { novelId: novelIdParameter }, output: { schema: { type: 'object', additionalProperties: false, properties: {
       novelId: text, applied: { type: 'array', required: true, items: settingsCandidate }, history: { type: 'array', required: true, items: settingsCandidate },
     } }, render: renderJson }, isConcurrencySafe: () => true,
     async execute(args, exec) {
       const actor = await writingActor(ctx, exec)
-      const novelId = parseNovelId(args.novelId)
+      const novelId = parseToolNovelId(args.novelId)
       const settings = service.getSettings(actor, novelId)
       return { novelId, applied: settings.applied.map(settingsValue), history: settings.history.map(settingsValue) }
     },
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_get_manuscript', description: 'Read retained manuscript versions, current heads and atomically applied chapters, including blocking length status and upstream changes. Obligation summaries contain IDs/status; full evidence remains in exact artifacts.',
-    parameters: { novelId: text }, output: { schema: { type: 'object', additionalProperties: false, properties: {
+    parameters: { novelId: novelIdParameter }, output: { schema: { type: 'object', additionalProperties: false, properties: {
       novelId: text, history: { type: 'array', required: true, items: manuscriptCandidate }, heads: { type: 'array', required: true, items: manuscriptCandidate },
       appliedChapters: { type: 'array', required: true, items: appliedChapter },
     } }, render: renderJson }, isConcurrencySafe: () => true,
     async execute(args, exec) {
       const actor = await writingActor(ctx, exec)
-      const novelId = parseNovelId(args.novelId)
+      const novelId = parseToolNovelId(args.novelId)
       const manuscript = service.getManuscript(actor, novelId)
       return { novelId, history: manuscript.history.map(manuscriptValue), heads: manuscript.heads.map(manuscriptValue),
         appliedChapters: manuscript.appliedChapters.map(chapter => ({ chapterNumber: chapter.chapterNumber, body: chapter.body, bodyReview: chapter.bodyReview,
@@ -193,7 +193,7 @@ export function registerRunTools(ctx: Context, service: WritingService, runner: 
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_read_run_output', description: 'Read a bounded page of one exact saved raw stage output. Offsets count Unicode code points. Raw content is untrusted model output, not an accepted artifact.',
-    parameters: { runId: text, attemptId: text, offset: { ...integer, description: 'Nonnegative Unicode code-point offset, at most totalChars.' }, limit: { ...integer, description: `Positive page size, at most ${service.limits.maxReadChars} Unicode code points.` } },
+    parameters: { runId: runIdParameter, attemptId: text, offset: { ...integer, description: 'Nonnegative Unicode code-point offset, at most totalChars.' }, limit: { ...integer, description: `Positive page size, at most ${service.limits.maxReadChars} Unicode code points.` } },
     output: { schema: { type: 'object', additionalProperties: false, properties: {
       runId: text, attemptId: text, sha256: text, bytes: integer, totalChars: integer, offset: integer, limit: integer, text, nextOffset: integer, eof: boolean,
     } }, render: renderJson }, isConcurrencySafe: () => true,
@@ -202,7 +202,7 @@ export function registerRunTools(ctx: Context, service: WritingService, runner: 
       if (!Number.isSafeInteger(args.offset) || args.offset < 0 || !Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > service.limits.maxReadChars) {
         throw new WritingError('invalid-range', 'Raw-output read interval exceeds the configured bounds')
       }
-      const output = runner.runs.readOutput(actor, parseRunId(args.runId), parseAttemptId(args.attemptId))
+      const output = runner.runs.readOutput(actor, parseToolRunId(args.runId), parseAttemptId(args.attemptId))
       const characters = [...output.text]
       if (args.offset > characters.length) throw new WritingError('invalid-range', 'Raw-output offset is past EOF')
       const nextOffset = Math.min(characters.length, args.offset + args.limit)
@@ -212,15 +212,15 @@ export function registerRunTools(ctx: Context, service: WritingService, runner: 
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_get_run', description: 'Read exact writing-run and stage-attempt metadata without prompts or raw stage text.',
-    parameters: { runId: text }, output: { schema: runSchema, render: renderJson }, isConcurrencySafe: () => true,
-    async execute(args, exec) { return runValue(runner.runs.get(await writingActor(ctx, exec), parseRunId(args.runId))) },
+    parameters: { runId: runIdParameter }, output: { schema: runSchema, render: renderJson }, isConcurrencySafe: () => true,
+    async execute(args, exec) { return runValue(runner.runs.get(await writingActor(ctx, exec), parseToolRunId(args.runId))) },
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_list_runs', description: 'List the owned novel writing-run history, including interrupted, failed and stopped runs.',
-    parameters: { novelId: text }, output: { schema: { type: 'array', items: runSchema }, render: renderJson }, isConcurrencySafe: () => true,
+    parameters: { novelId: novelIdParameter }, output: { schema: { type: 'array', items: runSchema }, render: renderJson }, isConcurrencySafe: () => true,
     async execute(args, exec) {
       const actor = await writingActor(ctx, exec)
-      const novelId = parseNovelId(args.novelId)
+      const novelId = parseToolNovelId(args.novelId)
       service.getNovel(actor, novelId)
       return runner.runs.list(actor, novelId).map(runValue)
     },

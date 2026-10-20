@@ -2,10 +2,48 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
-import type { Actor, NovelView } from './contracts.ts'
+import { z } from 'zod'
+import { WritingError, type Actor, type NovelId, type NovelView } from './contracts.ts'
 import { artifactKinds, parseArtifactId, parseNovelId, parseRequestId } from './contracts.ts'
+import { parseRunId, type RunId } from './run-store.ts'
 import type { WritingService } from './service.ts'
 import { projectArtifact } from './projection.ts'
+
+/** Identifier arguments stay untyped in JSON Schema so a non-string still reaches the parser. */
+export const novelIdParameter = { type: 'json', required: true } as const
+/** Identifier arguments stay untyped in JSON Schema so a non-string still reaches the parser. */
+export const runIdParameter = { type: 'json', required: true } as const
+
+function rejectMalformedId(error: unknown, message: string): never {
+  if (error instanceof z.ZodError) throw new WritingError('invalid-input', message)
+  throw error
+}
+
+/**
+ * Admit a tool novelId. A malformed value is invalid-input, not a Zod issue dump.
+ * @param value - Untrusted tool argument.
+ * @returns The identity parseNovelId already accepts.
+ */
+export function parseToolNovelId(value: unknown): NovelId {
+  try {
+    return parseNovelId(value)
+  } catch (error) {
+    rejectMalformedId(error, 'novelId must look like novel_<uuid>')
+  }
+}
+
+/**
+ * Admit a tool runId. A malformed value is invalid-input, not a Zod issue dump.
+ * @param value - Untrusted tool argument.
+ * @returns The identity parseRunId already accepts.
+ */
+export function parseToolRunId(value: unknown): RunId {
+  try {
+    return parseRunId(value)
+  } catch (error) {
+    rejectMalformedId(error, 'runId must look like run_<uuid>')
+  }
+}
 
 /** Shared public metadata for an exact stored artifact version. */
 export const artifactProperties = {
@@ -78,7 +116,7 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
     name: 'story_save_brief',
     description: 'Save a new immutable creative-brief version. Supply the current novel revision as expectedRevision; revision conflicts require rereading before deciding another change. Reuse requestId only for the same request.',
     parameters: {
-      novelId: { type: 'string', required: true },
+      novelId: novelIdParameter,
       requestId: { type: 'string', required: true },
       expectedRevision: { type: 'integer', required: true, description: 'Positive current novel revision.' },
       text: { type: 'string', required: true },
@@ -86,7 +124,7 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
     output: novelOutput,
     async execute(args, exec) {
       return novelValue(await service.saveBrief(await writingActor(ctx, exec), {
-        ...args, novelId: parseNovelId(args.novelId), requestId: parseRequestId(args.requestId),
+        ...args, novelId: parseToolNovelId(args.novelId), requestId: parseRequestId(args.requestId),
       }))
     },
   })))
@@ -94,7 +132,7 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
     name: 'story_read_artifact',
     description: `Read an exact artifact version in Unicode code-point pages. Follow nextOffset until eof. Explicit limit must be between 1 and ${service.limits.maxReadChars}.`,
     parameters: {
-      novelId: { type: 'string', required: true },
+      novelId: novelIdParameter,
       artifactId: { type: 'string', required: true },
       offset: { type: 'integer', required: true, description: 'Nonnegative Unicode code-point offset.' },
       limit: { type: 'integer', required: true, description: `Positive page length up to ${service.limits.maxReadChars} code points.` },
@@ -123,18 +161,18 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
       // Review children always read the reader-facing prose view; the host decides, not the child.
       const view = service.readsProse(exec.agent?.session.id) ? 'prose' : 'stored'
       return service.readArtifact(await writingActor(ctx, exec), {
-        ...args, novelId: parseNovelId(args.novelId), artifactId: parseArtifactId(args.artifactId), view,
+        ...args, novelId: parseToolNovelId(args.novelId), artifactId: parseArtifactId(args.artifactId), view,
       })
     },
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_get_novel',
     description: 'Read an owned novel, its current revision and immutable creative-brief history without embedding document text.',
-    parameters: { novelId: { type: 'string', required: true } },
+    parameters: { novelId: novelIdParameter },
     output: novelOutput,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      return novelValue(service.getNovel(await writingActor(ctx, exec), parseNovelId(args.novelId)))
+      return novelValue(service.getNovel(await writingActor(ctx, exec), parseToolNovelId(args.novelId)))
     },
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
@@ -153,10 +191,10 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_select_novel',
     description: 'Select an existing novel for this Session. Other Sessions retain their selections.',
-    parameters: { novelId: { type: 'string', required: true } },
+    parameters: { novelId: novelIdParameter },
     output: novelOutput,
     async execute(args, exec) {
-      return novelValue(await service.selectNovel(await writingActor(ctx, exec), parseNovelId(args.novelId)))
+      return novelValue(await service.selectNovel(await writingActor(ctx, exec), parseToolNovelId(args.novelId)))
     },
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
@@ -177,7 +215,7 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
     name: 'story_preview',
     description: 'Open a complete immutable artifact version in the current Session document preview. Requires an exact novelId and artifactId from writing tool results.',
     parameters: {
-      novelId: { type: 'string', required: true },
+      novelId: novelIdParameter,
       artifactId: { type: 'string', required: true },
     },
     output: {
@@ -198,7 +236,7 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
     },
     async execute(args, exec) {
       const actor = await writingActor(ctx, exec)
-      const novelId = parseNovelId(args.novelId)
+      const novelId = parseToolNovelId(args.novelId)
       const novel = service.getNovel(actor, novelId)
       const artifact = service.getArtifact(actor, { novelId, artifactId: parseArtifactId(args.artifactId) })
       const imported = artifact.kind === 'settings-dimension' && service.getSettings(actor, novelId).history.some(item => item.artifact.id === artifact.id && item.origin === 'import')
