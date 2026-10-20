@@ -41,7 +41,9 @@ Use `dsh-story-weaver@next` for release candidates. In the DSH web UI you can in
 
 ### Upgrading
 
-Rolling back to an older plugin that does not know prompt versions 3 and 4 makes every run in that novel unreadable, including version 1 and 2 runs: the old code rejects stored versions 3 and 4. Resuming on this code hits attempt-conflict only for version 3 or 4 runs created on `07ab432` or earlier, when an already-finished body-review prompt no longer matches (an unclosed “ or 「, a connective after an ASCII period such as `.然而`, a panel line with trailing spaces, and the like). Version 1 and 2 runs are not affected: a resume compares only that run's own attempts, and AI-tone markers enter prompts only from version 3. An experiment that has already started must be resumed on the commit that created it.
+Rolling back to an older plugin that does not know prompt versions 3 and 4 makes every run in that novel unreadable, including version 1 and 2 runs: the old code rejects stored versions 3 and 4.
+
+Resuming on this code hits attempt-conflict only for version 3 or 4 runs created on `07ab432` or earlier, and only for a chapter whose body review was started but not accepted (interrupted, outcome unknown, failed, or rejected and being retried), when that chapter's AI-tone markers change. For a run created on `07ab432` the only changed inputs are an ASCII period followed by whitespace (`. 然而，`, `.　然而，`) and a digit before the period (`第3.然而，`); for an earlier run, also an unclosed “ or 「, `.然而`, or a panel line with trailing spaces. An already-accepted body review is not rebuilt and does not conflict. Version 1 and 2 runs are not affected. An experiment that has already started must be resumed on the commit that created it.
 
 ### Uninstalling
 
