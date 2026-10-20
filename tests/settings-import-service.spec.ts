@@ -84,6 +84,25 @@ describe.each(['json', 'sqlite'] as const)('%s settings import', backend => {
     await expect(h.service.importSettings(actor, { ...retry, expectedAppliedId: imported.artifact.id })).rejects.toMatchObject({ code: 'request-conflict' })
   })
 
+  it('P-1: two concurrent imports with one requestId publish once; the loser replays the same input and conflicts on different input', async () => {
+    const { h, actor, novel, request } = await adopted(backend)
+    // Both calls pass the replay lookup before either publishes, so only the duplicate check inside the novel update can tell them apart.
+    const other = { ...request, childSessionId: brandString<SessionId>('importer-2') }
+    const same = await Promise.allSettled([h.service.importSettings(actor, request), h.service.importSettings({ ...actor, sessionId: other.childSessionId }, other)])
+    expect(same.map(result => result.status)).toEqual(['fulfilled', 'fulfilled'])
+    const [first, second] = same.map(result => (result as PromiseFulfilledResult<unknown>).value)
+    expect(second).toEqual(first)
+    expect(first).toMatchObject({ origin: 'import', childSessionId: importer })
+    expect(h.service.getSettings(actor, novel.id).history.map(item => item.origin)).toEqual(['stage', 'import'])
+
+    const head = h.service.getSettings(actor, novel.id).applied[0]!.artifact.id
+    const next = { ...request, requestId: parseRequestId('import-race'), expectedAppliedId: head }
+    const different = await Promise.allSettled([h.service.importSettings(actor, next), h.service.importSettings(actor, { ...next, output: { ...next.output, contentMarkdown: 'Different.' } })])
+    expect(different[0]!.status).toBe('fulfilled')
+    expect(different[1]).toMatchObject({ status: 'rejected', reason: { code: 'request-conflict' } })
+    expect(h.service.getSettings(actor, novel.id).history.map(item => item.origin)).toEqual(['stage', 'import', 'import'])
+  })
+
   it('D: refuses a stale head, a dimension without an adopted head, unavailable dimensions and invalid documents', async () => {
     const { h, actor, novel, request } = await adopted(backend)
     await expect(h.service.importSettings(actor, { ...request, expectedAppliedId: novel.brief.id })).rejects.toMatchObject({ code: 'revision-conflict' })
