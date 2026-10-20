@@ -48,7 +48,7 @@ Remove it with `dsh plugin --profile web remove dsh-story-weaver` (use the same 
 
 A DSH profile installs plugins with pnpm `autoInstallPeers` turned off and a hoisted `node_modules`. Packages the plugin only calls inside the host are resolved from that running installation, so the profile does not download a second copy.
 
-Those packages stay in `peerDependencies` with the same version ranges. Each one is marked `"optional": true` in `peerDependenciesMeta`. pnpm no longer lists these 12 as missing; one summary warning remains because of the upstream cordis peer, and `dsh plugin add` passes that warning through. The host still checks every `@deepseek-ai/dsh-*` peer range against the running DSH version before it loads the plugin. This package only runs inside DSH, and installing it standalone with npm fails with `ERR_MODULE_NOT_FOUND`. The optional peers are:
+Those packages stay in `peerDependencies` with the same version ranges. Each one is marked `"optional": true` in `peerDependenciesMeta`. pnpm no longer lists these 12 as missing; one summary warning remains because of the upstream cordis peer, and `dsh plugin add` passes that warning through. The host still checks every `@deepseek-ai/dsh-*` peer range against the running DSH version before it loads the plugin. This package installs with npm, but importing it outside DSH fails with `ERR_MODULE_NOT_FOUND`. The optional peers are:
 
 | Peer | Range |
 | --- | --- |
