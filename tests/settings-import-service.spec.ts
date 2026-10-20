@@ -1,4 +1,5 @@
 /** Author settings import at the service: provenance, store compatibility, validation and derived pending review. */
+import { createHash } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -50,6 +51,14 @@ async function storedDocument(h: Awaited<ReturnType<typeof adopted>>['h']) {
   return { path, document: JSON.parse(await readFile(path, 'utf8')) as { tables: { novels: Record<string, NovelRecord> } } }
 }
 
+/** @returns The artifacts stored and not deleted since the call, i.e. what a store keeps from the calls that follow. */
+function keptArtifacts(h: Awaited<ReturnType<typeof adopted>>['h']): Set<string> {
+  const kept = new Set<string>()
+  h.onArtifactStored(id => { kept.add(id) })
+  h.onArtifactDeleted(id => { kept.delete(id) })
+  return kept
+}
+
 describe.each(['json', 'sqlite'] as const)('%s settings import', backend => {
   it('C1/B3: appends an import record replacing the head, reusing its research, never relabeling or touching the earlier record', async () => {
     const { h, actor, novel, research, applied, request } = await adopted(backend)
@@ -70,6 +79,62 @@ describe.each(['json', 'sqlite'] as const)('%s settings import', backend => {
     const again = await h.service.importSettings(actor, { ...request, requestId: parseRequestId('import-2'), expectedAppliedId: imported.artifact.id })
     expect(again).toMatchObject({ origin: 'import', revisionOf: imported.artifact.id, pendingReview: true })
     expect(h.service.getSettings(actor, novel.id).history.map(item => [item.origin, item.status])).toEqual([['stage', 'applied'], ['import', 'applied'], ['import', 'applied']])
+  })
+
+  it('P-1: a retry of the same requestId from a new process and Session replays the import; different input still conflicts', async () => {
+    const { h, actor, novel, request } = await adopted(backend)
+    const imported = await h.service.importSettings(actor, request)
+    await h.restart()
+    const retry = { ...request, childSessionId: brandString<SessionId>('importer-after-restart') }
+    expect(await h.service.importSettings({ ...actor, sessionId: retry.childSessionId }, retry)).toEqual(imported)
+    expect(h.service.getSettings(actor, novel.id).history).toHaveLength(2)
+    await expect(h.service.importSettings(actor, { ...retry, output: { ...request.output, contentMarkdown: 'Different.' } })).rejects.toMatchObject({ code: 'request-conflict' })
+    await expect(h.service.importSettings(actor, { ...retry, expectedAppliedId: imported.artifact.id })).rejects.toMatchObject({ code: 'request-conflict' })
+  })
+
+  it('P-1: two concurrent imports with one requestId publish once; the loser replays the same input and conflicts on different input', async () => {
+    const { h, actor, novel, request } = await adopted(backend)
+    // Both calls pass the replay lookup before either publishes, so only the duplicate check inside the novel update can tell them apart.
+    const other = { ...request, childSessionId: brandString<SessionId>('importer-2') }
+    const same = await Promise.allSettled([h.service.importSettings(actor, request), h.service.importSettings({ ...actor, sessionId: other.childSessionId }, other)])
+    expect(same.map(result => result.status)).toEqual(['fulfilled', 'fulfilled'])
+    const [first, second] = same.map(result => (result as PromiseFulfilledResult<unknown>).value)
+    expect(second).toEqual(first)
+    expect(first).toMatchObject({ origin: 'import', childSessionId: importer })
+    expect(h.service.getSettings(actor, novel.id).history.map(item => item.origin)).toEqual(['stage', 'import'])
+
+    const head = h.service.getSettings(actor, novel.id).applied[0]!.artifact.id
+    const next = { ...request, requestId: parseRequestId('import-race'), expectedAppliedId: head }
+    const different = await Promise.allSettled([h.service.importSettings(actor, next), h.service.importSettings(actor, { ...next, output: { ...next.output, contentMarkdown: 'Different.' } })])
+    expect(different[0]!.status).toBe('fulfilled')
+    expect(different[1]).toMatchObject({ status: 'rejected', reason: { code: 'request-conflict' } })
+    expect(h.service.getSettings(actor, novel.id).history.map(item => item.origin)).toEqual(['stage', 'import', 'import'])
+  })
+
+  it('P-2: a refused, raced or cancelled import leaves no content artifact; a raced retry keeps only the published one', async () => {
+    const { h, actor, novel, request } = await adopted(backend)
+    const kept = keptArtifacts(h)
+    await expect(h.service.importSettings(actor, request, () => { throw new Error('Refused at admission') })).rejects.toThrow('Refused at admission')
+    expect([...kept]).toEqual([])
+    const stop = new AbortController()
+    h.onArtifactStored(() => { stop.abort(new Error('Stop before publication')) })
+    await expect(h.service.importSettings({ ...actor, signal: stop.signal }, request)).rejects.toThrow('Stop before publication')
+    expect([...kept]).toEqual([])
+    expect(h.service.getSettings(actor, novel.id).history).toHaveLength(1)
+    await h.restart()
+    const raced = keptArtifacts(h)
+    // The second import replaces the same head, so the first one's publication makes it a revision conflict inside the update.
+    const race = await Promise.allSettled([h.service.importSettings(actor, request), h.service.importSettings(actor, { ...request, requestId: parseRequestId('import-other') })])
+    expect(race[1]).toMatchObject({ status: 'rejected', reason: { code: 'revision-conflict' } })
+    const published = (race[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof h.service.importSettings>>>).value.artifact.id
+    expect([...raced]).toEqual([published])
+    const retried = await Promise.allSettled([h.service.importSettings(actor, { ...request, requestId: parseRequestId('import-3'), expectedAppliedId: published }),
+      h.service.importSettings(actor, { ...request, requestId: parseRequestId('import-3'), expectedAppliedId: published })])
+    const winner = (retried[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof h.service.importSettings>>>).value.artifact.id
+    expect(retried[1]).toMatchObject({ status: 'fulfilled', value: { artifact: { id: winner } } })
+    expect([...raced]).toEqual([published, winner])
+    await h.restart()
+    expect(h.service.getSettings(actor, novel.id).history.map(item => item.artifact.id).slice(1)).toEqual([published, winner])
   })
 
   it('D: refuses a stale head, a dimension without an adopted head, unavailable dimensions and invalid documents', async () => {
@@ -156,6 +221,29 @@ it('C4: an unreviewed stage revision relabeled as an applied import is rejected 
   forged.applied = true
   record.settingsHeads = [{ dimensionCode: 'a1', artifactId: revision.artifact.id }]
   await writeFile(path, JSON.stringify(document))
+  await h.restart()
+  expect(() => h.service.getSettings(actor, novel.id)).toThrowError(expect.objectContaining({ code: 'corrupt-artifact' }))
+})
+
+it('P-1: an import receipt written with the importing Session in its hash (75874bd) still verifies and replays from any Session', async () => {
+  const { h, actor, novel, request } = await adopted('json')
+  const imported = await h.service.importSettings(actor, request)
+  const output = JSON.parse(h.service.getArtifact(actor, { novelId: novel.id, artifactId: imported.artifact.id }).text) as unknown
+  const { path, document } = await storedDocument(h)
+  const record = document.tables.novels[novel.id]!.settingsHistory[1]!
+  const legacy = createHash('sha256').update(JSON.stringify(['import', record.researchPlanId, record.childSessionId, output, record.revisionOf])).digest('hex')
+  // New receipts bind the import prefix, research, text and lineage, but not the importing Session.
+  expect(record.request.hash).toBe(createHash('sha256').update(JSON.stringify(['import', record.researchPlanId, output, record.revisionOf])).digest('hex'))
+  record.request = { ...record.request, hash: legacy }
+  await writeFile(path, JSON.stringify(document))
+  await h.restart()
+  expect(h.service.getSettings(actor, novel.id).applied).toEqual([imported])
+  expect(await h.service.importSettings(actor, { ...request, childSessionId: brandString<SessionId>('another-importer') })).toEqual(imported)
+  await expect(h.service.importSettings(actor, { ...request, output: { ...request.output, contentMarkdown: 'Different.' } })).rejects.toMatchObject({ code: 'request-conflict' })
+  // Tampering with the recorded Session of a legacy receipt is still detected.
+  const again = await storedDocument(h)
+  again.document.tables.novels[novel.id]!.settingsHistory[1]!.childSessionId = brandString<SessionId>('forged')
+  await writeFile(again.path, JSON.stringify(again.document))
   await h.restart()
   expect(() => h.service.getSettings(actor, novel.id)).toThrowError(expect.objectContaining({ code: 'corrupt-artifact' }))
 })

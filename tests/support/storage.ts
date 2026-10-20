@@ -37,6 +37,7 @@ export async function useStorage(backend: StorageKind, limits: WritingLimits, re
   let activeManuscriptLimits = manuscriptLimits
   let pendingSeed = seed
   let observeArtifact: (listener: (id: ArtifactId) => void) => void
+  let observeArtifactDeletion: (listener: (id: ArtifactId) => void) => void
   let closeCurrent = async (): Promise<void> => {}
   onTestFinished(async () => {
     await closeCurrent()
@@ -51,6 +52,12 @@ export async function useStorage(backend: StorageKind, limits: WritingLimits, re
     observeArtifact = (listener) => {
       const remove = ctx.on('domain/changed', (change) => {
         if (change.domain === writingDomain.name && change.table === 'artifacts' && change.operation === 'put') listener(parseArtifactId(change.key))
+      })
+      disposers.push(async () => { remove() })
+    }
+    observeArtifactDeletion = (listener) => {
+      const remove = ctx.on('domain/changed', (change) => {
+        if (change.domain === writingDomain.name && change.table === 'artifacts' && change.operation === 'deleted') listener(parseArtifactId(change.key))
       })
       disposers.push(async () => { remove() })
     }
@@ -74,6 +81,7 @@ export async function useStorage(backend: StorageKind, limits: WritingLimits, re
     root,
     service: await open(),
     onArtifactStored(listener: (id: ArtifactId) => void) { observeArtifact(listener) },
+    onArtifactDeleted(listener: (id: ArtifactId) => void) { observeArtifactDeletion(listener) },
     async restart(nextLimits: WritingLimits = limits, nextManuscriptLimits: ManuscriptLimits = manuscriptLimits) {
       await closeCurrent()
       activeLimits = nextLimits
