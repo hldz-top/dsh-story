@@ -138,7 +138,9 @@ export class WritingRunner {
   private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false, gated = true): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
-    // Resume compares the stored brief. A matching completed run still fails later as run-state.
+    // In admit, before the settings gate: a mismatched brief is revision-conflict, the same kind main uses.
+    // Resume compares the run's stored brief and does not ask the caller for briefArtifactId.
+    // A matching completed run still fails later as run-state.
     if (novel.brief.id !== input.briefArtifactId && (resuming || gated)) {
       throw new WritingError('revision-conflict', resuming
         ? "This run's creative brief is no longer current; start story_update with the current briefArtifactId"

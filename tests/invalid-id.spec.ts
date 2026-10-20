@@ -17,7 +17,7 @@ import { z } from 'zod'
 import * as Story from '../src/index.ts'
 import { WritingError, parseArtifactId, parseNovelId, parseRequestId, type Actor } from '../src/contracts.ts'
 import { parseRunId } from '../src/run-store.ts'
-import { admitToolId, artifactIdParameter, attemptIdParameter, expectedAppliedIdParameter, idFormatMessage, novelIdParameter, parseToolNovelId, parseToolRunId, requestIdParameter, runIdParameter, type ToolIdParam } from '../src/tools.ts'
+import { admitToolId, artifactIdParameter, attemptIdParameter, defineStoryTool, expectedAppliedIdParameter, idFormatMessage, novelIdParameter, parseToolNovelId, parseToolRunId, requestIdParameter, runIdParameter, type ToolIdParam } from '../src/tools.ts'
 import { mountPluginRuntime } from './support/plugin-runtime.ts'
 import { call, ScriptedModel, stop } from './support/model.ts'
 
@@ -314,6 +314,39 @@ it('rejects every schema id field without a raw zod error', async () => {
       expect(errorText(outcome, label), label).toBe(`Error: ${idFormatMessage[key]}`)
     }
   }
+})
+
+/** Top-level *Id parameters that are not admitted ids. Nested question ids are out of scope. */
+const idParameterAllowlist = new Set(['callId'])
+
+it('does not treat a wrong-type constructor parameter as an admitted id', async () => {
+  const { ctx, execute } = await setup()
+  ctx.effect(() => ctx.tools.register(defineStoryTool({
+    name: 'story_constructor_probe',
+    description: 'Probe that a prototype key is not an admitted id.',
+    parameters: { constructor: { type: 'string', required: true } },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {} },
+      render: () => [{ type: 'text', text: '{}' }],
+    },
+    async execute() { return {} },
+  })))
+  const text = errorText(await execute('story_constructor_probe', { constructor: 123 }), 'constructor')
+  expect(text).toBe('Error: invalid arguments: "constructor" must be a string')
+})
+
+it('requires every top-level *Id parameter to be admitted or explicitly allowed', async () => {
+  const { ctx } = await setup()
+  const uncovered = ctx.tools.schemas().flatMap(schema => {
+    const properties = schema.parameters.properties
+    if (typeof properties !== 'object' || properties === null) return []
+    return Object.keys(properties).flatMap(key => {
+      if (!key.endsWith('Id')) return []
+      if (Object.hasOwn(idFormatMessage, key) || idParameterAllowlist.has(key)) return []
+      return [`${schema.name}.${key}`]
+    })
+  })
+  expect(uncovered).toEqual([])
 })
 
 it.each(['stopped', 'failed'] as const)('refuses to resume a %s run after the brief changes and leaves it unchanged', async status => {
