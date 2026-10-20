@@ -9,9 +9,9 @@ import { ENUM_SETTINGS_KINDS, MAX_ENUM_SETTINGS_CONTENT_CHARS, MAX_ENUM_SETTINGS
  * prompt under an existing key). Version 1 is the text before chapter-quality guardrails and stays frozen; runs stored
  * without a version are version 1.
  */
-export type PromptVersion = 1 | 2 | 3
+export type PromptVersion = 1 | 2 | 3 | 4
 /** The version new runs record. */
-export const CURRENT_PROMPT_VERSION: PromptVersion = 3
+export const CURRENT_PROMPT_VERSION: PromptVersion = 4
 
 /** Business purpose of one independently executed stage. */
 export type StagePromptKind = 'settings' | 'review' | 'book-outline' | 'chapter-outline' | 'body' | 'continuity'
@@ -73,6 +73,16 @@ const stageInstructions: Record<StagePromptKind, readonly string[]> = {
 const aiToneGuardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
   review: [
     'When task.aiToneMarkers is present, review the narration for AI tone using those host-detected markers (after lieflat-less-ai-tone): reversal framing (不是…而是), dense 、 lists, revealing dashes, set openers (说白了), nominalised summaries, translationese (当…时, 对于…来说, sentence-initial 然而/因此/此外, 这意味着) and zero-subject paragraph comments. Report each real instance as an advisory style issue quoting the narration; ignore dialogue and panels, and never treat questions, metaphors, sentence-length rhythm, passive voice or long sentences as AI tone. Markers can be false positives; AI tone is never blocking.',
+  ],
+}
+
+/**
+ * Version 4 adds a short AI-tone writing rule to the body stage, adapted from lieflat-less-ai-tone (MIT, see src/ai-tone.ts and
+ * third_party/lieflat-less-ai-tone.LICENSE). Version 3 text is unchanged underneath it.
+ */
+const aiToneWritingGuardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
+  body: [
+    'Keep the narration free of AI tone (after lieflat-less-ai-tone): do not set up a misreading only to overturn it (不是…而是, 说到底); do not string three or more items together with 、 in one sentence; use few dashes to stage a reveal; no set openers such as 说白了; no nominalised summaries such as 完成了对…的优化; avoid translationese such as 当…时，, 对于…来说, sentence-initial 然而，/因此，/此外， and 这意味着; a comment that opens a paragraph names what it comments on. Dialogue, questions and sentence rhythm are exempt. Metaphors follow the character’s voice, but the ban on technical metaphors comes first.',
   ],
 }
 
@@ -158,6 +168,7 @@ export function buildStagePrompt(request: StagePromptRequest): string {
       : stageInstructions[request.kind]),
     ...((request.promptVersion ?? 1) >= 2 ? guardrails[request.kind] ?? [] : []),
     ...((request.promptVersion ?? 1) >= 3 && (request.kind !== 'review' || request.reviewedKind === 'body') ? aiToneGuardrails[request.kind] ?? [] : []),
+    ...((request.promptVersion ?? 1) >= 4 ? aiToneWritingGuardrails[request.kind] ?? [] : []),
   ]
   return [...instructions, 'TASK_DATA', JSON.stringify({
     novelId: request.novelId, kind: request.kind, inputs: request.inputs, task: request.task, requirements: request.requirements,
