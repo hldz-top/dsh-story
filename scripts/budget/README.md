@@ -70,11 +70,11 @@ State lives in `WD_STATE` (default `scripts/budget/state/`, gitignored). The led
 | Code | Name | Meaning |
 | --- | --- | --- |
 | 0 | OK | Under both limits. `drive.sh` also uses 0 when the run command itself exited 0 and no limit fired. |
-| 2 | usage | Bad arguments, or the Aliyun token-plan variables are missing. |
-| 3 | refused | `drive.sh` did not start the run because another drive holds the lock, or another tag has a base and no ledger row. |
-| 4 | OVER_RUN | The per-run call limit fired (call 200 allowed; stop before 201). |
-| 5 | OVER_TOTAL | Cumulative uncached input is past 10,000,000. |
-| 6 | MEASURE_FAIL | The meter could not read usage or the ledger. The driver stops the run. A failed measurement is not a zero. |
+| 2 | usage | Bad arguments, or the Aliyun token-plan variables are missing. `WD_RESET` on a tag that already has a ledger row is also exit 2. |
+| 3 | refused | `drive.sh` did not start the run because another drive holds the lock, another tag has a base and no ledger row, or a recorded run process group is still alive. `budget.sh finish` and `budget.sh start` use the same code while that group is alive. |
+| 4 | OVER_RUN | The per-run call limit fired (call 200 allowed; stop before 201). This includes a run that reaches the cap and exits before the next poll: the driver measures once more after the process exits. |
+| 5 | OVER_TOTAL | Cumulative uncached input is past 10,000,000, including when that is first visible in the end-of-run measurement. |
+| 6 | MEASURE_FAIL | The meter could not read usage, the ledger, or the base. The driver stops the run. A failed measurement is not a zero. A `usage.mjs` run that exceeds 60 seconds is this same failure, not a partial total. |
 
 `drive.sh` logs a `WATCHDOG <VERDICT>` line that names the limit (`per-run-calls`, `cumulative-uncached-input`, or `measurement`) and includes the meter's call and token counts. The run command's own exit status is in that log as `run command exited <status>`. When the watchdog is what stopped the run, `drive.sh` exits 4, 5, or 6 rather than the signal status.
 
@@ -94,7 +94,13 @@ export WD_HOME=<dsh-home> WD_RUN_CMD=<run-executable>
 ./scripts/budget/budget.sh reset --confirm
 ```
 
-`budget.sh <tag>` prints one measurement line and then `OK`, `OVER_RUN`, `OVER_TOTAL`, or `MEASURE_FAIL`. `budget.sh finish <tag> [status]` records that tag. The same tag reuses its base, including after `kill -9`, so a resume keeps counting. `WD_RESET=1` replaces the base and is only for a brand-new run of that tag, not for clearing the ledger.
+`budget.sh <tag>` prints one measurement line and then `OK`, `OVER_RUN`, `OVER_TOTAL`, or `MEASURE_FAIL`. `budget.sh finish <tag> [status]` records that tag. The same tag reuses its base, including after `kill -9`, so a resume keeps counting. A tag that already has a ledger row cannot be rebased: `WD_RESET=1` is refused and the recorded usage stays. Start a new tag instead.
+
+An optional `$WD_STATE/<tag>.extra` file is a single non-negative integer. It adds that many calls and does not add uncached input.
+
+The tools need Node >= 22.15. Set `WD_NODE` to that binary when `node` on `PATH` is older. An older binary is `MEASURE_FAIL`.
+
+`drive.sh` records the run's pid, process group and `/proc/<pid>/stat` starttime (field 22). A pid is the recorded run only when that starttime still matches, so a reused pid is not treated as alive. While the process group is alive, every new start and every `finish` is refused. After the group exits, both are allowed. When the run process exits, `drive.sh` measures once more before it chooses exit 4, 5 or 6, so a cap crossed between polls is not reported as success. That measurement uses the attempt snapshot from `start`: an attempt that was not terminal then, or that appeared later, and is terminal now with no session log, is `MEASURE_FAIL` and is not stored as zero calls. Attempts that were already terminal in the snapshot are ignored when their logs are missing.
 
 ## Mock
 
@@ -103,6 +109,6 @@ npm run budget:mock
 bash scripts/budget/mock/check.sh usage_parse provider_env
 ```
 
-The harness uses a fake dsh. It does not need a provider key (`WD_OFFLINE=1`). It covers call 199, call 200, SIGINT before call 201 and a later resume, the 10,000,000 / 10,000,001 boundary, a missing ledger, `MEASURE_FAIL`, polling at 2s and 20s, `kill -9` then resume, duplicate and concurrent ledger writes, missing and non-numeric usage, and a present zero. The 2s and 20s scenarios dominate the runtime (several minutes) and stay out of `npm test`.
+The harness uses a fake dsh. It does not need a provider key (`WD_OFFLINE=1`). Scenarios run one at a time so a loaded machine does not push `usage.mjs` into its 60 second timeout; that timeout still stops a real run with `MEASURE_FAIL`. The harness covers call 199, call 200, SIGINT before call 201 and a later resume, the 10,000,000 / 10,000,001 boundary, a missing ledger, `MEASURE_FAIL`, polling at 2s and 20s, `kill -9` then resume, a live process group after the driver is killed, duplicate and concurrent ledger writes, missing and non-numeric usage, a present zero, a settled tag refusing `WD_RESET`, terminal attempts with no session log, and corrupt ledger or base files. The 2s and 20s scenarios dominate the runtime and stay out of `npm test`.
 
 `WD_LEDGER_PAUSE` and `WD_CRASH_BEFORE_LEDGER_WRITE` exist so the mock can hit the locked write. Leave them unset for a real run.

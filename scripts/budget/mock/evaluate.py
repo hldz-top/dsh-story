@@ -210,6 +210,56 @@ def scenario_runs(name):
     if name == 'measure_fail':
         check('a failed measurement stops the run', text(f'{W}/{name}/r1.rc') == '6' and head(f'{W}/{name}/state/r1.stop') == 'MEASURE_FAIL' and 'WATCHDOG MEASURE_FAIL' in text(f'{W}/{name}/r1.out') and 'limit=measurement' in text(f'{W}/{name}/r1.out'), f"rc={text(f'{W}/{name}/r1.rc')} stop={head(f'{W}/{name}/state/r1.stop')}")
         return
+    if name == 'reset_settled':
+        before = text(f'{W}/{name}/ledger-before')
+        after = text(f'{W}/{name}/ledger-after')
+        err = text(f'{W}/{name}/reset.err')
+        check('WD_RESET of a settled tag is refused and the ledger stays', text(f'{W}/{name}/reset.rc') == '2' and 'new tag' in err and '6000000' in text(f'{W}/{name}/finish.out') and before == after and text(f'{W}/{name}/base-before') == text(f'{W}/{name}/base-after'), err)
+        return
+    if name == 'attempt_logs':
+        check('already-terminal attempts without logs are not failures', text(f'{W}/{name}/open.rc') == '0' and tail(f'{W}/{name}/open.out') == 'OK' and 'calls=0/200' in text(f'{W}/{name}/open.out'), tail(f'{W}/{name}/open.out'))
+        check('an attempt running at start and terminal later without a log fails', text(f'{W}/{name}/span.rc') == '6' and '1 terminal attempts have no session log' in text(f'{W}/{name}/span.err') + text(f'{W}/{name}/span.out'), text(f'{W}/{name}/span.err'))
+        check('a new terminal attempt without a log is counted too', text(f'{W}/{name}/two.rc') == '6' and '2 terminal attempts have no session log' in text(f'{W}/{name}/two.err') + text(f'{W}/{name}/two.out'), text(f'{W}/{name}/two.err'))
+        return
+    if name == 'ledger_duplicate':
+        blob = text(f'{W}/{name}/total.out') + text(f'{W}/{name}/total.err')
+        check('duplicate ledger rows are MEASURE_FAIL', text(f'{W}/{name}/total.rc') == '6' and 'duplicate rows for t1' in blob and 'Traceback' not in blob and tail(f'{W}/{name}/total.out') == 'MEASURE_FAIL', blob)
+        return
+    if name == 'mutants':
+        check('non-numeric cached_tokens is MEASURE_FAIL', text(f'{W}/{name}/batch-bad-cached.rc') not in ('', '0') and '"steps"' not in text(f'{W}/{name}/batch-bad-cached.out'), text(f'{W}/{name}/batch-bad-cached.err'))
+        check('cached_tokens above prompt_tokens is MEASURE_FAIL', text(f'{W}/{name}/batch-cached-over.rc') not in ('', '0') and 'exceeds prompt_tokens' in text(f'{W}/{name}/batch-cached-over.err'), text(f'{W}/{name}/batch-cached-over.err'))
+        blob = text(f'{W}/{name}/below.out') + text(f'{W}/{name}/below.err')
+        check('child usage below the base is MEASURE_FAIL', text(f'{W}/{name}/below.rc') == '6' and 'below the base' in blob and tail(f'{W}/{name}/below.out') == 'MEASURE_FAIL', blob)
+        return
+    if name == 'corrupt_files':
+        for label, needle in (('utf', 'not valid UTF-8'), ('empty', 'created= is empty'), ('base', 'not JSON')):
+            blob = text(f'{W}/{name}/{label}.out') + text(f'{W}/{name}/{label}.err')
+            rc = text(f'{W}/{name}/{label}.rc')
+            check(f'{label} corruption is MEASURE_FAIL', rc == '6' and needle in blob and 'Traceback' not in blob and rc != '0', blob)
+        return
+    if name == 'live_run':
+        check('matching pid and starttime is alive', text(f'{W}/{name}/real.rc') == '3' and 'RUN_ALIVE' in text(f'{W}/{name}/real.out'), text(f'{W}/{name}/real.out'))
+        forged = text(f'{W}/{name}/forged.out') + text(f'{W}/{name}/forged.err') + text(f'{W}/{name}/forged-finish.out') + text(f'{W}/{name}/forged-finish.err')
+        check('a reused pid with a different starttime is not alive', text(f'{W}/{name}/forged.rc') == '0' and 'CLEAR' in text(f'{W}/{name}/forged.out') and 'still alive' not in forged and text(f'{W}/{name}/forged-finish.rc') != '3', forged)
+        check('finish is refused while the recorded process is alive', text(f'{W}/{name}/alive-finish.rc') == '3' and 'still alive' in text(f'{W}/{name}/alive-finish.err'), text(f'{W}/{name}/alive-finish.err'))
+        check('a dead process group is clear', text(f'{W}/{name}/dead.rc') == '0' and 'CLEAR' in text(f'{W}/{name}/dead.out'), text(f'{W}/{name}/dead.out'))
+        check('kill -9 of drive.sh leaves the run blocking a new start and finish', text(f'{W}/{name}/other-start.rc') == '3' and text(f'{W}/{name}/held-finish.rc') == '3' and text(f'{W}/{name}/other-drive.rc') == '3' and 'still alive' in text(f'{W}/{name}/other-start.err') + text(f'{W}/{name}/held-finish.err') + text(f'{W}/{name}/other-drive.out'), text(f'{W}/{name}/other-drive.out'))
+        check('after the run exits, start and finish are allowed', text(f'{W}/{name}/after-start.rc') == '0' and text(f'{W}/{name}/after-finish.rc') == '0' and 'still alive' not in text(f'{W}/{name}/after-start.err') + text(f'{W}/{name}/after-finish.err'), f"start={text(f'{W}/{name}/after-start.rc')} finish={text(f'{W}/{name}/after-finish.rc')} {text(f'{W}/{name}/after-finish.err')}")
+        return
+    if name == 'final_calls':
+        row = ledger(f'{W}/{name}/state/ledger.tsv').get('r1', {})
+        truth = load_json(f'{W}/{name}/r1.truth.json')
+        check('ending past 200 calls before the next poll exits 4', text(f'{W}/{name}/r1.rc') == '4' and truth and truth['completed'] == 230 and truth['exit'] == 0 and row.get('calls') == 230 and 'WATCHDOG OVER_RUN' in text(f'{W}/{name}/r1.out'), f"rc={text(f'{W}/{name}/r1.rc')} truth={truth} ledger={row}")
+        return
+    if name == 'final_tokens':
+        row = ledger(f'{W}/{name}/state/ledger.tsv').get('r1', {})
+        check('ending past 10000000 tokens before the next poll exits 5', text(f'{W}/{name}/r1.rc') == '5' and row.get('input') == 12_000_000 and row.get('calls') == 3 and 'WATCHDOG OVER_TOTAL' in text(f'{W}/{name}/r1.out'), f"rc={text(f'{W}/{name}/r1.rc')} ledger={row}")
+        return
+    if name == 'final_missing_log':
+        rows = ledger(f'{W}/{name}/state/ledger.tsv')
+        blob = text(f'{W}/{name}/span.out') + text(f'{W}/{name}/span.err')
+        check('final measurement fails closed on a terminal attempt with no log', text(f'{W}/{name}/span.rc') == '6' and '1 terminal attempts have no session log' in blob and 'span' not in rows, f"rc={text(f'{W}/{name}/span.rc')} rows={list(rows)} {blob[-400:]}")
+        return
     if name == 'kill9_resume':
         before = ledger(f'{W}/{name}/ledger-before-kill.tsv')
         after = ledger(f'{W}/{name}/ledger-after-kill.tsv')

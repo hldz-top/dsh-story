@@ -5,7 +5,7 @@ Uncached input is the only figure compared with WD_TOTAL_LIMIT. Token parsing li
 usage.mjs so a missing or non-numeric usage cannot be stored as 0. cache_read and output
 are printed for information and are not part of the limit.
 
-Exit codes: 0 OK, 2 usage or provider configuration, 4 OVER_RUN, 5 OVER_TOTAL, 6 MEASURE_FAIL.
+Exit codes: 0 OK, 2 usage or provider configuration, 3 run still alive, 4 OVER_RUN, 5 OVER_TOTAL, 6 MEASURE_FAIL.
 """
 import fcntl
 import glob
@@ -21,9 +21,11 @@ STATE = os.environ.get('WD_STATE', os.path.join(ROOT, 'state'))
 USAGE = os.environ.get('WD_USAGE', os.path.join(ROOT, 'usage.mjs'))
 LEDGER = os.path.join(STATE, 'ledger.tsv')
 LOG = os.path.join(STATE, 'ledger.log')
+LIVE = os.path.join(STATE, 'live-run.json')
 
 EXIT_OK = 0
 EXIT_USAGE = 2
+EXIT_ALIVE = 3
 EXIT_OVER_RUN = 4
 EXIT_OVER_TOTAL = 5
 EXIT_MEASURE = 6
@@ -57,13 +59,37 @@ def fail_measure(message):
     sys.exit(EXIT_MEASURE)
 
 
+NODE_BIN = None
+
+
+def node_version(binary):
+    try:
+        proc = subprocess.run([binary, '-p', 'process.versions.node'], capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired) as cause:
+        raise MeasureFail(f'cannot read the node version: {cause}') from cause
+    if proc.returncode != 0:
+        raise MeasureFail(f'cannot read the node version: {proc.stderr.strip()}')
+    parts = proc.stdout.strip().split('.')
+    if len(parts) < 2:
+        raise MeasureFail(f'node reported an unreadable version {proc.stdout.strip()!r}')
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError as cause:
+        raise MeasureFail(f'node reported an unreadable version {proc.stdout.strip()!r}') from cause
+
+
 def node_bin():
+    global NODE_BIN
+    if NODE_BIN:
+        return NODE_BIN
     chosen = os.environ.get('WD_NODE')
-    if chosen:
-        return chosen
-    found = shutil.which('node')
+    found = chosen or shutil.which('node')
     if not found:
-        raise MeasureFail('node is not on PATH; set WD_NODE')
+        raise MeasureFail('node is not on PATH; set WD_NODE to Node >= 22.15')
+    major, minor = node_version(found)
+    if (major, minor) < (22, 15):
+        raise MeasureFail(f'node {major}.{minor} is older than 22.15; set WD_NODE to Node >= 22.15')
+    NODE_BIN = found
     return found
 
 
@@ -125,11 +151,19 @@ def read_ledger():
             'ledger is missing; refusing to treat the cumulative total as 0. '
             'Run `budget.sh init` to create a start=0 ledger. Deleting the file does not reset the budget.'
         )
-    text = open(LEDGER, encoding='utf-8').read()
+    try:
+        text = open(LEDGER, encoding='utf-8').read()
+    except UnicodeDecodeError as cause:
+        raise MeasureFail(f'ledger is not valid UTF-8: {cause}') from cause
+    except OSError as cause:
+        raise MeasureFail(f'ledger cannot be read: {cause}') from cause
     lines = text.splitlines()
     if not lines or 'created=' not in lines[0] or 'start=0' not in lines[0] or not lines[0].startswith('# '):
         raise MeasureFail('ledger has no start=0 header; refusing to treat it as a zero baseline')
-    created = lines[0].split('created=', 1)[1].split()[0]
+    created_field = lines[0].split('created=', 1)[1].strip().split()
+    if not created_field or created_field[0] == 'start=0':
+        raise MeasureFail('ledger header created= is empty')
+    created = created_field[0]
     rows = {}
     for line in lines:
         if not line or line.startswith('#'):
@@ -138,6 +172,8 @@ def read_ledger():
         if len(parts) != 8:
             raise MeasureFail('ledger row does not have 8 columns')
         tag, home, calls, uncached, cache, output, status, ended = parts
+        if tag in rows:
+            raise MeasureFail(f'ledger has duplicate rows for {tag}')
         rows[tag] = {
             'tag': tag,
             'home': home,
@@ -202,7 +238,9 @@ def run_usage(args, payload=None):
             timeout=60,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as cause:
+    except subprocess.TimeoutExpired as cause:
+        raise MeasureFail('usage.mjs timed out after 60s; refusing a partial count') from cause
+    except OSError as cause:
         raise MeasureFail(f'usage.mjs failed to run: {cause}') from cause
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or '').strip().splitlines()
@@ -224,16 +262,30 @@ def as_optional(value, label):
     return as_int(value, label)
 
 
-def child_total(home):
-    stdout = run_usage([home])
+def child_total(home, snapshot=None):
+    args = [home]
+    payload = None
+    if snapshot is not None:
+        args.append('--check-snapshot')
+        payload = json.dumps({'attempts': snapshot})
+    stdout = run_usage(args, payload)
     total = None
     runs = []
+    attempts = []
     for line in stdout.splitlines():
         if line.startswith('RUN '):
             parts = line.split()
             if len(parts) < 3:
                 raise MeasureFail(f'usage.mjs RUN line is malformed: {line}')
             runs.append(parts[1:3])
+        elif line.startswith('ATTEMPT '):
+            try:
+                item = json.loads(line.split(' ', 1)[1])
+            except ValueError as cause:
+                raise MeasureFail(f'usage.mjs ATTEMPT line is not JSON: {cause}') from cause
+            if not isinstance(item, dict) or not isinstance(item.get('id'), str) or not isinstance(item.get('status'), str):
+                raise MeasureFail(f'usage.mjs ATTEMPT line is missing id or status: {line}')
+            attempts.append({'id': item['id'], 'status': item['status']})
         elif line.startswith('TOTAL '):
             try:
                 total = json.loads(line.split(' ', 1)[1])
@@ -246,7 +298,7 @@ def child_total(home):
         'input': as_int(total.get('input'), 'child uncached input'),
         'cache_read': as_optional(total.get('cacheRead'), 'child cache_read'),
         'output': as_optional(total.get('output'), 'child output'),
-    }, runs
+    }, runs, attempts
 
 
 def sum_usages(usages):
@@ -350,12 +402,105 @@ def load_base(tag):
     path = base_path(tag)
     if not os.path.exists(path):
         die(f'no base for {tag}: run `budget.sh start {tag} <home> <parent_jsonl>` first')
-    return json.load(open(path, encoding='utf-8'))
+    try:
+        return json.load(open(path, encoding='utf-8'))
+    except UnicodeDecodeError as cause:
+        raise MeasureFail(f'base for {tag} is not valid UTF-8: {cause}') from cause
+    except json.JSONDecodeError as cause:
+        raise MeasureFail(f'base for {tag} is not JSON: {cause}') from cause
+    except OSError as cause:
+        raise MeasureFail(f'base for {tag} cannot be read: {cause}') from cause
+
+
+def stat_fields(pid):
+    """Read /proc/<pid>/stat. Field 5 is pgrp and field 22 is starttime, after the comm field."""
+    try:
+        data = open(f'/proc/{pid}/stat', 'rb').read()
+    except FileNotFoundError:
+        return None
+    except OSError as cause:
+        raise MeasureFail(f'cannot read /proc/{pid}/stat: {cause}') from cause
+    end = data.rfind(b')')
+    if end < 0:
+        raise MeasureFail(f'/proc/{pid}/stat has no command field')
+    rest = data[end + 2:].split()
+    if len(rest) < 20:
+        raise MeasureFail(f'/proc/{pid}/stat is truncated')
+    try:
+        return {'pgrp': int(rest[2]), 'starttime': int(rest[19])}
+    except ValueError as cause:
+        raise MeasureFail(f'/proc/{pid}/stat has a non-numeric field: {cause}') from cause
+
+
+def read_live():
+    if not os.path.exists(LIVE):
+        return None
+    try:
+        data = json.loads(open(LIVE, encoding='utf-8').read())
+    except UnicodeDecodeError as cause:
+        raise MeasureFail(f'live-run record is not valid UTF-8: {cause}') from cause
+    except json.JSONDecodeError as cause:
+        raise MeasureFail(f'live-run record is not JSON: {cause}') from cause
+    except OSError as cause:
+        raise MeasureFail(f'live-run record cannot be read: {cause}') from cause
+    if not isinstance(data, dict):
+        raise MeasureFail('live-run record is not an object')
+    for key in ('pid', 'pgid', 'starttime', 'tag'):
+        if key not in data:
+            raise MeasureFail(f'live-run record is missing {key}')
+    for key in ('pid', 'pgid', 'starttime'):
+        if type(data[key]) is not int:
+            raise MeasureFail(f'live-run record {key} is not an integer')
+    if not isinstance(data['tag'], str) or not data['tag']:
+        raise MeasureFail('live-run record tag is empty')
+    return data
+
+
+def pgrp_has_process(pgid):
+    for name in os.listdir('/proc'):
+        if not name.isdigit():
+            continue
+        fields = None
+        try:
+            fields = stat_fields(int(name))
+        except MeasureFail:
+            continue
+        if fields is not None and fields['pgrp'] == pgid:
+            return True
+    return False
+
+
+def group_alive(record):
+    """True when the recorded leader still has the same starttime, or that leader's process group remains.
+    A reused pid with a different starttime is not this run. A process that was not the group leader
+    does not keep the group alive after its own pid is gone.
+    """
+    fields = stat_fields(record['pid'])
+    if fields is not None:
+        if fields['starttime'] != record['starttime']:
+            return False
+        return True
+    if record['pgid'] != record['pid']:
+        return False
+    return pgrp_has_process(record['pgid'])
+
+
+def assert_no_live_run():
+    record = read_live()
+    if record is not None and group_alive(record):
+        die(
+            f"REFUSED: run still alive pid={record['pid']} pgid={record['pgid']} "
+            f"starttime={record['starttime']} tag={record['tag']}. "
+            'Not starting or finishing another run while that process group is alive.',
+            EXIT_ALIVE,
+        )
 
 
 def measure(tag, rows):
     base = load_base(tag)
-    child, runs = child_total(base['home'])
+    if not isinstance(base.get('attempts_at_start'), list):
+        raise MeasureFail(f'base for {tag} has no attempt snapshot')
+    child, runs, _attempts = child_total(base['home'], base['attempts_at_start'])
     parent = sum_usages(parent_usages(base['parent_jsonl']))
     extra = extra_calls(tag)
     calls_delta = child['steps'] - base['base_steps']
@@ -508,15 +653,21 @@ def cmd_start(tag, home, parent):
     parent = os.path.abspath(parent)
 
     def action():
-        read_ledger()
+        assert_no_live_run()
+        _created, rows = read_ledger()
         path = base_path(tag)
+        if os.environ.get('WD_RESET') == '1' and tag in rows:
+            die(
+                f'{tag} already has a settled ledger row ({rows[tag]["input"]} uncached input). '
+                'Refusing WD_RESET. Use a new tag so the recorded usage is kept.'
+            )
         if os.path.exists(path) and os.environ.get('WD_RESET') != '1':
             base = load_base(tag)
             if base['home'] != home:
-                die(f'{tag} already has a base on {base["home"]}, not {home}; set WD_RESET=1 only for a brand-new run')
+                die(f'{tag} already has a base on {base["home"]}, not {home}. Use a new tag.')
             print(f"reuse base {tag}: steps={base['base_steps']} input={base['base_in']} (resume keeps counting)")
             return
-        child, runs = child_total(home)
+        child, runs, attempts = child_total(home)
         base = {
             'tag': tag,
             'home': home,
@@ -528,6 +679,7 @@ def cmd_start(tag, home, parent):
             'base_out': child['output'],
             'base_out_known': child['output'] is not None,
             'runs_at_start': [item[0] for item in runs],
+            'attempts_at_start': attempts,
             'started': iso_now(),
         }
         temporary = path + '.tmp'
@@ -548,6 +700,7 @@ def cmd_finish(tag, status):
     check_tag(tag)
 
     def action():
+        assert_no_live_run()
         created, rows = read_ledger()
         measured = measure(tag, rows)
         pause = os.environ.get('WD_LEDGER_PAUSE')
@@ -619,10 +772,47 @@ def cmd_tag(tag):
         fail_measure(cause)
 
 
+def cmd_live():
+    try:
+        record = read_live()
+        if record is not None and group_alive(record):
+            print(
+                f"RUN_ALIVE pid={record['pid']} pgid={record['pgid']} "
+                f"starttime={record['starttime']} tag={record['tag']}"
+            )
+            sys.exit(EXIT_ALIVE)
+    except MeasureFail as cause:
+        fail_measure(cause)
+    print('CLEAR')
+
+
+def cmd_live_begin(pid_text, tag):
+    check_tag(tag)
+    if not str(pid_text).isdigit():
+        die('live-begin requires a numeric pid')
+    pid = int(pid_text)
+    try:
+        assert_no_live_run()
+        fields = None
+        for _ in range(50):
+            fields = stat_fields(pid)
+            if fields is not None and fields['pgrp'] == pid:
+                break
+            time.sleep(0.02)
+        if fields is None or fields['pgrp'] != pid:
+            fail_measure(f'run pid {pid} exited or did not become a process-group leader')
+        record = {'pid': pid, 'pgid': fields['pgrp'], 'starttime': fields['starttime'], 'tag': tag}
+        os.makedirs(STATE, exist_ok=True)
+        atomic_write(LIVE, json.dumps(record) + '\n')
+    except MeasureFail as cause:
+        fail_measure(cause)
+    print(f"live {tag}: pid={record['pid']} pgid={record['pgid']} starttime={record['starttime']}")
+
+
 def main():
     args = sys.argv[1:]
     if not args:
-        die('usage: budget.sh provider | init | reset --confirm | start <tag> <home> <parent_jsonl> | <tag> | finish <tag> [status] | total | unfinished')
+        die('usage: budget.sh provider | init | reset --confirm | start <tag> <home> <parent_jsonl> | <tag> | finish <tag> [status] | total | unfinished | live | live-begin <pid> <tag>')
     command = args[0]
     if command == 'provider':
         cmd_provider()
@@ -649,10 +839,18 @@ def main():
     if command == 'unfinished':
         cmd_total('unfinished')
         return
+    if command == 'live':
+        cmd_live()
+        return
+    if command == 'live-begin':
+        if len(args) != 3:
+            die('usage: budget.sh live-begin <pid> <tag>')
+        cmd_live_begin(args[1], args[2])
+        return
     if len(args) == 1:
         cmd_tag(args[0])
         return
-    die('usage: budget.sh provider | init | reset --confirm | start <tag> <home> <parent_jsonl> | <tag> | finish <tag> [status] | total | unfinished')
+    die('usage: budget.sh provider | init | reset --confirm | start <tag> <home> <parent_jsonl> | <tag> | finish <tag> [status] | total | unfinished | live | live-begin <pid> <tag>')
 
 
 if __name__ == '__main__':

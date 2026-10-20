@@ -65,6 +65,17 @@ if ! flock -n 9; then
   log "REFUSED: another drive.sh holds $WD_STATE/drive.lock (runs are serial)"
   exit 3
 fi
+live_out=$(budget live 2>&1) || live_rc=$?
+live_rc=${live_rc:-0}
+if [[ $live_rc -ne 0 ]]; then
+  printf '%s\n' "$live_out" | tee -a "$LOG"
+  if [[ $(tail -n 1 <<<"$live_out") == MEASURE_FAIL || $live_rc -eq 6 ]]; then
+    log "WATCHDOG MEASURE_FAIL limit=$(limit_name MEASURE_FAIL) $(head -n 1 <<<"$live_out")"
+    exit 6
+  fi
+  log "REFUSED: $(head -n 1 <<<"$live_out")"
+  exit 3
+fi
 open_out=$(budget unfinished 2>&1) || open_rc=$?
 open_rc=${open_rc:-0}
 printf '%s\n' "$open_out" | tee -a "$LOG"
@@ -154,13 +165,24 @@ interrupt() {
   fi
 }
 
-setsid "$WD_RUN_CMD" "$tag" 9>&- &
+# python stays this pid across setsid and exec, so the recorded pid is the process-group leader.
+python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$WD_RUN_CMD" "$tag" 9>&- &
 pid=$!
+begin_out=$(budget live-begin "$pid" "$tag" 2>&1) || begin_rc=$?
+begin_rc=${begin_rc:-0}
+if [[ $begin_rc -ne 0 ]]; then
+  log "could not record the run process group: $begin_out"
+  kill -INT -- -"$pid" 2>/dev/null || true
+  if [[ $begin_rc -eq 3 ]]; then exit 3; fi
+  log "WATCHDOG MEASURE_FAIL limit=$(limit_name MEASURE_FAIL) $begin_out"
+  exit 6
+fi
 log "started $WD_RUN_CMD $tag pid=$pid home=$HOME_DIR poll=${POLL}s"
+log "$begin_out"
 stopped=
 stop_at=0
 while kill -0 "$pid" 2>/dev/null; do
-  sleep "$POLL"
+  sleep "$POLL" 9>&-
   kill -0 "$pid" 2>/dev/null || break
   out=$(budget "$tag" 2>&1) || true
   detail=$(head -n 1 <<<"$out")
@@ -188,6 +210,26 @@ done
 wait "$pid" || rc=$?
 rc=${rc:-0}
 log "run command exited $rc"
+final_out=$(budget "$tag" 2>&1) || true
+final_detail=$(head -n 1 <<<"$final_out")
+final_verdict=$(tail -n 1 <<<"$final_out")
+printf '%s final %s\n' "$(date '+%F %T.%3N')" "$final_detail" >>"$LOG"
+case $final_verdict in
+  MEASURE_FAIL)
+    stopped=MEASURE_FAIL
+    log "WATCHDOG MEASURE_FAIL limit=$(limit_name MEASURE_FAIL) $final_detail"
+    ;;
+  OVER_TOTAL)
+    stopped=OVER_TOTAL
+    log "WATCHDOG OVER_TOTAL limit=$(limit_name OVER_TOTAL) $final_detail"
+    ;;
+  OVER_RUN)
+    if [[ ${stopped:-} != MEASURE_FAIL && ${stopped:-} != OVER_TOTAL ]]; then
+      stopped=OVER_RUN
+      log "WATCHDOG OVER_RUN limit=$(limit_name OVER_RUN) $final_detail"
+    fi
+    ;;
+esac
 finish_out=$(budget finish "$tag" "${stopped:-exit-$rc}" 2>&1) || finish_rc=$?
 finish_rc=${finish_rc:-0}
 printf '%s\n' "$finish_out" | tee -a "$LOG"

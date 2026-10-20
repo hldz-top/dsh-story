@@ -180,6 +180,12 @@ s_kill9_resume() {
     fi
     sleep 0.05
   done
+  for _ in $(seq 1 50); do
+    if env WD_STATE="$S/state" "$B/budget.sh" live >"$S/live-after-kill.out" 2>"$S/live-after-kill.err"; then
+      break
+    fi
+    sleep 0.05
+  done
   cp "$S/state/ledger.tsv" "$S/ledger-after-kill.tsv"
   env WD_STATE="$S/state" "$B/budget.sh" total >"$S/total-after-kill.out" 2>"$S/total-after-kill.err"
   echo $? >"$S/total-after-kill.rc"
@@ -305,7 +311,227 @@ s_provider_env() {
   echo $? >"$S/drive.rc"
 }
 
-all=(completes_199 completes_200 limit_exact total_10m missing_ledger measure_fail realistic_poll2 realistic_poll20 kill9_resume ledger_persist usage_parse provider_env)
+s_reset_settled() {
+  local S=$W/reset_settled
+  local ST=$S/state home=$S/home pj=$S/parent.jsonl
+  mkdir -p "$ST"
+  empty_home "$home"
+  env WD_STATE="$ST" "$B/budget.sh" init >"$S/init.out"
+  env WD_STATE="$ST" "$B/budget.sh" start settled "$home" "$pj" >"$S/start.out"
+  printf '%s\n' '{"phase":"step_end","usage":{"inputTokens":6000000,"outputTokens":1}}' >"$pj"
+  env WD_STATE="$ST" "$B/budget.sh" finish settled counted >"$S/finish.out"
+  cp "$ST/ledger.tsv" "$S/ledger-before"
+  cp "$ST/settled.base.json" "$S/base-before"
+  env WD_RESET=1 WD_STATE="$ST" "$B/budget.sh" start settled "$home" "$pj" >"$S/reset.out" 2>"$S/reset.err"
+  echo $? >"$S/reset.rc"
+  cp "$ST/ledger.tsv" "$S/ledger-after"
+  cp "$ST/settled.base.json" "$S/base-after"
+}
+
+s_attempt_logs() {
+  local S=$W/attempt_logs
+  local ST=$S/state home=$S/home pj=$S/parent.jsonl
+  mkdir -p "$ST" "$home/storages"
+  python3 - "$home/storages/story_runs.json" <<'PY'
+import json, sys
+json.dump({"tables": {"novels": {"n": {"runs": [{
+  "id": "run_old", "status": "running", "attempts": [
+    {"id": "old1", "status": "succeeded", "childSessionId": "sess-old", "request": {"key": "stage/0"}},
+    {"id": "span1", "status": "running", "childSessionId": "sess-span", "request": {"key": "stage/1"}},
+  ],
+}]}}}}, open(sys.argv[1], "w"))
+PY
+  env WD_STATE="$ST" "$B/budget.sh" init >"$S/init.out"
+  env WD_STATE="$ST" "$B/budget.sh" start logs "$home" "$pj" >"$S/start.out"
+  env WD_STATE="$ST" "$B/budget.sh" logs >"$S/open.out" 2>"$S/open.err"
+  echo $? >"$S/open.rc"
+  python3 - "$home/storages/story_runs.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+store = json.load(open(path))
+store["tables"]["novels"]["n"]["runs"][0]["attempts"][1]["status"] = "succeeded"
+json.dump(store, open(path, "w"))
+PY
+  env WD_STATE="$ST" "$B/budget.sh" logs >"$S/span.out" 2>"$S/span.err"
+  echo $? >"$S/span.rc"
+  python3 - "$home/storages/story_runs.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+store = json.load(open(path))
+store["tables"]["novels"]["n"]["runs"][0]["attempts"].append(
+  {"id": "new1", "status": "succeeded", "childSessionId": "sess-new", "request": {"key": "stage/2"}}
+)
+json.dump(store, open(path, "w"))
+PY
+  env WD_STATE="$ST" "$B/budget.sh" logs >"$S/two.out" 2>"$S/two.err"
+  echo $? >"$S/two.rc"
+}
+
+s_ledger_duplicate() {
+  local S=$W/ledger_duplicate
+  local ST=$S/state
+  mkdir -p "$ST"
+  env WD_STATE="$ST" "$B/budget.sh" init >"$S/init.out"
+  printf '%s\n' $'t1\t/\t1\t1000\t0\t0\tmanual\t2026-01-01T00:00:00Z' >>"$ST/ledger.tsv"
+  printf '%s\n' $'t1\t/\t1\t5000\t0\t0\tmanual\t2026-01-01T00:00:00Z' >>"$ST/ledger.tsv"
+  env WD_STATE="$ST" "$B/budget.sh" total >"$S/total.out" 2>"$S/total.err"
+  echo $? >"$S/total.rc"
+}
+
+s_mutants() {
+  local S=$W/mutants
+  mkdir -p "$S"
+  batch_case batch-bad-cached '{"usages":[{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":"5"}}]}'
+  batch_case batch-cached-over '{"usages":[{"prompt_tokens":10,"prompt_tokens_details":{"cached_tokens":11}}]}'
+  local ST=$S/below/state home=$S/below/home pj=$S/below/parent.jsonl
+  mkdir -p "$ST"
+  empty_home "$home"
+  "$NODE" "$M/fixture.mjs" "$home" '{"inputTokens":100,"outputTokens":1}'
+  env WD_STATE="$ST" "$B/budget.sh" init >"$S/below.init"
+  env WD_STATE="$ST" "$B/budget.sh" start below "$home" "$pj" >"$S/below.start"
+  printf '%s\n' '{"tables":{"novels":{"n":{"runs":[]}}}}' >"$home/storages/story_runs.json"
+  env WD_STATE="$ST" "$B/budget.sh" below >"$S/below.out" 2>"$S/below.err"
+  echo $? >"$S/below.rc"
+}
+
+s_corrupt_files() {
+  local S=$W/corrupt_files
+  local utf=$S/utf/state empty=$S/empty/state base=$S/base/state home=$S/base/home pj=$S/base/parent.jsonl
+  mkdir -p "$utf" "$empty" "$base"
+  env WD_STATE="$utf" "$B/budget.sh" init >"$S/utf.init"
+  printf '\377' >>"$utf/ledger.tsv"
+  env WD_STATE="$utf" "$B/budget.sh" total >"$S/utf.out" 2>"$S/utf.err"
+  echo $? >"$S/utf.rc"
+  printf '%s\n' '# created= start=0' >"$empty/ledger.tsv"
+  env WD_STATE="$empty" "$B/budget.sh" total >"$S/empty.out" 2>"$S/empty.err"
+  echo $? >"$S/empty.rc"
+  empty_home "$home"
+  env WD_STATE="$base" "$B/budget.sh" init >"$S/base.init"
+  env WD_STATE="$base" "$B/budget.sh" start broken "$home" "$pj" >"$S/base.start"
+  printf '{' >"$base/broken.base.json"
+  env WD_STATE="$base" "$B/budget.sh" broken >"$S/base.out" 2>"$S/base.err"
+  echo $? >"$S/base.rc"
+}
+
+s_live_run() {
+  local S=$W/live_run
+  local ST=$S/state
+  mkdir -p "$ST"
+  python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' sleep 120 &
+  local sleeper=$!
+  env WD_STATE="$ST" "$B/budget.sh" live-begin "$sleeper" forged >"$S/begin.out" 2>"$S/begin.err"
+  echo $? >"$S/begin.rc"
+  env WD_STATE="$ST" "$B/budget.sh" live >"$S/real.out" 2>"$S/real.err"
+  echo $? >"$S/real.rc"
+  python3 - "$ST/live-run.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+record = json.load(open(path))
+record["starttime"] += 1
+json.dump(record, open(path, "w"))
+PY
+  env WD_STATE="$ST" "$B/budget.sh" live >"$S/forged.out" 2>"$S/forged.err"
+  echo $? >"$S/forged.rc"
+  env WD_STATE="$ST" "$B/budget.sh" finish none >"$S/forged-finish.out" 2>"$S/forged-finish.err"
+  echo $? >"$S/forged-finish.rc"
+  python3 - "$ST/live-run.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+record = json.load(open(path))
+record["starttime"] -= 1
+json.dump(record, open(path, "w"))
+PY
+  env WD_STATE="$ST" "$B/budget.sh" finish none >"$S/alive-finish.out" 2>"$S/alive-finish.err"
+  echo $? >"$S/alive-finish.rc"
+  kill "$sleeper" 2>/dev/null || true
+  wait "$sleeper" 2>/dev/null || true
+  env WD_STATE="$ST" "$B/budget.sh" live >"$S/dead.out" 2>"$S/dead.err"
+  echo $? >"$S/dead.rc"
+  local home=$S/home
+  mkdir -p "$home/storages"
+  printf '%s\n' '{"tables":{"novels":{"novel_mock":{"runs":[]}}}}' >"$home/storages/story_runs.json"
+  env WD_STATE="$ST" "$B/budget.sh" init >"$S/init.out"
+  env WD_OFFLINE=1 WD_NODE="$NODE" WD_STATE="$ST" WD_HOME="$home" MOCK_HOME="$home" \
+    WD_PARENT_JSONL="$S/run-held.jsonl" MOCK_TRUTH="$S/held.truth.json" \
+    WD_RUN_CMD="$M/fake-run.sh" WD_SIGNAL_MATCH='fake-dsh\.mjs' WD_GRACE=8 \
+    MOCK_CALLS=40 MOCK_PAR=1 MOCK_CALL_MS=400 WD_POLL=2 \
+    "$B/drive.sh" held >"$S/held.out" 2>&1 &
+  local driver=$!
+  local i
+  for i in $(seq 1 50); do
+    if python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("tag")=="held" else 1)' "$ST/live-run.json" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+  kill -9 "$driver" 2>/dev/null || true
+  wait "$driver" 2>/dev/null || true
+  local _
+  for _ in $(seq 1 50); do
+    if flock -n "$ST/drive.lock" -c true; then
+      break
+    fi
+    sleep 0.05
+  done
+  local pgid
+  pgid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pgid"])' "$ST/live-run.json")
+  local mypgid
+  mypgid=$(ps -o pgid= -p $$ | tr -d ' ')
+  if [[ $pgid == "$mypgid" ]]; then
+    echo "refusing to signal the shell process group $pgid" >"$S/pgid-guard"
+    pgid=
+  fi
+  env WD_STATE="$ST" "$B/budget.sh" start other "$home" "$S/run-other.jsonl" >"$S/other-start.out" 2>"$S/other-start.err"
+  echo $? >"$S/other-start.rc"
+  env WD_STATE="$ST" "$B/budget.sh" finish held >"$S/held-finish.out" 2>"$S/held-finish.err"
+  echo $? >"$S/held-finish.rc"
+  env WD_OFFLINE=1 WD_STATE="$ST" WD_HOME="$home" WD_RUN_CMD="$M/fake-run.sh" WD_PARENT_JSONL="$S/run-other.jsonl" \
+    MOCK_HOME="$home" MOCK_CALLS=1 MOCK_CALL_MS=1 \
+    "$B/drive.sh" other >"$S/other-drive.out" 2>&1
+  echo $? >"$S/other-drive.rc"
+  if [[ -n $pgid ]]; then
+    kill -9 -- -"$pgid" 2>/dev/null || true
+  fi
+  local _
+  for _ in $(seq 1 50); do
+    if env WD_STATE="$ST" "$B/budget.sh" live >"$S/after-live.out" 2>"$S/after-live.err"; then
+      break
+    fi
+    sleep 0.05
+  done
+  env WD_STATE="$ST" "$B/budget.sh" start other "$home" "$S/run-other.jsonl" >"$S/after-start.out" 2>"$S/after-start.err"
+  echo $? >"$S/after-start.rc"
+  env WD_STATE="$ST" "$B/budget.sh" finish held >"$S/after-finish.out" 2>"$S/after-finish.err"
+  echo $? >"$S/after-finish.rc"
+}
+
+s_final_calls() { drive final_calls r1 home MOCK_CALLS=230 MOCK_PAR=1 MOCK_CALL_MS=5 WD_POLL=10; }
+s_final_tokens() { drive final_tokens r1 home MOCK_CALLS=3 MOCK_INPUT=4000000 MOCK_PAR=1 MOCK_CALL_MS=200 WD_POLL=10; }
+s_final_missing_log() {
+  local S=$W/final_missing_log
+  local home=$S/home st=$S/state
+  mkdir -p "$st" "$home/storages"
+  python3 - "$home/storages/story_runs.json" <<'PY'
+import json, sys
+json.dump({"tables": {"novels": {"n": {"runs": [{
+  "id": "run_span", "status": "running", "attempts": [
+    {"id": "span1", "status": "running", "childSessionId": "sess-span", "request": {"key": "stage/0"}},
+  ],
+}]}}}}, open(sys.argv[1], "w"))
+PY
+  cat >"$S/flip.sh" <<'EOF'
+#!/bin/bash
+sleep 0.5
+python3 -c 'import json,os; p=os.environ["WD_HOME"]+"/storages/story_runs.json"; s=json.load(open(p)); s["tables"]["novels"]["n"]["runs"][0]["attempts"][0]["status"]="succeeded"; json.dump(s, open(p,"w"))'
+EOF
+  chmod +x "$S/flip.sh"
+  env WD_STATE="$st" "$B/budget.sh" init >"$S/init.out"
+  env WD_OFFLINE=1 WD_STATE="$st" WD_HOME="$home" WD_RUN_CMD="$S/flip.sh" WD_PARENT_JSONL="$S/run.jsonl" WD_POLL=10 \
+    "$B/drive.sh" span >"$S/span.out" 2>&1
+  echo $? >"$S/span.rc"
+}
+
+all=(reset_settled attempt_logs ledger_duplicate mutants corrupt_files live_run final_missing_log final_tokens final_calls completes_199 completes_200 limit_exact total_10m missing_ledger measure_fail realistic_poll2 realistic_poll20 kill9_resume ledger_persist usage_parse provider_env)
 if [[ $# -eq 0 ]]; then
   sel=("${all[@]}")
 else
@@ -314,7 +540,6 @@ fi
 for s in "${sel[@]}"; do
   rm -rf "${W:?}/$s"
   mkdir -p "$W/$s"
-  ("s_$s") &
+  "s_$s"
 done
-wait
 python3 "$M/evaluate.py" "$W" "${sel[@]}"

@@ -8,7 +8,9 @@
 #   budget.sh finish <tag> [status]
 #   budget.sh total
 #   budget.sh unfinished
-# Exit: 0 OK, 2 usage/provider, 4 OVER_RUN, 5 OVER_TOTAL, 6 MEASURE_FAIL.
+#   budget.sh live
+#   budget.sh live-begin <pid> <tag>
+# Exit: 0 OK, 2 usage/provider, 3 run still alive, 4 OVER_RUN, 5 OVER_TOTAL, 6 MEASURE_FAIL.
 set -u
 here=$(dirname "$(readlink -f "$0")")
 exec python3 "$here/meter.py" "$@"

@@ -142,7 +142,35 @@ function eventsOf(file) {
   return parsed
 }
 
-function readHome(home) {
+function isTerminal(status) {
+  return status !== 'prepared' && status !== 'running'
+}
+
+function attemptId(attempt, runId) {
+  if (typeof attempt?.id === 'string' && attempt.id.length > 0) return attempt.id
+  if (typeof attempt?.childSessionId === 'string' && attempt.childSessionId.length > 0) return attempt.childSessionId
+  fail(`${runId}: attempt is missing id`)
+}
+
+function hasSessionLog(dirs, childSessionId) {
+  if (typeof childSessionId !== 'string' || childSessionId.length === 0) return false
+  const dir = dirs.get(childSessionId)
+  if (dir === undefined) return false
+  return existsSync(`${dir}/session.v4.jsonl.zstd`)
+}
+
+function snapshotMap(snapshot) {
+  const prior = new Map()
+  if (!Array.isArray(snapshot?.attempts)) fail('snapshot needs an attempts array')
+  for (const item of snapshot.attempts) {
+    if (typeof item?.id !== 'string' || typeof item?.status !== 'string') fail('snapshot attempt is missing id or status')
+    if (prior.has(item.id)) fail(`snapshot has duplicate attempt ${item.id}`)
+    prior.set(item.id, item.status)
+  }
+  return prior
+}
+
+function readHome(home, snapshot) {
   const storePath = `${home}/storages/story_runs.json`
   if (!existsSync(storePath)) fail(`missing ${storePath}`)
   let store
@@ -163,7 +191,10 @@ function readHome(home) {
       for (const id of readdirSync(workspacePath)) dirs.set(id, `${workspacePath}/${id}`)
     }
   }
+  const prior = snapshot === null ? null : snapshotMap(snapshot)
   const usages = []
+  const seen = new Set()
+  let missingLogs = 0
   for (const novel of Object.values(novels)) {
     if (!Array.isArray(novel?.runs)) fail('novel.runs is missing')
     for (const run of novel.runs) {
@@ -171,12 +202,20 @@ function readHome(home) {
       if (!Array.isArray(run.attempts)) fail(`${run.id}: attempts is missing`)
       stdout.write(`RUN ${run.id} ${run.status}\n`)
       for (const attempt of run.attempts) {
-        const id = attempt?.childSessionId
-        if (typeof id !== 'string' || id.length === 0) fail(`${run.id}: attempt is missing childSessionId`)
-        const dir = dirs.get(id)
-        if (dir === undefined) continue
-        const file = `${dir}/session.v4.jsonl.zstd`
-        if (!existsSync(file)) continue
+        const id = attemptId(attempt, run.id)
+        if (seen.has(id)) fail(`${run.id}: duplicate attempt ${id}`)
+        seen.add(id)
+        if (typeof attempt.status !== 'string') fail(`${run.id}: attempt ${id} is missing status`)
+        const logged = hasSessionLog(dirs, attempt.childSessionId)
+        stdout.write(`ATTEMPT ${JSON.stringify({ id, status: attempt.status })}\n`)
+        // Only a terminal attempt that was still open at start, or appeared after start, must have a log.
+        // Attempts already terminal in the start snapshot are left out, even when their log is gone.
+        if (prior !== null && isTerminal(attempt.status) && !logged) {
+          const previous = prior.get(id)
+          if (previous === undefined || !isTerminal(previous)) missingLogs += 1
+        }
+        if (!logged) continue
+        const file = `${dirs.get(attempt.childSessionId)}/session.v4.jsonl.zstd`
         for (const event of eventsOf(file)) {
           if (event?.type !== 'assistant/message') continue
           const usage = usageOf(event)
@@ -186,6 +225,7 @@ function readHome(home) {
       }
     }
   }
+  if (missingLogs > 0) fail(`${missingLogs} terminal attempts have no session log`)
   const total = sumUsages(usages, index => `assistant/message[${index}]`)
   stdout.write(`TOTAL ${JSON.stringify(total)}\n`)
 }
@@ -202,7 +242,17 @@ function readBatch() {
   stdout.write(`${JSON.stringify(total)}\n`)
 }
 
-const mode = argv[2]
-if (mode === '--batch') readBatch()
-else if (typeof mode === 'string' && mode.length > 0 && !mode.startsWith('--')) readHome(mode)
-else fail('usage: node usage.mjs <home> | node usage.mjs --batch')
+const args = argv.slice(2)
+if (args[0] === '--batch') readBatch()
+else if (typeof args[0] === 'string' && args[0].length > 0 && !args[0].startsWith('--')) {
+  if (args[1] === '--check-snapshot' && args.length === 2) {
+    let snapshot
+    try {
+      snapshot = JSON.parse(readFileSync(0, 'utf8'))
+    } catch (cause) {
+      fail(`snapshot JSON: ${cause instanceof Error ? cause.message : String(cause)}`)
+    }
+    readHome(args[0], snapshot)
+  } else if (args.length === 1) readHome(args[0], null)
+  else fail('usage: node usage.mjs <home> [--check-snapshot] | node usage.mjs --batch')
+} else fail('usage: node usage.mjs <home> [--check-snapshot] | node usage.mjs --batch')
