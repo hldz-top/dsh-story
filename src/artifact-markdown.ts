@@ -117,6 +117,7 @@ function renderArtifact(artifact: Artifact, style: BlockStyle, imported = false)
     for (const constraint of outline.constraints) sections.push('## Constraint', style.text(constraint))
     for (const scene of outline.scenes) sections.push('## Scene', 'Scene ID', style.text(scene.id), 'Purpose', style.text(scene.purpose), 'Action', style.text(scene.action), 'Required event IDs', style.text(scene.obligationIds.join(', ')))
     for (const obligation of outline.obligations) sections.push('## Required event', 'ID', style.text(obligation.id), 'Description', style.text(obligation.description))
+    for (const note of outline.stateNotes ?? []) sections.push('## State note', style.text(note))
     for (const input of outline.inputRefs) provenance.push(`Input artifact: ${input.artifactId}`, `Input SHA-256: ${input.sha256}`)
   } else if (artifact.kind === 'body') {
     const body = parseContent(StageOutputSchemas.body, artifact.text)

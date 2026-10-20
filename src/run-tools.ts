@@ -30,7 +30,7 @@ const runSchema = {
     chapterCount: integer, fromChapter: integer, throughChapter: integer, mode: { ...text, enum: ['write', 'update', 'revise'] },
     status: { ...text, enum: ['running', 'interrupted', 'completed', 'failed', 'stopped'] },
     revision: { required: true, oneOf: [{ type: 'object', additionalProperties: false, properties: { baseArtifactId: text, instructions: text } }, { type: 'null' }] },
-    startedBy: text, lastResumedBy: text, error: nullableText,
+    startedBy: text, lastResumedBy: text, error: nullableText, promptVersion: { type: 'integer', enum: [1, 2] },
     limits: { type: 'object', required: true, additionalProperties: false, properties: { maxAttempts: integer, maxOutputBytes: integer } },
     serviceLimits: { required: true, oneOf: [{ type: 'object', additionalProperties: false, properties: {
       maxArtifactBytes: integer, maxReadChars: integer, maxResearchQuestions: integer, maxResearchCalls: integer,
@@ -85,8 +85,8 @@ function manuscriptValue(candidate: ManuscriptCandidateView) {
 }
 
 function renderJson<T>(_args: object, value: T) { return [{ type: 'text' as const, text: JSON.stringify(value) }] }
-function runValue(run: WritingRun) {
-  return { ...run, settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(({ failureKind, evidenceEvents, ...attempt }) => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })),
+function runValue({ promptVersion, ...run }: WritingRun) {
+  return { ...run, ...(promptVersion === undefined ? {} : { promptVersion }), settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(({ failureKind, evidenceEvents, ...attempt }) => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })),
     ...(failureKind === undefined ? {} : { failureKind }),
     ...(evidenceEvents === undefined ? {} : { evidenceEvents: evidenceEvents.map(({ location, reason, ...event }) => ({ ...event, declared: { ...event.declared }, admitted: event.admitted.map(item => ({ ...item })),
       ...(location === undefined ? {} : { location }), ...(reason === undefined ? {} : { reason }) })) }) })) }

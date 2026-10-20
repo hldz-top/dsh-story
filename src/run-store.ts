@@ -8,6 +8,7 @@ import { defineDomain, domainTable, type Domain, type DomainFacility } from '@de
 import { z } from 'zod'
 import { assertObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import type { StageInputRef } from './stage-output.ts'
+import { CURRENT_PROMPT_VERSION, type PromptVersion } from './stage-prompts.ts'
 import { artifactIdSchema, novelIdSchema, requestIdSchema, type Actor, type NovelId } from './contracts.ts'
 
 /** Opaque identity of one durable writing request. */
@@ -97,6 +98,8 @@ const runSchema = z.strictObject({
   status: z.enum(['running', 'interrupted', 'completed', 'failed', 'stopped']),
   startedBy: sessionIdSchema, lastResumedBy: sessionIdSchema,
   attempts: z.array(attemptSchema), error: z.string().nullable(),
+  // Prompt text version fixed at creation so a resume rebuilds identical prompts; absent on runs created before versioning (= 1).
+  promptVersion: z.union([z.literal(1), z.literal(2)]).optional(),
 })
 /** Detached progress metadata; raw stage outputs are read explicitly. */
 export type WritingRun = Omit<RunRecord, 'attempts'> & { readonly attempts: readonly WritingAttempt[] }
@@ -132,7 +135,7 @@ export class RunStore {
   constructor(private readonly domain: Domain<typeof runDomain>, readonly limits: Readonly<RunStoreLimits>) {}
 
   /** @param actor - Workspace owner and initiating Session. @param input - Immutable run request. @returns The original idempotent request or a newly persisted run. */
-  async begin(actor: Actor, input: BeginRunInput): Promise<WritingRun> {
+  async begin(actor: Actor, input: BeginRunInput, promptVersion: PromptVersion = CURRENT_PROMPT_VERSION): Promise<WritingRun> {
     actor.signal?.throwIfAborted()
     const parsed = beginSchema.safeParse(input)
     if (!parsed.success) fail('invalid-input', parsed.error.message)
@@ -150,7 +153,7 @@ export class RunStore {
       }
       validateRevisionBudget(parsed.data, this.limits)
       if (current.runs.some(active)) fail('active-run', 'The novel already has an unfinished writing run')
-      result = { ...parsed.data, limits: { ...this.limits }, id: brandString<RunId>(`run_${randomUUID()}`), status: 'running', startedBy: actor.sessionId, lastResumedBy: actor.sessionId, attempts: [], error: null }
+      result = { ...parsed.data, limits: { ...this.limits }, id: brandString<RunId>(`run_${randomUUID()}`), status: 'running', startedBy: actor.sessionId, lastResumedBy: actor.sessionId, attempts: [], error: null, promptVersion }
       return { ...current, version: 2, runs: [...current.runs, result] }
     })
     if (result === undefined) fail('corrupt-run', 'Run creation did not produce a record')

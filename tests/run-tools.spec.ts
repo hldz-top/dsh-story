@@ -311,7 +311,10 @@ it('returns persisted settings candidates and manuscript collections without the
   await h.agent.whenIdle()
   const results = recordedResults(model)
   expect(jsonResult(results[0])).toEqual({ novelId, ...h.service.getSettings(h.actor, h.novel.id) })
-  expect(jsonResult(results[1])).toEqual({ novelId, ...h.service.getManuscript(h.actor, h.novel.id) })
+  // Host-measured beats feed body reviews only; the read tool does not publish them.
+  const manuscript = h.service.getManuscript(h.actor, h.novel.id)
+  const published = (items: typeof manuscript.history) => items.map(({ beats: _beats, ...item }) => item)
+  expect(jsonResult(results[1])).toEqual({ novelId, ...manuscript, history: published(manuscript.history), heads: published(manuscript.heads) })
   expect(JSON.stringify(results)).not.toContain('Full private setting text')
 })
 

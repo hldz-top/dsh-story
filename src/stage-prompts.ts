@@ -3,6 +3,16 @@ import type { ArtifactId, NovelId } from './contracts.ts'
 import type { SettingsDimensionKind } from './settings-catalog.ts'
 import { ENUM_SETTINGS_KINDS, MAX_ENUM_SETTINGS_CONTENT_CHARS, MAX_ENUM_SETTINGS_FACTS } from './stage-output.ts'
 
+/**
+ * Prompt text version recorded on each new run. A run keeps the version it started with for its whole life, so a resume
+ * rebuilds byte-identical prompts and output schemas for every stage key (RunStore.prepareAttempt rejects a changed
+ * prompt under an existing key). Version 1 is the text before chapter-quality guardrails and stays frozen; runs stored
+ * without a version are version 1.
+ */
+export type PromptVersion = 1 | 2
+/** The version new runs record. */
+export const CURRENT_PROMPT_VERSION: PromptVersion = 2
+
 /** Business purpose of one independently executed stage. */
 export type StagePromptKind = 'settings' | 'review' | 'book-outline' | 'chapter-outline' | 'body' | 'continuity'
 /** Bounded reader metadata for one exact immutable input version. */
@@ -19,6 +29,8 @@ export interface StagePromptRequest {
   readonly settingsDimensionKind?: SettingsDimensionKind
   /** Every selected dimension's catalog kind, keyed by code; selects collection-scoped review wording when reviewing the assembled settings collection. Omitted otherwise. */
   readonly settingsCollectionKinds?: Readonly<Record<string, SettingsDimensionKind>>
+  /** The run's recorded prompt version; omitted means version 1, the frozen pre-guardrail text. */
+  readonly promptVersion?: PromptVersion
 }
 
 const stageInstructions: Record<StagePromptKind, readonly string[]> = {
@@ -49,6 +61,27 @@ const stageInstructions: Record<StagePromptKind, readonly string[]> = {
     'Use only the previous applied final continuity as the state base. For the first chapter, use the host-supplied initial state. Derive the complete next state and each delta from the actual reviewed body, retaining exact quoted prose evidence. Planned chapter events are not facts and must not be merged first or counted twice.',
     'Track character location, knowledge, condition and relationships; consequential world facts, time, possessions, unresolved threads and required-event outcomes as requested by the schema. Preserve unchanged established facts and stable identities. Mark an obligation completed only when the actual prose supports that outcome. No-change conclusions require observed evidence and a reason; missing reads are not no changes.',
     'Repair only the reviewed defects and preserve unaffected state. Do not apply this candidate, publish the chapter or begin the next chapter: the host independently reviews the exact continuity version and publishes it with the reviewed body under current input-version checks.',
+  ],
+}
+
+/**
+ * Version 2 chapter-quality guardrails, appended after the frozen version-1 instructions of their stage
+ * (quality-plan.md v3 P2; qa-ch1-v2.md 四.1–四.4, 五, 六.4; qa-ch1-v2-style.md B1, B2, L8).
+ */
+const guardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
+  review: [
+    'Cite chapter positions and proportions only from the host-measured task.measuredBeats; never estimate where an event falls in the chapter.',
+    'Spatially impossible or self-contradictory positions, heights or reach, and anything the settings declare to have no physical form written as a physical object, are blocking consistency issues.',
+  ],
+  body: [
+    'The chapter outline’s constraints and scene actions are instructions for writing, not text: never restate or paraphrase them as narration or summary sentences; show payoffs and costs through action.',
+    'Do not use technical or financial metaphors, such as 「这条路的气密性比我的信用评级还差。」, even where a setting or outline asks for them.',
+    'Let the protagonist carry each scene with dialogue that shows the personality the accepted settings give them.',
+    'Take every prop and tool from the tool or equipment list in the settings; do not introduce devices the settings do not list.',
+  ],
+  'chapter-outline': [
+    'Before returning, check every pair of constraints and scene actions for order, position and count requirements that cannot all hold, and rewrite them into one consistent plan.',
+    'Optionally record stateNotes: short free-text lines fixing where key objects and places are, who holds them and whether they are physical, as the settings require.',
   ],
 }
 
@@ -111,6 +144,7 @@ export function buildStagePrompt(request: StagePromptRequest): string {
     ...(request.kind === 'settings' ? settingsInstructions(request.settingsDimensionKind)
       : request.kind === 'review' ? reviewInstructions(request.settingsDimensionKind, request.settingsCollectionKinds)
       : stageInstructions[request.kind]),
+    ...((request.promptVersion ?? 1) >= 2 ? guardrails[request.kind] ?? [] : []),
   ]
   return [...instructions, 'TASK_DATA', JSON.stringify({
     novelId: request.novelId, kind: request.kind, inputs: request.inputs, task: request.task, requirements: request.requirements,
