@@ -85,13 +85,14 @@ const aiToneGuardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
 /**
  * Version 5 with aiToneBlocking on replaces the version-3 sentence (and its "AI tone is never blocking") in body reviews.
  * The reviewer still files AI tone as advisory style issues, because admission rejects a blocking style issue
- * (stage-output.ts); the id prefix marks them, and WritingRunner decides in code which of them block: those whose quote is
- * a verbatim excerpt of the body carrying a host marker. Versions 1-4, and version 5 with the switch off, keep their bytes.
+ * (stage-output.ts); the id prefix marks them, and WritingRunner decides in code which of them block: those whose quote,
+ * found verbatim in the body's narration (dialogue and panels removed), fully covers a host detector hit. Versions 1-4,
+ * and version 5 with the switch off, keep their bytes.
  */
 export const AI_TONE_ISSUE_PREFIX = 'ai-tone'
 const aiToneBlockingGuardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
   review: [
-    'When task.aiToneMarkers is present, review the narration for AI tone using those host-detected markers (after lieflat-less-ai-tone): reversal framing (不是…而是), dense 、 lists, revealing dashes, set openers (说白了), nominalised summaries, translationese (当…时, 对于…来说, sentence-initial 然而/因此/此外, 这意味着) and zero-subject paragraph comments. Report each real instance as a style issue with severity advisory and an id starting with "ai-tone-", and quote the offending narration from the reviewed body as its evidence, copied character for character as one exact excerpt of the body. Keep these issues advisory: the host itself blocks the chapter and returns it for repair for every such issue whose quote occurs verbatim in the body and contains one of the markers; an AI-tone issue without such a quote is recorded but does not block. Ignore dialogue and panels, never treat questions, metaphors, sentence-length rhythm, passive voice or long sentences as AI tone, and do not report markers that are false positives.',
+    'When task.aiToneMarkers is present, review the narration for AI tone using those host-detected markers (after lieflat-less-ai-tone): reversal framing (不是…而是), dense 、 lists, revealing dashes, set openers (说白了), nominalised summaries, translationese (当…时, 对于…来说, sentence-initial 然而/因此/此外, 这意味着) and zero-subject paragraph comments. Report each real instance as a style issue with severity advisory and an id starting with "ai-tone-", and quote the offending narration from the reviewed body as its evidence, copied character for character as one exact excerpt of the body. Keep these issues advisory: the host itself blocks the chapter and returns it for repair for every such issue whose quote, found verbatim in the narration (outside dialogue and panels), fully covers a host-detected marker; an AI-tone issue without such a quote is recorded but does not block. Ignore dialogue and panels, never treat questions, metaphors, sentence-length rhythm, passive voice or long sentences as AI tone, and do not report markers that are false positives.',
   ],
 }
 

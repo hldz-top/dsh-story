@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
+import { detectAiTone } from '../src/ai-tone.ts'
 import { measureBeats } from '../src/body-text.ts'
 import { nativeStageOutputSchema } from '../src/native-stage-schema.ts'
 import { StageOutputSchemas } from '../src/stage-output.ts'
@@ -79,6 +80,25 @@ describe('version 4 is frozen', () => {
     for (const kind of kinds) expect(sha(buildStagePrompt({ ...base, kind, promptVersion: 4 })), kind).toBe(frozenV4[kind])
     expect(sha(buildStagePrompt({ ...base, kind: 'review', reviewedKind: 'body', promptVersion: 4 }))).toBe(frozenV4['review/body'])
     for (const kind of kinds) expect(sha(JSON.stringify(nativeStageOutputSchema(kind, 4))), kind).toBe(frozenV4[`schema/${kind}`])
+  })
+})
+
+/**
+ * A body whose dash hit has emoji and 𠀀 inside its 8-unit marker context, cut mid surrogate pair on both sides. SHA-256 of
+ * the version-4 body-review prompt carrying detectAiTone(body) as task.aiToneMarkers, computed by building d7edafb (#22 head,
+ * before aiToneBlocking) with the same request, so resumed v3/v4 runs keep sending identical bytes.
+ */
+const ASTRAL_BODY = '雾港😀😀😀😀😀灯——𠀀𠀀𠀀灯𠀀塔亮了。'
+const ASTRAL_REVIEW_V4 = 'b3b46a65f334c9316ecdd6a0c36035f84e7331725726bce8a4288ef6a3c1c55a'
+
+describe('version 4 AI-tone markers are frozen', () => {
+  it('rebuilds the marker excerpts and review prompt of d7edafb byte for byte, astral context included', () => {
+    const report = detectAiTone(ASTRAL_BODY)
+    // UTF-16 window kept as is for every version: it may cut a surrogate pair, and only the prompt sees it (JSON-escaped).
+    expect(report.markers.flatMap(marker => marker.examples)).toEqual(['\uDE00😀😀😀灯——𠀀𠀀𠀀灯\uD840'])
+    const prompt = buildStagePrompt({ ...base, kind: 'review', reviewedKind: 'body', promptVersion: 4, task: JSON.stringify({ aiToneMarkers: report }) })
+    expect(prompt.isWellFormed()).toBe(true)
+    expect(sha(prompt)).toBe(ASTRAL_REVIEW_V4)
   })
 })
 

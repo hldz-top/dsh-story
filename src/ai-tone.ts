@@ -7,8 +7,9 @@
  * Only narration is scanned: 「」 and “” dialogue and standalone 【】 panel lines are removed first, because the skill
  * leaves dialogue, quotations and genre formatting alone. Rules the skill exempts for fiction are not ported: adjacent
  * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Counts are evidence for the
- * style review; from prompt version 5 with aiToneBlocking on, {@link aiToneHits} locates the same hits in context so the
- * host can decide which quoted spans block (see WritingRunner). This module computes no chapter positions.
+ * style review; from prompt version 5 with aiToneBlocking on, {@link aiToneHits} locates the same hits (as offsets in the
+ * narration view) so the host can decide which quoted spans block (see WritingRunner). Nothing here computes positions
+ * in the assembled chapter.
  */
 
 export type AiToneRule = 'reversal' | 'enumeration' | 'dash' | 'opener' | 'nominalization' | 'long-attributive' | 'when-clause' | 'topic-shell' | 'connective' | 'restatement' | 'zero-subject-comment'
@@ -39,12 +40,15 @@ const CONTEXT = 8
 export function narrationOf(text: string): string { return text.replace(DIALOGUE, '\n') }
 
 /**
- * @returns The match widened by up to {@link CONTEXT} code points on each side, never past a line break, so it stays an
- * exact substring of the chapter and never splits a surrogate pair (emoji, rare CJK).
+ * @returns The match widened by up to {@link CONTEXT} UTF-16 units on each side, never past a line break, so it stays an
+ * exact substring of the chapter. Unchanged since prompt version 3 for every version: these excerpts only feed the review
+ * prompt's task.aiToneMarkers, so resumed runs rebuild identical prompt bytes; the window can cut a surrogate pair
+ * (emoji, rare CJK), which is accepted. Blocking spans never come from here.
  */
 function excerpt(narration: string, index: number, length: number): string {
-  const { before, after } = context(narration, index, length)
-  return `${before}${narration.slice(index, index + length)}${after}`
+  const lineStart = narration.lastIndexOf('\n', index - 1) + 1
+  const lineEnd = narration.indexOf('\n', index + length)
+  return narration.slice(Math.max(lineStart, index - CONTEXT), Math.min(lineEnd < 0 ? narration.length : lineEnd, index + length + CONTEXT))
 }
 /** @returns Up to {@link CONTEXT} code points of narration on each side of a match, never past a line break. */
 function context(narration: string, index: number, length: number): { before: string; after: string } {
@@ -76,11 +80,13 @@ export interface AiToneHit {
   readonly end: number
   /**
    * Identities for repeat detection: rule and hit text with the narration just before it, and with the narration just after
-   * it (up to the review excerpt's context on each side). A later body's hit is the same instance when either identity
+   * it (up to the review excerpt's context on each side). A later body's hit is the same instance when any identity
    * matches, so an edit on one side of the marker, or a reviewer quoting it with another length, still counts as a repeat,
-   * while another instance with the same marker text elsewhere does not.
+   * while another instance with the same marker text elsewhere does not. A side whose context is empty or only whitespace
+   * (a hit opening a paragraph or following dialogue) yields no identity, since every such hit would share it; a hit with
+   * no context on either side is identified by its text and its ordinal among identical such hits.
    */
-  readonly keys: readonly [string, string]
+  readonly keys: readonly string[]
 }
 /** The narration view of a chapter and every detector hit in it. */
 export interface AiToneHits { readonly narration: string; readonly hits: readonly AiToneHit[] }
@@ -116,7 +122,8 @@ export function aiToneHits(text: string): AiToneHits {
   const add = (rule: AiToneRule, start: number, length: number) => {
     const { before, after } = context(narration, start, length)
     const marker = narration.slice(start, start + length)
-    hits.push({ rule, start, end: start + length, keys: [`${rule}\u0000${marker}\u0000<${before}`, `${rule}\u0000${marker}\u0000>${after}`] })
+    const keys = [...before.trim() === '' ? [] : [`${rule}\u0000${marker}\u0000<${before}`], ...after.trim() === '' ? [] : [`${rule}\u0000${marker}\u0000>${after}`]]
+    hits.push({ rule, start, end: start + length, keys })
   }
   for (const { rule, pattern } of patterns) {
     for (const match of narration.matchAll(pattern)) {
@@ -142,5 +149,13 @@ export function aiToneHits(text: string): AiToneHits {
     }
     lineStart += line.length + 1
   }
-  return { narration, hits: hits.sort((left, right) => left.start - right.start || left.end - right.end) }
+  hits.sort((left, right) => left.start - right.start || left.end - right.end)
+  const ordinals = new Map<string, number>()
+  return { narration, hits: hits.map(hit => {
+    if (hit.keys.length > 0) return hit
+    const marker = `${hit.rule}\u0000${narration.slice(hit.start, hit.end)}`
+    const ordinal = ordinals.get(marker) ?? 0
+    ordinals.set(marker, ordinal + 1)
+    return { ...hit, keys: [`${marker}\u0000#${ordinal}`] }
+  }) }
 }

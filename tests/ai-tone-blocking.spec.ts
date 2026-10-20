@@ -1,7 +1,7 @@
 /** aiToneBlocking (prompt version 5): host-decided blocking of AI tone in body reviews, its stop conditions and resume rules. */
 import { describe, expect, it } from 'vitest'
-import { aiToneHits, detectAiTone } from '../src/ai-tone.ts'
-import { AiToneReviewBlockedError, ImportReviewBlockedError, parseArtifactId } from '../src/contracts.ts'
+import { aiToneHits } from '../src/ai-tone.ts'
+import { aiToneRepairInstruction, AiToneReviewBlockedError, ImportReviewBlockedError, parseArtifactId } from '../src/contracts.ts'
 import { buildStagePrompt, CURRENT_PROMPT_VERSION, type StagePromptKind } from '../src/stage-prompts.ts'
 import * as Story from '../src/index.ts'
 import type { RunExecutionLimits, WritingRun } from '../src/run-store.ts'
@@ -62,14 +62,28 @@ describe('host markers and the structured stop line', () => {
     const twice = aiToneHits('雾起了。然而，灯灭了。夜深了很久很久。然而，船到了。').hits
     expect(twice).toHaveLength(2)
     expect(twice[0]!.keys.some(key => twice[1]!.keys.includes(key))).toBe(false)
+    // Paragraph-start hits have no left context, which must not become a shared identity.
+    const openers = aiToneHits('然而，灯灭了。\n然而，船到了。\n林澜说：「走。」然而，雾散了。').hits
+    expect(openers).toHaveLength(3)
+    for (const [index, item] of openers.entries()) for (const other of openers.slice(index + 1)) expect(item.keys.some(key => other.keys.includes(key))).toBe(false)
+    expect(openers.every(item => item.keys.length === 1 && item.keys[0]!.includes('\u0000>'))).toBe(true)
+    const bare = aiToneHits('——\n——').hits
+    expect(bare.map(item => item.keys)).toEqual([['dash\u0000——\u0000#0'], ['dash\u0000——\u0000#1']])
   })
 
-  it('cuts marker excerpts on code points, never splitting a surrogate pair', () => {
-    const emoji = '😀'.repeat(9)
-    const examples = detectAiTone(`${emoji}说白了${emoji}`).markers.flatMap(marker => marker.examples)
-    expect(examples).toEqual([`${'😀'.repeat(8)}说白了${'😀'.repeat(8)}`])
-    for (const example of examples) expect(example.isWellFormed()).toBe(true)
+  it('keys hit identities on code points, never splitting a surrogate pair', () => {
     expect(aiToneHits(`${'𠀀'.repeat(9)}然而，雾散了`).hits.every(item => item.keys.every(key => key.isWellFormed()))).toBe(true)
+    expect(aiToneHits(`雾${'😀'.repeat(5)}灯——${'𠀀'.repeat(5)}`).hits.every(item => item.keys.every(key => key.isWellFormed()))).toBe(true)
+  })
+
+  it('cuts stop-line and repair spans on code points, never leaving a lone surrogate', () => {
+    // 199 BMP code points, then emoji straddling UTF-16 unit 200: a code-unit cut at 200 would keep half of the first one.
+    const span = `说白了${'雾'.repeat(196)}😀😀`
+    for (const line of [lastLine(new AiToneReviewBlockedError('ai-tone', [span], 'body/1').message), lastLine(aiToneRepairInstruction([span]))]) {
+      const spans = line.spans as string[]
+      expect(spans).toEqual([`说白了${'雾'.repeat(196)}😀`])
+      expect(spans.every(item => item.isWellFormed())).toBe(true)
+    }
   })
 
   it('ends an AI-tone stop with reason and spans and no importItems, sharing the review-blocked union with import stops', () => {
@@ -171,7 +185,8 @@ describe('stop conditions (aiToneBlocking on, the default)', () => {
   })
 
   it('(b) stops for human review when a repair keeps a reported span, without spending the remaining repair attempts', { timeout: 120_000 }, async () => {
-    const { fixture, counts } = await scripted({ prefix: attempt => `说白了，第${attempt}版的灯不亮。`, quotes: () => ['说白了'] }, { executionLimits: { maxRepairAttempts: 3 } })
+    // The kept 说白了 opens the paragraph, so only its right context identifies it; the edit is beyond that context.
+    const { fixture, counts } = await scripted({ prefix: attempt => `说白了，雾港的灯塔今夜不亮，第${attempt}版。`, quotes: () => ['说白了'] }, { executionLimits: { maxRepairAttempts: 3 } })
     const run = await write(fixture)
     expect(run.status).toBe('failed')
     expect(lastLine(run.error)).toEqual({ code: 'review-blocked', reason: 'ai-tone-repeat', spans: ['说白了'] })
@@ -242,6 +257,16 @@ describe('stop conditions (aiToneBlocking on, the default)', () => {
     expect(counts()).toEqual({ bodies: 3, reviews: 3 })
   })
 
+  it('(b) treats another paragraph-start instance as new, though neither has narration before it', { timeout: 120_000 }, async () => {
+    // Both 然而， open a paragraph, so their left context is empty; only the right context identifies them.
+    const prefixes = ['然而，灯灭了。\n然而，船到了。\n', '灯灭了。\n然而，船到了。\n', '灯灭了。\n船到了。\n']
+    const { fixture, counts } = await scripted({ prefix: attempt => prefixes[attempt]!, quotes: review => [['然而，灯灭了'], ['然而，船到了'], []][review]! }, { executionLimits: { maxRepairAttempts: 2 } })
+    const run = await write(fixture)
+    expect(run.status).toBe('completed')
+    expect(counts()).toEqual({ bodies: 3, reviews: 3 })
+    expect(reviewBlocks(fixture, run)).toEqual(['ai-tone', 'ai-tone', null])
+  })
+
   it('(b) recognises the same instance when the reviewer quotes it with a different length', { timeout: 120_000 }, async () => {
     const { fixture, counts } = await scripted({ prefix: () => '说白了，雾港的灯不亮。', suffix: attempt => `第${attempt}夜。`, quotes: review => [review === 0 ? '说白了' : '说白了，雾港'] }, { executionLimits: { maxRepairAttempts: 3 } })
     const run = await write(fixture)
@@ -255,6 +280,17 @@ describe('stop conditions (aiToneBlocking on, the default)', () => {
     expect(lastLine(run.error)).toEqual({ code: 'review-blocked', reason: 'ai-tone', spans: ['说白了'] })
     expect(counts().bodies).toBe(1)
     expect(applied(fixture)).toBe(false)
+  })
+
+  it('keeps stop-line spans and the aiToneBlock record free of lone surrogates when emoji sit at the span cut', { timeout: 120_000 }, async () => {
+    const quote = `说白了${'雾'.repeat(196)}😀😀`
+    const { fixture } = await scripted({ prefix: () => `${quote}灯灭了。`, quotes: () => [quote] }, { executionLimits: { maxRepairAttempts: 0 } })
+    const run = await write(fixture)
+    const spans = lastLine(run.error).spans as string[]
+    expect(spans).toEqual([`说白了${'雾'.repeat(196)}😀`])
+    const recorded = fixture.runs.get(fixture.actor, run.id).attempts.flatMap(attempt => attempt.aiToneBlock?.spans ?? [])
+    expect(recorded).toEqual([quote])
+    for (const span of [...spans, ...recorded]) expect(span.isWellFormed()).toBe(true)
   })
 })
 
@@ -313,6 +349,28 @@ describe('resume rules', () => {
     expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'run-limits', message: expect.stringContaining('Restore the captured writing and research limits before resuming') } })
     if (outcome.status !== 'rejected') throw new Error('Resume was not refused')
     expect(lastLine((outcome.reason as Error).message)).toEqual({ code: 'run-limits', mismatched: [{ key: 'aiToneBlocking', saved: false, current: true }] })
+    expect(fixture.childRequests).toEqual([])
+    expect(fixture.runs.get(fixture.actor, stopped.id)).toEqual(stopped)
+  })
+
+  it('(4) lists every differing key at once when several resume limits differ', async () => {
+    const fixture = await useWritingFixture()
+    const limits = fixture.runner.limits
+    const service = { ...fixture.service.limits, ...fixture.service.researchLimits }
+    const run = await fixture.runs.begin(fixture.actor, { ...fixture.input, chapterCount: 1, throughChapter: 1, revision: null,
+      executionLimits: { ...limits, minChapterWords: limits.minChapterWords + 1, maxChapterWords: limits.maxChapterWords + 1, aiToneBlocking: false },
+      serviceLimits: { ...service, maxReadChars: service.maxReadChars + 1, maxResearchCalls: service.maxResearchCalls + 1 } }, 5)
+    const stopped = await fixture.runs.finish(fixture.actor, run.id, 'stopped', 'Stopped before native work.')
+    const outcome = await fixture.run(exec => fixture.runner.resume(exec, stopped.id, false))
+    expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'run-limits' } })
+    if (outcome.status !== 'rejected') throw new Error('Resume was not refused')
+    expect(lastLine((outcome.reason as Error).message)).toEqual({ code: 'run-limits', mismatched: [
+      { key: 'maxReadChars', saved: service.maxReadChars + 1, current: service.maxReadChars },
+      { key: 'maxResearchCalls', saved: service.maxResearchCalls + 1, current: service.maxResearchCalls },
+      { key: 'minChapterWords', saved: limits.minChapterWords + 1, current: limits.minChapterWords },
+      { key: 'maxChapterWords', saved: limits.maxChapterWords + 1, current: limits.maxChapterWords },
+      { key: 'aiToneBlocking', saved: false, current: true },
+    ] })
     expect(fixture.childRequests).toEqual([])
     expect(fixture.runs.get(fixture.actor, stopped.id)).toEqual(stopped)
   })
