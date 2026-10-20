@@ -225,7 +225,7 @@ it('C4: an unreviewed stage revision relabeled as an applied import is rejected 
   expect(() => h.service.getSettings(actor, novel.id)).toThrowError(expect.objectContaining({ code: 'corrupt-artifact' }))
 })
 
-it('P-1: an import receipt written with the importing Session in its hash (75874bd) still verifies and replays from any Session', async () => {
+it('P-1: an import receipt written with the importing Session in its hash (#18, 8675246) still verifies and replays from any Session', async () => {
   const { h, actor, novel, request } = await adopted('json')
   const imported = await h.service.importSettings(actor, request)
   const output = JSON.parse(h.service.getArtifact(actor, { novelId: novel.id, artifactId: imported.artifact.id }).text) as unknown

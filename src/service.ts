@@ -796,7 +796,7 @@ function settingsHash(record: SettingsReceiptRecord, output: unknown): string {
   return createHash('sha256').update(JSON.stringify(body)).digest('hex')
 }
 
-/** @returns Whether a stored receipt matches; import receipts written before the importing Session left the hash (PR #18 at 75874bd and earlier) still verify against their own recorded Session. */
+/** @returns Whether a stored receipt matches; import receipts written before the importing Session left the hash (#18, 8675246) still verify against their own recorded Session. */
 function settingsReceiptMatches(stored: string, record: SettingsReceiptRecord, output: unknown): boolean {
   if (stored === settingsHash(record, output)) return true
   if (record.origin !== 'import') return false
