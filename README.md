@@ -41,7 +41,7 @@ Use `dsh-story-weaver@next` for release candidates. In the DSH web UI you can in
 
 ### Upgrading
 
-Once runs with prompt version 3 or 4 exist, rolling the plugin back to an older version makes those run files unreadable.
+Resuming a novel on this code makes that novel's run records unreadable. Any saved attempt of the same stage key hits attempt-conflict, including older version 1 and 2 runs stored in the same novel, on both the JSON and SQLite stores. An experiment that has already started must be resumed on the commit that created it.
 
 ### Uninstalling
 

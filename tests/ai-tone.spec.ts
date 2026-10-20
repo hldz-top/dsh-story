@@ -70,14 +70,19 @@ describe('detectAiTone', () => {
     expect(rules('当他来的时候，门开了。')['when-clause']).toBeUndefined()
   })
 
-  it('flags a connective after an ASCII period with or without a following space', () => {
+  it('flags a connective after an ASCII period with or without following whitespace', () => {
     expect(rules('压力还在.然而，门关了。').connective).toBe(1)
     expect(rules('He left. 然而，门关了。').connective).toBe(1)
+    expect(rules('压力还在.\u3000然而，门关了。').connective).toBe(1)
   })
 
   it('does not treat a period after a digit as a sentence break', () => {
+    expect(rules('第3.然而').connective).toBeUndefined()
     expect(rules('第3.然而，门关了。').connective).toBeUndefined()
     expect(rules('第3. 然而，门关了。').connective).toBeUndefined()
+    expect(rules('2.0.此外').connective).toBeUndefined()
+    expect(rules('2.0.此外，门关了。').connective).toBeUndefined()
+    expect(rules('2.0. 此外，门关了。').connective).toBeUndefined()
   })
 
   it('reports the ch1 v1 dash habit and keeps the v2 draft nearly clean', () => {
