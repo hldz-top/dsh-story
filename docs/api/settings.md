@@ -111,7 +111,7 @@ Author imports (`importSettings`) add an optional `origin` field to settings his
 
 The provenance check (including the `import` prefix that rejects a relabelled stage record) is integrity checking, not authentication. It detects accidental or partial edits and records that no longer agree with their receipt, but anyone who can write the store can also recompute a receipt: an unreviewed stage revision relabelled as an import with a recomputed `import` hash is accepted and shown as an import pending review. The importing Session (`childSessionId`) of a new-format import record is metadata outside the hash, so editing it is not detected; only receipts written by #18 (`8675246`) bind it. Protect the store with file permissions and backups, not with these checks.
 
-An import stores its content artifact before the novel update that publishes it, like other settings writes. Unlike them, it removes that artifact again when the update refuses or is cancelled (admission check, head or input conflict, abort), and a concurrent call with the same `requestId` that replays the winning import removes its own unpublished copy, so a refused import leaves no unreferenced artifact. The removal is best-effort: it runs only while no settings record references the artifact, and if the delete itself fails the unreferenced artifact stays, which public reads already refuse.
+A rejected or cancelled import may leave an unreferenced content artifact; public reads reject it, the same as for other writes.
 
 <a id="limits"></a>
 ## Known limits
