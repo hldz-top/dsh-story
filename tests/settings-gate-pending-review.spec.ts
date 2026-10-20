@@ -62,18 +62,19 @@ it('T4 both: a resume missing required settings with a pending import reports se
   expect(reason).toBeInstanceOf(SettingsIncompleteError)
   expect(reason).not.toBeInstanceOf(ImportRefusedError)
   expect(reason).toMatchObject({ name: 'SettingsIncompleteError', code: 'settings-incomplete', missing: ['a3', 'a4', 'a5', 'g1', 'g2'], importItems: [item] })
-  expect(lastLine(reason)).toEqual({ code: 'settings-incomplete', missing: ['a3', 'a4', 'a5', 'g1', 'g2'], importItems: [item] })
+  expect(lastLine(reason)).toEqual({ code: 'settings-incomplete', missing: ['a3', 'a4', 'a5', 'g1', 'g2'], runId: run.id, importItems: [item] })
   // The items use exactly the key and format of the import-refused line.
   const bypassed = await fixture.run(exec => runnerWith(fixture, { allowIncompleteSettings: true }).resume(exec, run.id, false))
   expect(bypassed.status).toBe('rejected')
   const refused = bypassed.status === 'rejected' ? bypassed.reason : null
   expect(refused).toBeInstanceOf(ImportRefusedError)
-  expect(lastLine(refused)).toEqual({ code: 'import-refused', reason: 'pending-review', importItems: [item] })
+  expect(lastLine(refused)).toEqual({ code: 'import-refused', reason: 'pending-review', runId: run.id, importItems: [item] })
   expect(lastLine(reason).importItems).toEqual(lastLine(refused).importItems)
 
   const message = String((reason as Error).message)
   expect(message).toContain('Required novel settings are missing: a3 (')
-  expect(message).toContain('Imported settings also await a consistency review (e1); this run cannot resume. Stop it if needed and start a new story_update to review them.')
+  expect(message).toContain(`Imported settings also await a consistency review (e1); run ${run.id} cannot resume. Stop it if needed and start a new story_update to review them.`)
+  expect(String((refused as Error).message)).toContain(`(e1); run ${run.id} cannot resume. Stop it if needed and start a new story_update to review them`)
   expect(message).not.toContain('allowIncompleteSettings')
   expect(fixture.runs.get(fixture.actor, run.id)).toEqual(before)
   expect(fixture.stages.size).toBe(stages)
@@ -107,6 +108,6 @@ it('T4 pending only (OPT1): complete settings with a pending import still refuse
   const reason = result.status === 'rejected' ? result.reason : null
   expect(reason).toBeInstanceOf(ImportRefusedError)
   expect(reason).not.toBeInstanceOf(SettingsIncompleteError)
-  expect(lastLine(reason)).toEqual({ code: 'import-refused', reason: 'pending-review', importItems: [{ dimensionCode: 'e1', artifactId: imported!.artifact.id, pendingReview: true }] })
+  expect(lastLine(reason)).toEqual({ code: 'import-refused', reason: 'pending-review', runId: run.id, importItems: [{ dimensionCode: 'e1', artifactId: imported!.artifact.id, pendingReview: true }] })
   expect(fixture.runs.get(fixture.actor, run.id)).toEqual(before)
 }, SLOW)

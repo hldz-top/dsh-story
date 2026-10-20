@@ -74,7 +74,7 @@ export class WritingRunner {
     const actor = await writingActor(this.ctx, exec)
     const stored = this.runs.get(actor, runId)
     // A completed run cannot resume at all, so it skips only the settings gate: it still goes through the brief, present and limit checks and is then refused with run-state by RunStore.resume (as on main).
-    this.admit(actor, stored, true, stored.status !== 'completed')
+    this.admit(actor, stored, stored.id, stored.status !== 'completed')
     this.requirePresentation(exec)
     this.requireRunLimits(stored)
     const active = this.active.get(runId)
@@ -95,8 +95,9 @@ export class WritingRunner {
     const actor = await writingActor(this.ctx, exec)
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const unfinished = () => {
-      if (this.runs.list(actor, request.novelId).some(run => run.status === 'running' || run.status === 'interrupted')) {
-        throw new ImportRefusedError('run-active', 'Settings cannot be imported while the novel has a running or interrupted writing run; stop it first')
+      const holder = this.runs.list(actor, request.novelId).find(run => run.status === 'running' || run.status === 'interrupted')
+      if (holder !== undefined) {
+        throw new ImportRefusedError('run-active', `Settings cannot be imported while the novel has a running or interrupted writing run (${holder.id}); stop it first`, [], holder.id)
       }
     }
     unfinished()
@@ -134,17 +135,18 @@ export class WritingRunner {
    * A resume is re-gated too, so runs admitted with incomplete settings cannot continue unless the operator bypass is set.
    * A completed run is not gated (`gated` false): it cannot resume anyway and keeps the run store's run-state refusal.
    */
-  private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false, gated = true): void {
+  /** @param resuming - The resumed run's id, or null for a new request. */
+  private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming: RunId | null = null, gated = true): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
     if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
     if (gated && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
       // T4: a resume refused here would also be refused by requirePendingImportsReviewed; report both in one error. The check order is unchanged.
-      if (missing.length > 0) throw new SettingsIncompleteError(missing, resuming ? this.pendingImports(actor, input) : [])
+      if (missing.length > 0) throw new SettingsIncompleteError(missing, resuming === null ? [] : this.pendingImports(actor, input), resuming ?? undefined)
     }
     planSettings(input.settingsRoots)
-    if (input.mode === 'write' && !resuming) {
+    if (input.mode === 'write' && resuming === null) {
       const settings = this.service.getSettings(actor, input.novelId)
       const manuscript = this.service.getManuscript(actor, input.novelId)
       if (settings.applied.some(item => item.stale) || manuscript.heads.some(item => item.stale) || manuscript.appliedChapters.some(item => item.stale)) {
@@ -156,7 +158,7 @@ export class WritingRunner {
   /** A resumed run would replay its own earlier settings collection and never review an import; a new story_update reviews it. */
   private requirePendingImportsReviewed(actor: Actor, run: WritingRun): void {
     const pending = this.pendingImports(actor, run)
-    if (pending.length > 0) throw new ImportRefusedError('pending-review', `Imported settings await a consistency review (${pending.map(item => item.dimensionCode).join(', ')}); this run cannot resume. Stop it if needed and start a new story_update to review them`, pending)
+    if (pending.length > 0) throw new ImportRefusedError('pending-review', `Imported settings await a consistency review (${pending.map(item => item.dimensionCode).join(', ')}); run ${run.id} cannot resume. Stop it if needed and start a new story_update to review them`, pending, run.id)
   }
 
   /** Current heads in the run's settingsRoots closure that are imports awaiting a collection review. */

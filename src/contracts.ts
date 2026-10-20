@@ -179,18 +179,20 @@ export const SETTINGS_INCOMPLETE = 'settings-incomplete'
  * A refused new writing request or resume. It extends HarnessError so the host records `error: { name, code: 'settings-incomplete' }`
  * on the tool result outside model content. The message keeps the human sentence and ends with one JSON line
  * `{"code":"settings-incomplete","missing":[...]}`, because tool error text is the only channel that carries the missing codes.
- * A refused resume whose selected settings also hold imports awaiting review adds `"importItems":[...]` (the same key and
- * {@link ImportItem} format as `import-refused` and `review-blocked`); the field is omitted when no import is pending.
+ * A refused resume whose selected settings also hold imports awaiting review adds `"runId"` (the run to stop) and
+ * `"importItems":[...]` (the same key and {@link ImportItem} format as `import-refused` and `review-blocked`); both are
+ * omitted when no import is pending.
  */
 export class SettingsIncompleteError extends HarnessError {
   /** Missing required codes in catalog order. */
   readonly missing: readonly string[]
   /** Selected imports still awaiting a collection review (resume only); empty when none, and then absent from the JSON line. */
   readonly importItems: readonly ImportItem[]
-  constructor(missing: readonly { readonly code: string; readonly name: string }[], importItems: readonly ImportItem[] = []) {
+  /** @param runId - The refused resume's run, named in the stop hint and (with importItems) in the JSON line: while interrupted it holds the novel and a new story_update fails with active-run. */
+  constructor(missing: readonly { readonly code: string; readonly name: string }[], importItems: readonly ImportItem[] = [], runId?: string) {
     const codes = missing.map(item => item.code)
-    const pending = importItems.length === 0 ? '' : ` Imported settings also await a consistency review (${importItems.map(item => item.dimensionCode).join(', ')}); this run cannot resume. Stop it if needed and start a new story_update to review them.`
-    super(`Required novel settings are missing: ${missing.map(item => `${item.code} (${item.name})`).join(', ')}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.length === 1 ? 'it' : 'them'}; ["a4", "a5", "g2"] covers every required setting.${pending}\n${JSON.stringify({ code: SETTINGS_INCOMPLETE, missing: codes, ...(importItems.length === 0 ? {} : { importItems }) })}`, SETTINGS_INCOMPLETE)
+    const pending = importItems.length === 0 ? '' : ` Imported settings also await a consistency review (${importItems.map(item => item.dimensionCode).join(', ')}); ${runId === undefined ? 'this run' : `run ${runId}`} cannot resume. Stop it if needed and start a new story_update to review them.`
+    super(`Required novel settings are missing: ${missing.map(item => `${item.code} (${item.name})`).join(', ')}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.length === 1 ? 'it' : 'them'}; ["a4", "a5", "g2"] covers every required setting.${pending}\n${JSON.stringify({ code: SETTINGS_INCOMPLETE, missing: codes, ...(importItems.length === 0 ? {} : { ...(runId === undefined ? {} : { runId }), importItems }) })}`, SETTINGS_INCOMPLETE)
     this.name = 'SettingsIncompleteError'
     this.missing = Object.freeze(codes)
     this.importItems = Object.freeze([...importItems])
@@ -203,10 +205,13 @@ export interface ImportItem { readonly dimensionCode: string; readonly artifactI
 export const IMPORT_REFUSED = 'import-refused'
 /** run-active: the novel has a running or interrupted run; pending-review: a resumed run would skip the review an import awaits. */
 export type ImportRefusalReason = 'run-active' | 'pending-review'
-/** A refused import or resume; like {@link SettingsIncompleteError} its message ends with one JSON line `{"code":"import-refused","reason":...}`. */
+/**
+ * A refused import or resume; like {@link SettingsIncompleteError} its message ends with one JSON line `{"code":"import-refused","reason":...}`.
+ * `runId` names the unfinished run to stop (run-active) or the refused resume's run (pending-review) when known.
+ */
 export class ImportRefusedError extends HarnessError {
-  constructor(readonly reason: ImportRefusalReason, message: string, readonly importItems: readonly ImportItem[] = []) {
-    super(`${message}\n${JSON.stringify({ code: IMPORT_REFUSED, reason, ...(importItems.length === 0 ? {} : { importItems }) })}`, IMPORT_REFUSED)
+  constructor(readonly reason: ImportRefusalReason, message: string, readonly importItems: readonly ImportItem[] = [], readonly runId?: string) {
+    super(`${message}\n${JSON.stringify({ code: IMPORT_REFUSED, reason, ...(runId === undefined ? {} : { runId }), ...(importItems.length === 0 ? {} : { importItems }) })}`, IMPORT_REFUSED)
     this.name = 'ImportRefusedError'
   }
 }
