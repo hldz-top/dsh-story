@@ -54,11 +54,11 @@ export const DEFAULT_TYPOS: readonly TypoRule[] = [
 
 const PANEL_LINE = /^【[^\n]*】$/gmu
 /**
- * An unfilled 【】 placeholder, including a whitespace-only interior (ordinary spaces, tabs, newlines and the
- * full-width space). A pair with any other character, half-width [], and an unmatched 【 or 】 do not match.
+ * An unfilled 【】 placeholder. The interior may be whitespace (ordinary spaces, tabs, newlines, the full-width
+ * space) or the zero-width characters U+200B–U+200D and U+2060. Any other character, half-width [], and an unmatched 【 or 】 do not match.
  * This does not change {@link PANEL_LINE}: a line that is only 【】 is still a panel line and is also reported here.
  */
-const EMPTY_BRACKET = /【\s*】/gu
+const EMPTY_BRACKET = /【[\s\u200b-\u200d\u2060]*】/gu
 /** Numbers that only describe the plan (lengths, beat/panel counts, ratios), never prose facts. */
 const META_UNIT = /^\s*(?:[–\-~～/]\s*\d|字|拍|条|次|%|％|章|段|步|个|句|处|成|倍|分之)/u
 const LITERAL = /(?<![\p{L}\p{N}_.:：–\-~～/])([A-Z]?\d+(?::\d{2})?)(?![\p{L}\p{N}_:：])/gu

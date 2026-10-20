@@ -189,6 +189,21 @@ describe('empty 【】 placeholders (advisory)', () => {
     expect(astral.findings.every(finding => finding.severity === 'advisory')).toBe(true)
   })
 
+  it('treats U+200B, U+200C, U+200D and U+2060 inside 【】 as empty', () => {
+    for (const mark of ['\u200b', '\u200c', '\u200d', '\u2060']) {
+      const alone = lintChapter(`前【${mark}】后`)
+      expect(alone.placeholders, `U+${mark.codePointAt(0)!.toString(16)}`).toHaveLength(1)
+      expect(alone.findings.filter(finding => finding.code === 'empty-bracket')).toHaveLength(1)
+      expect(alone.panels.count).toBe(0)
+      const mixed = lintChapter(`前【 ${mark}\u3000】后`)
+      expect(mixed.placeholders, `mixed U+${mark.codePointAt(0)!.toString(16)}`).toHaveLength(1)
+      expect(mixed.findings.filter(finding => finding.code === 'empty-bracket')).toHaveLength(1)
+    }
+    const filled = lintChapter('【\u200bx】')
+    expect(filled.placeholders).toEqual([])
+    expect(filled.findings.filter(finding => finding.code === 'empty-bracket')).toEqual([])
+  })
+
   it('keeps the panel count and does not make the finding blocking', () => {
     const inline = lintChapter('他的眼睛还停在【】上。\n\n【任务完成】\n\n那两条【】的安装回执')
     expect(inline.panels).toMatchObject({ count: 1, lines: [{ text: '【任务完成】' }] })
