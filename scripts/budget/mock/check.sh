@@ -173,6 +173,13 @@ s_kill9_resume() {
   fi
   kill -9 "$dpid" 2>/dev/null || true
   wait "$dpid" || true
+  local _
+  for _ in $(seq 1 50); do
+    if flock -n "$S/state/drive.lock" -c true; then
+      break
+    fi
+    sleep 0.05
+  done
   cp "$S/state/ledger.tsv" "$S/ledger-after-kill.tsv"
   env WD_STATE="$S/state" "$B/budget.sh" total >"$S/total-after-kill.out" 2>"$S/total-after-kill.err"
   echo $? >"$S/total-after-kill.rc"

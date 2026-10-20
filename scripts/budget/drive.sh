@@ -45,7 +45,9 @@ limit_name() {
     *) printf '%s' "$1" ;;
   esac
 }
-budget() { "$ROOT/budget.sh" "$@"; }
+# Close the lock fd in children. Otherwise a meter process still holds it after kill -9
+# and the next drive.sh cannot resume.
+budget() { "$ROOT/budget.sh" "$@" 9>&-; }
 
 if [[ ${WD_OFFLINE:-} == 1 ]]; then
   log 'offline mock: provider env check skipped (WD_OFFLINE=1); no model is called'
@@ -152,7 +154,7 @@ interrupt() {
   fi
 }
 
-setsid "$WD_RUN_CMD" "$tag" &
+setsid "$WD_RUN_CMD" "$tag" 9>&- &
 pid=$!
 log "started $WD_RUN_CMD $tag pid=$pid home=$HOME_DIR poll=${POLL}s"
 stopped=
