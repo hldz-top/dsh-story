@@ -63,6 +63,19 @@ describe('v1 draft (artifact_230c4d0c)', () => {
   it('finds 猪一行 and 掉水 and nothing else from the base table', () => {
     expect(report.typos.map(typo => [typo.wrong, typo.offset])).toEqual([['猪一行', 2953], ['掉水', 3778]])
   })
+
+  it('reports exactly the two empty 【】 placeholders and no others', () => {
+    expect(report.placeholders).toEqual([
+      { offset: 2883, percent: 59.5, context: '老化。 他的眼睛还停在【】上。手先动，笔尖落到签名' },
+      { offset: 3972, percent: 81.9, context: '开拉链翻到夹层，把那两条【】的安装回执翻出来——其实' },
+    ])
+    expect(report.findings.filter(finding => finding.code === 'empty-bracket')).toEqual([
+      { check: 'placeholders', severity: 'advisory', code: 'empty-bracket', message: '空【】（59.5%）：老化。 他的眼睛还停在【】上。手先动，笔尖落到签名' },
+      { check: 'placeholders', severity: 'advisory', code: 'empty-bracket', message: '空【】（81.9%）：开拉链翻到夹层，把那两条【】的安装回执翻出来——其实' },
+    ])
+    expect(report.panels.count).toBe(13)
+    expect(report.findings.filter(finding => finding.severity === 'error').map(finding => finding.code)).toEqual(['panel-over-limit', 'task-panel-digit-missing', 'typo', 'typo'])
+  })
 })
 
 describe('v2 draft (artifact_82f3048a)', () => {
@@ -119,6 +132,82 @@ describe('no false positives', () => {
   })
 })
 
+describe('empty 【】 placeholders (advisory)', () => {
+  const empty = (report: ReturnType<typeof lintChapter>) => report.findings.filter(finding => finding.code === 'empty-bracket')
+
+  it('reports a pair at the start, middle and end of a paragraph, including two on one line', () => {
+    const text = '【】在段首。\n\n一行里【】有【】两处。\n\n停在段尾【】'
+    const report = lintChapter(text)
+    expect(report.panels.count).toBe(0)
+    expect(report.placeholders).toEqual([
+      { offset: 0, percent: 0, context: '【】在段首。 一行里【】有' },
+      { offset: 11, percent: 40.7, context: '【】在段首。 一行里【】有【】两处。 停在段尾' },
+      { offset: 14, percent: 51.9, context: '在段首。 一行里【】有【】两处。 停在段尾【】' },
+      { offset: 25, percent: 92.6, context: '有【】两处。 停在段尾【】' },
+    ])
+    expect(empty(report).map(finding => [finding.severity, finding.check, finding.code])).toEqual([
+      ['advisory', 'placeholders', 'empty-bracket'],
+      ['advisory', 'placeholders', 'empty-bracket'],
+      ['advisory', 'placeholders', 'empty-bracket'],
+      ['advisory', 'placeholders', 'empty-bracket'],
+    ])
+    expect(empty(report).map(finding => finding.message)).toEqual(report.placeholders.map(item => `空【】（${item.percent}%）：${item.context}`))
+    expect(report.findings.every(finding => finding.severity !== 'error')).toBe(true)
+  })
+
+  it('ignores filled brackets, half-width brackets and an unmatched 【 or 】', () => {
+    const text = '【标题】写好了。半角[]不算。落单的【和】也不算。非空【x】跳过。【 标题 】同样跳过。'
+    const report = lintChapter(text)
+    expect(report.placeholders).toEqual([])
+    expect(empty(report)).toEqual([])
+    expect(report.findings).toEqual([])
+    expect(report.panels.count).toBe(0)
+    expect(lintChapter(v2).placeholders).toEqual([])
+    expect(lintChapter(v2).panels.count).toBe(10)
+  })
+
+  it('treats whitespace-only interiors as empty, including adjacent pairs and nearby astral text', () => {
+    const spaced = lintChapter('前【 】中【　】后')
+    expect(spaced.placeholders).toEqual([
+      { offset: 1, percent: 11.1, context: '前【 】中【　】后' },
+      { offset: 5, percent: 55.6, context: '前【 】中【　】后' },
+    ])
+    expect(spaced.panels.count).toBe(0)
+    for (const sample of ['【\t】', '【\n】', '【 \u3000\t】']) {
+      const report = lintChapter(`前${sample}后`)
+      expect(report.placeholders, sample).toHaveLength(1)
+      expect(report.panels.count, sample).toBe(0)
+      expect(report.findings.every(finding => finding.severity === 'advisory'), sample).toBe(true)
+    }
+    const adjacent = lintChapter('甲【】【】乙')
+    expect(adjacent.placeholders.map(item => item.offset)).toEqual([1, 3])
+    expect(adjacent.chars).toBe(6)
+    const astral = lintChapter('前文😀【】，𠀀【】后')
+    expect(astral.chars).toBe(10)
+    expect(astral.placeholders.map(item => [item.offset, item.percent])).toEqual([[3, 30], [7, 70]])
+    expect(astral.placeholders.every(item => item.context === '前文😀【】，𠀀【】后')).toBe(true)
+    expect(astral.findings.every(finding => finding.severity === 'advisory')).toBe(true)
+  })
+
+  it('keeps the panel count and does not make the finding blocking', () => {
+    const inline = lintChapter('他的眼睛还停在【】上。\n\n【任务完成】\n\n那两条【】的安装回执')
+    expect(inline.panels).toMatchObject({ count: 1, lines: [{ text: '【任务完成】' }] })
+    expect(inline.placeholders).toHaveLength(2)
+    expect(inline.findings.filter(finding => finding.severity === 'error')).toEqual([])
+    const line = lintChapter('【】\n\n【任务完成】')
+    expect(line.panels.count).toBe(2)
+    expect(line.panels.lines.map(item => item.text)).toEqual(['【】', '【任务完成】'])
+    expect(line.placeholders).toEqual([{ offset: 0, percent: 0, context: '【】 【任务完成】' }])
+    expect(empty(line).map(finding => finding.severity)).toEqual(['advisory'])
+    for (const sample of ['【 】', '【　】']) {
+      const report = lintChapter(sample)
+      expect(report.panels.count, sample).toBe(1)
+      expect(report.placeholders, sample).toHaveLength(1)
+      expect(report.findings.every(finding => finding.severity === 'advisory'), sample).toBe(true)
+    }
+  })
+})
+
 describe('technical metaphors (advisory)', () => {
   it('flags the banned example sentence by its term list', () => {
     const report = lintChapter('「这条路的气密性比我的信用评级还差。」他抬头看了一眼。')
@@ -161,6 +250,20 @@ describe('scripts/chapter-lint.mjs', () => {
     const report = JSON.parse(output) as ReturnType<typeof lintChapter>
     expect(report.panels.duplicates).toEqual([[9, 10]])
     expect(report.typos.map(typo => typo.wrong)).toEqual(['公窄', '从头上到尾'])
+  })
+
+  it('exits 0 when the only finding is an empty 【】', () => {
+    const script = fileURLToPath(new URL('../scripts/chapter-lint.mjs', import.meta.url))
+    const scratch = mkdtempSync(join(tmpdir(), 'chapter-lint-empty-'))
+    const chapter = join(scratch, 'chapter.md')
+    writeFileSync(chapter, '# 标题\n\n他停在【】上。\n')
+    const result = spawnSync(process.execPath, [script, chapter, '--json'], { encoding: 'utf8', timeout: 20_000 })
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe('')
+    const report = JSON.parse(result.stdout) as ReturnType<typeof lintChapter>
+    expect(report.panels.count).toBe(0)
+    expect(report.placeholders).toHaveLength(1)
+    expect(report.findings.map(finding => [finding.severity, finding.code])).toEqual([['advisory', 'empty-bracket']])
   })
 })
 

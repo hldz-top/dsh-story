@@ -24,7 +24,7 @@ export interface LintAnchor { readonly label: string; readonly pattern: string }
 export interface LintOptions { readonly outline?: LintOutline; readonly typos?: readonly TypoRule[]; readonly anchors?: readonly LintAnchor[]; readonly metaphorTerms?: readonly string[] }
 
 export type LintSeverity = 'error' | 'info' | 'advisory'
-export interface LintFinding { readonly check: 'panels' | 'literals' | 'positions' | 'typos' | 'metaphors'; readonly severity: LintSeverity; readonly code: string; readonly message: string }
+export interface LintFinding { readonly check: 'panels' | 'literals' | 'positions' | 'typos' | 'metaphors' | 'placeholders'; readonly severity: LintSeverity; readonly code: string; readonly message: string }
 export interface PanelLine { readonly index: number; readonly offset: number; readonly percent: number; readonly text: string }
 export interface Located { readonly offset: number; readonly percent: number; readonly context: string }
 
@@ -39,6 +39,8 @@ export interface ChapterLintReport {
   }
   readonly typos: readonly (TypoRule & Located)[]
   readonly metaphors: readonly (Located & { readonly sentence: string; readonly terms: readonly string[] })[]
+  /** Unfilled 【】 pairs. Whitespace-only interiors count. Advisory only: not an error, and not removed from {@link ChapterLintReport.panels}. */
+  readonly placeholders: readonly Located[]
   readonly findings: readonly LintFinding[]
 }
 
@@ -51,6 +53,12 @@ export const DEFAULT_TYPOS: readonly TypoRule[] = [
 ]
 
 const PANEL_LINE = /^【[^\n]*】$/gmu
+/**
+ * An unfilled 【】 placeholder, including a whitespace-only interior (ordinary spaces, tabs, newlines and the
+ * full-width space). A pair with any other character, half-width [], and an unmatched 【 or 】 do not match.
+ * This does not change {@link PANEL_LINE}: a line that is only 【】 is still a panel line and is also reported here.
+ */
+const EMPTY_BRACKET = /【\s*】/gu
 /** Numbers that only describe the plan (lengths, beat/panel counts, ratios), never prose facts. */
 const META_UNIT = /^\s*(?:[–\-~～/]\s*\d|字|拍|条|次|%|％|章|段|步|个|句|处|成|倍|分之)/u
 const LITERAL = /(?<![\p{L}\p{N}_.:：–\-~～/])([A-Z]?\d+(?::\d{2})?)(?![\p{L}\p{N}_:：])/gu
@@ -219,7 +227,10 @@ export function lintChapter(chapter: string | LintBody, options: LintOptions = {
   }
   for (const metaphor of metaphors) findings.push({ check: 'metaphors', severity: 'advisory', code: 'tech-metaphor', message: `技术比喻（${metaphor.terms.join('、')}，${metaphor.percent}%）：${metaphor.sentence}` })
 
-  return { chars: points.length, panels: { count: lines.length, nominal, max, lines, duplicates }, literals: { required, taskPanelDigit }, positions: { scenes, obligations, anchors }, typos, metaphors, findings }
+  const placeholders = [...text.matchAll(EMPTY_BRACKET)].map(match => points.locate(match.index, [...match[0]].length))
+  for (const item of placeholders) findings.push({ check: 'placeholders', severity: 'advisory', code: 'empty-bracket', message: `空【】（${item.percent}%）：${item.context}` })
+
+  return { chars: points.length, panels: { count: lines.length, nominal, max, lines, duplicates }, literals: { required, taskPanelDigit }, positions: { scenes, obligations, anchors }, typos, metaphors, placeholders, findings }
 }
 
 function occurrences(text: string, needle: string, points: Points): Located[] {
