@@ -140,7 +140,8 @@ export class WritingRunner {
     if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
     if (gated && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
-      if (missing.length > 0) throw new SettingsIncompleteError(missing)
+      // T4: a resume refused here would also be refused by requirePendingImportsReviewed; report both in one error. The check order is unchanged.
+      if (missing.length > 0) throw new SettingsIncompleteError(missing, resuming ? this.pendingImports(actor, input) : [])
     }
     planSettings(input.settingsRoots)
     if (input.mode === 'write' && !resuming) {
@@ -154,9 +155,14 @@ export class WritingRunner {
 
   /** A resumed run would replay its own earlier settings collection and never review an import; a new story_update reviews it. */
   private requirePendingImportsReviewed(actor: Actor, run: WritingRun): void {
-    const selected = new Set(planSettings(run.settingsRoots).selectedCodes)
-    const pending = this.service.getSettings(actor, run.novelId).applied.filter(item => item.pendingReview && selected.has(item.dimensionCode)).map(importItem)
+    const pending = this.pendingImports(actor, run)
     if (pending.length > 0) throw new ImportRefusedError('pending-review', `Imported settings await a consistency review (${pending.map(item => item.dimensionCode).join(', ')}); this run cannot resume. Stop it if needed and start a new story_update to review them`, pending)
+  }
+
+  /** Current heads in the run's settingsRoots closure that are imports awaiting a collection review. */
+  private pendingImports(actor: Actor, run: Pick<WritingRun, 'novelId' | 'settingsRoots'>): readonly ImportItem[] {
+    const selected = new Set(planSettings(run.settingsRoots).selectedCodes)
+    return this.service.getSettings(actor, run.novelId).applied.filter(item => item.pendingReview && selected.has(item.dimensionCode)).map(importItem)
   }
 
   /**
