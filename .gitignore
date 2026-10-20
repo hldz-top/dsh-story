@@ -1,4 +1,6 @@
 node_modules/
+__pycache__/
+*.pyc
 lib/
 types/
 dist/
@@ -11,3 +13,5 @@ coverage/
 .idea/
 *.tgz
 .DS_Store
+scripts/budget/state/
+scripts/budget/mock/work/
