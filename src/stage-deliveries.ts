@@ -9,11 +9,10 @@ import type {} from '@deepseek-ai/dsh-tool-present/types'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { z } from 'zod'
 import { parseArtifactId, type Actor, type Artifact, type ArtifactId, type NovelId } from './contracts.ts'
-import { parseAttemptId, parseRunId, type AttemptId, type RunId, type RunStore } from './run-store.ts'
+import { parseAttemptId, parseRunId, type RunId, type RunStore } from './run-store.ts'
 import type { WritingService } from './service.ts'
-import { projectArtifact, projectDocument } from './projection.ts'
+import { projectArtifact } from './projection.ts'
 import { StageOutputSchemas } from './stage-output.ts'
-import { literalTextBlock, readableList, readableText } from './readable-markdown.ts'
 import { writingActor } from './tools.ts'
 import { parseStoryStageDeliveries, type StoryStageDeliverySource, type StoryStageDeliveries } from './stage-delivery.ts'
 
@@ -122,27 +121,6 @@ export class StageDeliveries {
       const artifact = this.service.getArtifact(actor, { novelId, artifactId })
       const preview = await projectArtifact(this.ctx, exec, actor, novel, artifact, this.directory)
       await this.present(exec, identity, preview.path, artifactDescription(this.service, actor, artifact))
-    })
-  }
-
-  /** @param exec - Actual owning Story tool execution. @param runId - Durable run. @param attemptId - Exact saved native response rejected by admission. @param error - Nonblank admission failure, preserved in its preview. @returns After the complete rejected response and native delivery are durable. */
-  async publishRejectedOutput(exec: ToolExecution, runId: RunId, attemptId: AttemptId, error: string): Promise<void> {
-    const identity: DeliveryIdentity = { callId: exec.callId, runId, source: { kind: 'rejected-output', attemptId } }
-    return this.once(exec, identity, async () => {
-      const actor = await writingActor(this.ctx, exec)
-      const run = this.runs.get(actor, runId)
-      const output = this.runs.readOutput(actor, runId, attemptId)
-      const attempt = run.attempts.find(entry => entry.id === attemptId)
-      if (attempt === undefined || error.trim().length === 0) throw new Error('Rejected output requires its exact attempt and admission failure')
-      const provenance = [`Run: ${runId}`, `Attempt: ${attemptId}`, `Stage: ${attempt.key}`, `SHA-256: ${output.sha256}`, `UTF-8 bytes: ${output.bytes}`]
-      const document = (failure: string, metadata: string) => [
-        '# Rejected stage output', 'This raw model response failed writing-stage admission. It is not an applied writing artifact.',
-        '## Admission failure', failure, '## Complete response', literalTextBlock(output.text), '## Provenance', metadata,
-      ].join('\n\n') + '\n'
-      const markdown = document(readableText(error), readableList(provenance))
-      const legacy = document(literalTextBlock(error), literalTextBlock(provenance.join('\n')))
-      const path = await projectDocument(this.ctx, exec, actor, `${this.directory}/${run.novelId}/rejected/${attemptId}.md`, markdown, [legacy])
-      await this.present(exec, identity, path, `Rejected stage output: ${attempt.key}`)
     })
   }
 

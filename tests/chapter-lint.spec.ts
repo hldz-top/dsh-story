@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { assembleChapter, chapterFromMarkdown, lintChapter, panelLimits, requiredLiterals, TECH_METAPHOR_TERMS, type LintBody, type LintOutline } from '../src/chapter-lint.ts'
+import { assembleChapter, chapterFromMarkdown, JsonSyntaxError, LintInputError, lintChapter, panelLimits, parseJson, parseLintBody, parseLintOutline, parseTypoTable, requiredLiterals, storedArtifactText, TECH_METAPHOR_TERMS, type LintBody, type LintOutline } from '../src/chapter-lint.ts'
 
 // Acceptance spec: /workspace/dsh-story-notes/p1-lint-expectations.md (QA Lead, 2026-10-19 18:09 Asia/Taipei).
 // Fixtures are the stored artifact texts of 第七号协议 ch1: v1 artifact_230c4d0c (sha256 c755b9a5…), v2 artifact_82f3048a
@@ -195,5 +195,159 @@ describe('chapter-lint CLI input errors (qa-pr12-lint.md G1, G2, Q1, Q2)', () =>
       expect(result.status).toBe(0)
       expect(result.stdout).toContain('Usage:')
     }
+  })
+})
+
+describe('chapter-lint input validation (qa-postmerge-main.md G2, T2, T3)', () => {
+  const inputError = (action: () => unknown) => {
+    try { action() } catch (cause) {
+      expect(cause).toBeInstanceOf(LintInputError)
+      const error = cause as LintInputError
+      return `${error.path}: ${error.message}`
+    }
+    throw new Error('expected a LintInputError')
+  }
+  const syntaxError = (text: string) => {
+    try { parseJson(text) } catch (cause) {
+      expect(cause).toBeInstanceOf(JsonSyntaxError)
+      const error = cause as JsonSyntaxError
+      return `${error.line}:${error.column}: ${error.message}`
+    }
+    throw new Error('expected a JsonSyntaxError')
+  }
+
+  it('locates JSON syntax errors by line and code-point column without engine wording', () => {
+    expect(syntaxError('{"scenes":[')).toBe('1:12: unexpected end of input')
+    expect(syntaxError('{\n  "scenes": [\n    {"sceneId": "s1", "text": "x",}\n  ]\n}')).toBe('3:35: expected a property name, got "}"')
+    expect(syntaxError('{\n  "title": "𠀀𠀀",\n  oops\n}')).toBe('3:3: expected a property name, got "o"')
+    expect(syntaxError('{"title": "𠀀𠀀" x}')).toBe('1:16: expected "," or "}", got "x"')
+    expect(syntaxError('[1, 2]\n]')).toBe('2:1: unexpected content after the JSON value: "]"')
+    expect(syntaxError('{"a": "line\nbreak"}')).toBe('1:12: control character in string')
+    expect(syntaxError('{"a": "\\q"}')).toBe('1:8: invalid escape in string')
+    expect(syntaxError('{"a": "never closed')).toBe('1:7: unterminated string')
+    expect(syntaxError('\ufeff{}')).toBe('1:1: unexpected character U+FEFF')
+    expect(syntaxError('[-]')).toBe('1:2: invalid number')
+    expect(syntaxError('')).toBe('1:1: unexpected end of input')
+    expect(parseJson(' {"a": [1, -2.5e3, true, null, "\\u00e9"]} ')).toEqual({ a: [1, -2500, true, null, 'é'] })
+  })
+
+  it('names the exact body field', () => {
+    expect(inputError(() => parseLintBody(null))).toBe('$: expected a chapter body object with a "scenes" array, got null')
+    expect(inputError(() => parseLintBody([]))).toBe('$: expected a chapter body object with a "scenes" array, got an array')
+    expect(inputError(() => parseLintBody({}))).toBe('$.scenes: expected an array of scenes, got missing')
+    expect(inputError(() => parseLintBody({ scenes: 'x' }))).toBe('$.scenes: expected an array of scenes, got a string')
+    expect(inputError(() => parseLintBody({ scenes: [{ sceneId: 'a', text: 'x' }, 7] }))).toBe('$.scenes[1]: expected a scene object, got a number')
+    expect(inputError(() => parseLintBody({ scenes: [{ sceneId: 'a', text: 'x' }, { sceneId: 'b', text: 5 }] }))).toBe('$.scenes[1].text: expected a string, got a number')
+    expect(inputError(() => parseLintBody({ scenes: [{ sceneId: 'a' }] }))).toBe('$.scenes[0].text: expected a string, got missing')
+    expect(inputError(() => parseLintBody({ scenes: [{ id: 'a', text: 'x' }] }))).toBe('$.scenes[0].sceneId: expected a string, got missing')
+    expect(parseLintBody(v1)).toBe(v1)
+    expect(parseLintBody(v2)).toBe(v2)
+  })
+
+  it('names the exact outline field', () => {
+    const valid = structuredClone(outline) as unknown as Record<string, unknown>
+    const broken = (patch: (copy: Record<string, any>) => void) => { const copy = structuredClone(valid) as Record<string, any>; patch(copy); return () => parseLintOutline(copy) }
+    expect(inputError(() => parseLintOutline(null))).toBe('$: expected a chapter outline object, got null')
+    expect(inputError(() => parseLintOutline({}))).toBe('$.constraints: expected an array of strings, got missing')
+    expect(inputError(broken(copy => { copy.constraints = 'x' }))).toBe('$.constraints: expected an array of strings, got a string')
+    expect(inputError(broken(copy => { copy.constraints[1] = 3 }))).toBe('$.constraints[1]: expected a string, got a number')
+    expect(inputError(broken(copy => { copy.throughLine = null }))).toBe('$.throughLine: expected a string, got null')
+    expect(inputError(broken(copy => { delete copy.obligations[2].id }))).toBe('$.obligations[2].id: expected a string, got missing')
+    expect(inputError(broken(copy => { copy.scenes[3].action = {} }))).toBe('$.scenes[3].action: expected a string, got an object')
+    expect(inputError(broken(copy => { copy.scenes[0].purpose = 1 }))).toBe('$.scenes[0].purpose: expected a string, got a number')
+    expect(inputError(broken(copy => { copy.scenes[1].obligationIds = [true] }))).toBe('$.scenes[1].obligationIds[0]: expected a string, got a boolean')
+    expect(inputError(() => parseLintOutline(v1))).toBe('$.constraints: expected an array of strings, got missing')
+    expect(parseLintOutline(outline)).toBe(outline)
+  })
+
+  it('names the exact typo entry and requires a string right value', () => {
+    expect(inputError(() => parseTypoTable({ a: 1 }))).toBe('$: expected an array of {"wrong", "right"} entries, got an object')
+    expect(inputError(() => parseTypoTable(['的']))).toBe('$[0]: expected a {"wrong", "right"} entry, got a string')
+    expect(inputError(() => parseTypoTable([{ wrong: 'a', right: 'b' }, { wrong: '', right: 'x' }]))).toBe('$[1].wrong: expected a nonempty string, got an empty string')
+    expect(inputError(() => parseTypoTable([{ right: 'x' }]))).toBe('$[0].wrong: expected a nonempty string, got missing')
+    expect(inputError(() => parseTypoTable([{ wrong: '的' }]))).toBe('$[0].right: expected a string, got missing')
+    expect(inputError(() => parseTypoTable([{ wrong: '的', right: 5 }]))).toBe('$[0].right: expected a string, got a number')
+  })
+
+  it('tells a missing artifact from an artifact without text', () => {
+    const store = { tables: { artifacts: { 'artifact_ok': { text: '{}' }, 'artifact_notext': { kind: 'body' }, 'odd id': { text: 1 } } } }
+    expect(storedArtifactText(store, 'artifact_ok')).toBe('{}')
+    expect(inputError(() => storedArtifactText(store, 'artifact_nope'))).toBe('$.tables.artifacts.artifact_nope: artifact not found')
+    expect(inputError(() => storedArtifactText(store, 'artifact_notext'))).toBe('$.tables.artifacts.artifact_notext.text: artifact has no text: expected a string, got missing')
+    expect(inputError(() => storedArtifactText(store, 'odd id'))).toBe('$.tables.artifacts["odd id"].text: artifact has no text: expected a string, got a number')
+    expect(inputError(() => storedArtifactText(store, 'toString'))).toBe('$.tables.artifacts.toString: artifact not found')
+    expect(inputError(() => storedArtifactText({ tables: {} }, 'x'))).toBe('$.tables.artifacts: expected an artifacts table, got missing')
+    expect(inputError(() => storedArtifactText({}, 'x'))).toBe('$.tables: expected an object of tables, got missing')
+  })
+})
+
+describe('chapter-lint CLI error lines name the file and field (qa-postmerge-main.md G2, T2, T3)', () => {
+  const script = fileURLToPath(new URL('../scripts/chapter-lint.mjs', import.meta.url))
+  const fixture = (name: string) => fileURLToPath(new URL(name, dir))
+  const scratch = mkdtempSync(join(tmpdir(), 'chapter-lint-g2-'))
+  const file = (name: string, content: string) => { writeFileSync(join(scratch, name), content); return name }
+  const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { cwd: scratch, encoding: 'utf8', timeout: 20_000 })
+  const md = fixture('ch1-v2.md')
+  const outlineText = readFileSync(new URL('ch1-outline.json', dir), 'utf8')
+  const bodyText = readFileSync(new URL('ch1-v1-body.json', dir), 'utf8')
+  file('store.json', JSON.stringify({ tables: { artifacts: {
+    artifact_body: { kind: 'body', text: bodyText },
+    artifact_outline: { kind: 'chapter-outline', text: outlineText },
+    artifact_bad: { kind: 'body', text: '{\n  "scenes": [\n    oops\n  ]\n}' },
+    artifact_notext: { kind: 'body' },
+    artifact_badscene: { kind: 'body', text: JSON.stringify({ scenes: [{ sceneId: 's1', text: 'x' }, { sceneId: 's2', text: null }] }) },
+  } } }))
+
+  it.each([
+    ['body {}', [file('missing-body.json', '{}')], 'missing-body.json: $.scenes: expected an array of scenes, got missing'],
+    ['body null', [file('null-body.json', 'null')], 'null-body.json: $: expected a chapter body object with a "scenes" array, got null'],
+    ['scenes as a string', [file('scenes-string.json', '{"scenes":"x"}')], 'scenes-string.json: $.scenes: expected an array of scenes, got a string'],
+    ['a numeric scene text', [file('text-num.json', '{"scenes":[{"sceneId":"a","text":"x"},{"sceneId":"b","text":7}]}')], 'text-num.json: $.scenes[1].text: expected a string, got a number'],
+    ['a scene without text', [file('text-missing.json', '{"scenes":[{"sceneId":"a"}]}')], 'text-missing.json: $.scenes[0].text: expected a string, got missing'],
+    ['a scene without sceneId', [file('noid.json', '{"scenes":[{"id":"a","text":"x"}]}')], 'noid.json: $.scenes[0].sceneId: expected a string, got missing'],
+    ['the outline as the body', [file('outline-as-body.json', outlineText)], 'outline-as-body.json: $.scenes[0].text: expected a string, got missing'],
+    ['outline {}', [md, '--outline', file('outline-empty.json', '{}')], 'outline-empty.json: $.constraints: expected an array of strings, got missing'],
+    ['outline constraints as a string', [md, '--outline', file('outline-type.json', '{"constraints":"x","obligations":[],"scenes":[]}')], 'outline-type.json: $.constraints: expected an array of strings, got a string'],
+    ['a bad outline scene', [md, '--outline', file('outline-scene.json', '{"constraints":[],"obligations":[],"scenes":[{"id":"s","action":"a","obligationIds":[1]}]}')], 'outline-scene.json: $.scenes[0].obligationIds[0]: expected a string, got a number'],
+    ['the body as the outline', [md, '--outline', file('body-as-outline.json', bodyText)], 'body-as-outline.json: $.constraints: expected an array of strings, got missing'],
+    ['typos as an object', [md, '--typos', file('typ-object.json', '{"a":1}')], 'typ-object.json: $: expected an array of {"wrong", "right"} entries, got an object'],
+    ['a typo entry as a string', [md, '--typos', file('typ-string.json', '["的"]')], 'typ-string.json: $[0]: expected a {"wrong", "right"} entry, got a string'],
+    ['an empty wrong', [md, '--typos', file('typ-wrong-empty.json', '[{"wrong":"公窄","right":"狭窄"},{"wrong":"","right":"x"}]')], 'typ-wrong-empty.json: $[1].wrong: expected a nonempty string, got an empty string'],
+    ['a numeric wrong', [md, '--typos', file('typ-wrong-num.json', '[{"wrong":5,"right":"x"}]')], 'typ-wrong-num.json: $[0].wrong: expected a nonempty string, got a number'],
+    ['a missing right', [md, '--typos', file('typ-right-missing.json', '[{"wrong":"的"}]')], 'typ-right-missing.json: $[0].right: expected a string, got missing'],
+    ['a numeric right', [md, '--typos', file('typ-right-num.json', '[{"wrong":"的","right":5}]')], 'typ-right-num.json: $[0].right: expected a string, got a number'],
+    ['a truncated body', [file('bad-body.json', '{"scenes":[')], 'bad-body.json:1:12: invalid JSON: unexpected end of input'],
+    ['a trailing comma in the outline', [md, '--outline', file('bad-outline.json', '{\n  "constraints": [\n    "a",\n  ]\n}')], 'bad-outline.json:4:3: invalid JSON: unexpected character "]"'],
+    ['a bad typo table', [md, '--typos', file('bad-typos.json', '[{"wrong": "的" "right": "地"}]')], 'bad-typos.json:1:16: invalid JSON: expected "," or "}", got "\\""'],
+    ['a bad store', ['--store', file('bad-store.json', '{"tables":\n'), '--body-id', 'x'], 'bad-store.json:2:1: invalid JSON: unexpected end of input'],
+    ['a store without artifacts', ['--store', file('store-noart.json', '{"tables":{}}'), '--body-id', 'x'], 'store-noart.json: $.tables.artifacts: expected an artifacts table, got missing'],
+    ['an unknown artifact', ['--store', 'store.json', '--body-id', 'artifact_nope'], 'store.json: $.tables.artifacts.artifact_nope: artifact not found'],
+    ['an artifact without text', ['--store', 'store.json', '--body-id', 'artifact_notext'], 'store.json: $.tables.artifacts.artifact_notext.text: artifact has no text: expected a string, got missing'],
+    ['artifact text that is not JSON', ['--store', 'store.json', '--body-id', 'artifact_bad'], 'store.json: artifact artifact_bad: 3:5: invalid JSON: unexpected character "o"'],
+    ['a bad scene in a stored body', ['--store', 'store.json', '--body-id', 'artifact_badscene'], 'store.json: artifact artifact_badscene: $.scenes[1].text: expected a string, got null'],
+    ['a body id naming an outline', ['--store', 'store.json', '--body-id', 'artifact_outline'], 'store.json: artifact artifact_outline: $.scenes[0].text: expected a string, got missing'],
+    ['an outline id naming a body', ['--store', 'store.json', '--body-id', 'artifact_body', '--outline-id', 'artifact_body'], 'store.json: artifact artifact_body: $.constraints: expected an array of strings, got missing'],
+    ['a bad --anchor regex', [md, '--anchor', '坏=(['], '--anchor 坏: invalid regular expression "(["'],
+  ])('reports %s on one line with its location', (_name, args, expected) => {
+    const result = run(...args)
+    expect(result.status).toBe(2)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe(`chapter-lint: ${expected}\n`)
+    expect(result.stderr).not.toMatch(/invalid input|Cannot read|is not iterable|is not a function|\bat |node:internal/)
+  })
+
+  it('reports an unexpected lint failure as one internal-error line without the engine message', () => {
+    // Every known bad input is rejected before lintChapter; force a failure inside it to exercise the fallback.
+    const hook = `data:text/javascript,${encodeURIComponent("String.prototype.matchAll = function () { throw new TypeError('Cannot read properties of undefined (reading \\'leak\\')') }")}`
+    const result = spawnSync(process.execPath, ['--import', hook, script, md], { cwd: scratch, encoding: 'utf8', timeout: 20_000 })
+    expect(result.status).toBe(2)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('chapter-lint: internal error (TypeError); please report the command and input\n')
+  })
+
+  it('still reports a valid stored body with its outline', () => {
+    const result = run('--store', 'store.json', '--body-id', 'artifact_body', '--outline-id', 'artifact_outline', '--json')
+    expect(result.status).toBe(0)
+    expect((JSON.parse(result.stdout) as ReturnType<typeof lintChapter>).chars).toBe(4849)
   })
 })

@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { nativeStageOutputSchema } from './native-stage-schema.ts'
-import { SettingsIncompleteError, WritingError, parseArtifactId, parseRequestId, type Actor, type ArtifactRef } from './contracts.ts'
+import { ImportRefusedError, ImportReviewBlockedError, SettingsIncompleteError, WritingError, parseArtifactId, parseRequestId, type Actor, type ArtifactRef, type ImportItem } from './contracts.ts'
 import type { WritingService } from './service.ts'
 import { RunStoreError, type AttemptFailureKind, type RunStore, type BeginRunInput, type RunExecutionLimits, type RunServiceLimits, type RunId, type WritingRun, type WritingAttempt } from './run-store.ts'
 import { executeStage, StageExecutionError, type StageRequest, type StageResult } from './stage-executor.ts'
@@ -19,7 +19,7 @@ import { countStoryWords } from './body-text.ts'
 import { buildCitationRepairPrompt, CITATION_REPAIR_OUTPUT_SCHEMA, mergeCitationRepair } from './citation-repair.ts'
 import { collectQuoteRepairs } from './evidence-quote.ts'
 import type { GeneratedManuscriptTarget, ManuscriptCandidateView, ManuscriptTarget } from './manuscript.ts'
-import type { SettingsCandidateView } from './settings.ts'
+import type { ImportSettingsRequest, SettingsCandidateView } from './settings.ts'
 import { writingActor } from './tools.ts'
 import type { StageDeliveries } from './stage-deliveries.ts'
 
@@ -73,15 +73,34 @@ export class WritingRunner {
   async resume(exec: ToolExecution, runId: RunId, retryUnknown: boolean): Promise<WritingRun> {
     const actor = await writingActor(this.ctx, exec)
     const stored = this.runs.get(actor, runId)
-    this.admit(actor, stored, true)
+    // A completed run cannot resume at all, so it skips only the settings gate: it still goes through the brief, present and limit checks and is then refused with run-state by RunStore.resume (as on main).
+    this.admit(actor, stored, true, stored.status !== 'completed')
     this.requirePresentation(exec)
     this.requireRunLimits(stored)
     const active = this.active.get(runId)
     if (active !== undefined) return active.done
+    if (stored.status !== 'completed') this.requirePendingImportsReviewed(actor, stored)
     return this.admission(async () => {
       const run = await this.runs.resume(actor, runId, { retryUnknown })
       return this.launchAdmitted(exec, actor, run)
     })
+  }
+
+  /**
+   * Adopt author text for one dimension without a model call. Refused while the novel has a running or interrupted run,
+   * checked again inside the publishing update so no unfinished run can have its settings replaced underneath it.
+   * @param exec - Importing native tool. @param request - Exact head to replace and the complete document. @returns The adopted, pendingReview import.
+   */
+  async importSettings(exec: ToolExecution, request: Omit<ImportSettingsRequest, 'childSessionId'>): Promise<SettingsCandidateView> {
+    const actor = await writingActor(this.ctx, exec)
+    if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
+    const unfinished = () => {
+      if (this.runs.list(actor, request.novelId).some(run => run.status === 'running' || run.status === 'interrupted')) {
+        throw new ImportRefusedError('run-active', 'Settings cannot be imported while the novel has a running or interrupted writing run; stop it first')
+      }
+    }
+    unfinished()
+    return this.service.importSettings(actor, { ...request, childSessionId: actor.sessionId }, unfinished)
   }
 
   /** @param exec - Owning workspace tool. @param runId - Exact run to stop. @returns Persisted stopped state after native child disposal. */
@@ -112,13 +131,14 @@ export class WritingRunner {
   /**
    * New requests must select every required novel dimension (catalog requiredFor: novel_writing) in their settingsRoots
    * closure before any settings, outline or chapter work starts, unless the operator set allowIncompleteSettings in the plugin config.
-   * A resume continues an already admitted run and is not re-gated.
+   * A resume is re-gated too, so runs admitted with incomplete settings cannot continue unless the operator bypass is set.
+   * A completed run is not gated (`gated` false): it cannot resume anyway and keeps the run store's run-state refusal.
    */
-  private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false): void {
+  private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false, gated = true): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
     if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
-    if (!resuming && this.options.allowIncompleteSettings !== true) {
+    if (gated && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
       if (missing.length > 0) throw new SettingsIncompleteError(missing)
     }
@@ -130,6 +150,43 @@ export class WritingRunner {
         throw new WritingError('revision-conflict', 'Upstream versions changed; request an explicit downstream update')
       }
     }
+  }
+
+  /** A resumed run would replay its own earlier settings collection and never review an import; a new story_update reviews it. */
+  private requirePendingImportsReviewed(actor: Actor, run: WritingRun): void {
+    const selected = new Set(planSettings(run.settingsRoots).selectedCodes)
+    const pending = this.service.getSettings(actor, run.novelId).applied.filter(item => item.pendingReview && selected.has(item.dimensionCode)).map(importItem)
+    if (pending.length > 0) throw new ImportRefusedError('pending-review', `Imported settings await a consistency review (${pending.map(item => item.dimensionCode).join(', ')}); this run cannot resume. Stop it if needed and start a new story_update to review them`, pending)
+  }
+
+  /**
+   * The single stop rule for imported text: cross-dimension repair regenerates every selected dimension (all-or-nothing), so a
+   * blocking collection review stops the run when any selected current head is an import, pending or released. Imported author
+   * text is never silently replaced by a model regeneration. Narrowing this to pending imports only is a one-line change here.
+   */
+  private importsBlockingRegeneration(inv: Invocation): readonly ImportItem[] {
+    const selected = new Set(planSettings(inv.run.settingsRoots).selectedCodes)
+    return this.service.getSettings(inv.actor, inv.run.novelId).applied.filter(item => item.origin === 'import' && selected.has(item.dimensionCode)).map(importItem)
+  }
+
+  /**
+   * Round 0 regenerates every selected dimension that is stale or missing, so an import that is stale, or sits downstream of a
+   * dimension that would be regenerated, would be replaced by model text before any review. Stop before the first generation.
+   */
+  private stopOnStaleImport(inv: Invocation): void {
+    const plan = planSettings(inv.run.settingsRoots)
+    const applied = new Map(this.service.getSettings(inv.actor, inv.run.novelId).applied.map(item => [item.dimensionCode, item]))
+    const regenerated = (code: string): boolean => { const item = applied.get(code); return item === undefined || item.stale }
+    const items = plan.selectedCodes.flatMap(code => {
+      const item = applied.get(code)
+      return item?.origin === 'import' && planSettings([code]).selectedCodes.some(regenerated) ? [importItem(item)] : []
+    })
+    if (items.length > 0) throw new ImportReviewBlockedError(items, 'stale-import')
+  }
+
+  private stopOnBlockedImport(inv: Invocation): void {
+    const items = this.importsBlockingRegeneration(inv)
+    if (items.length > 0) throw new ImportReviewBlockedError(items)
   }
 
   private serviceLimits(): RunServiceLimits {
@@ -243,6 +300,7 @@ export class WritingRunner {
       await this.deliver(inv, head.artifact)
       return
     }
+    this.stopOnStaleImport(inv)
     let feedback: ArtifactRef[] = []
     for (let round = 0; round <= inv.run.executionLimits.maxRepairAttempts; round++) {
       const previousReview = this.runs.get(inv.actor, inv.run.id).attempts.findLast(attempt => attempt.key.startsWith(`settings/collection/${round}/review`) && attempt.status === 'succeeded')
@@ -253,6 +311,7 @@ export class WritingRunner {
           if (rejected !== undefined && rejected.review !== null) {
             const saved = this.service.getArtifact(inv.actor, { novelId: inv.run.novelId, artifactId: rejected.review.id })
             if (isDeepStrictEqual(JSON.parse(saved.text), output.data)) {
+              this.stopOnBlockedImport(inv)
               await this.deliver(inv, rejected.artifact)
               feedback = this.feedback(rejected)
               continue
@@ -274,6 +333,7 @@ export class WritingRunner {
         await this.service.applyManuscriptCandidate(inv.actor, { novelId: inv.run.novelId, candidateId: reviewed.artifact.id, reviewId: reviewed.review.id, expectedAppliedId: head?.artifact.id ?? null })
         return
       }
+      this.stopOnBlockedImport(inv)
       feedback = this.feedback(reviewed)
     }
     throw new WritingError('review-blocked', 'Settings cross-dimension repair limit was exhausted')
@@ -620,3 +680,5 @@ function lengthRepairError(wordCount: number | null, status: 'too-short' | 'too-
 function isReaderDocument(artifact: ArtifactRef): boolean {
   return artifact.kind === 'settings' || artifact.kind === 'book-outline' || artifact.kind === 'chapter-outline' || artifact.kind === 'body'
 }
+
+function importItem(item: SettingsCandidateView): ImportItem { return { dimensionCode: item.dimensionCode, artifactId: item.artifact.id, pendingReview: item.pendingReview } }

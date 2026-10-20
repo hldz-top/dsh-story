@@ -45,7 +45,8 @@ const legacySettingsRecordSchema = z.strictObject({
   reviewHistory: z.array(z.strictObject({ artifact: artifactRefSchema.extend({ kind: z.literal('review') }), request: requestReceiptSchema, childSessionId: z.string().min(1).transform(brandString<SessionId>), blocking: z.boolean() })),
   applied: z.boolean(),
 })
-const settingsRecordSchema = legacySettingsRecordSchema.extend({ revisionOf: artifactIdSchema.nullable() })
+/** `origin` is absent on every record written before author import existed and means 'stage'; an 'import' record is author text adopted without its own review. */
+const settingsRecordSchema = legacySettingsRecordSchema.extend({ revisionOf: artifactIdSchema.nullable(), origin: z.enum(['stage', 'import']).optional() })
 const researchNovelSchema = legacyNovelSchema.extend({ recordVersion: z.literal(2), researchHistory: z.array(researchRecordSchema) })
 const settingsNovelSchema = researchNovelSchema.extend({ recordVersion: z.literal(3), settingsHistory: z.array(legacySettingsRecordSchema), settingsHeads: z.array(z.strictObject({ dimensionCode: z.string().min(1), artifactId: artifactIdSchema })) }).refine(record => new Set(record.settingsHeads.map(head => head.dimensionCode)).size === record.settingsHeads.length, 'Each settings dimension has at most one current head')
 const manuscriptFields = { manuscriptHistory: z.array(manuscriptRecordSchema), manuscriptHeads: z.array(manuscriptHeadSchema), appliedChapters: z.array(appliedChapterSchema) }

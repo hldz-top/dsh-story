@@ -40,6 +40,8 @@
   },
   "files": [
     "lib",
+    "!lib/chapter-lint.js",
+    "!lib/types/chapter-lint.d.ts",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
