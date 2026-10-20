@@ -11,6 +11,7 @@ DSH Story is a standalone TypeScript plugin for researched settings, book and ch
 ## Table of Contents
 
 - [Installation](#installation)
+- [Host-provided peers](#host-provided-peers)
 - [Writing workflow](#writing-workflow)
 - [Reading and previews](#reading-and-previews)
 - [Local development](#local-development)
@@ -44,6 +45,29 @@ Remove it with `dsh plugin --profile web remove dsh-story-weaver` (use the same 
 
 - Your novels and run history stay in `$DSH_HOME/storages/story_writing.json` and `$DSH_HOME/storages/story_runs.json`. Reinstalling picks them up again; delete these files yourself if you want the data gone.
 - Empty scope directories such as `node_modules/@deepseek-ai/` and `node_modules/@standard-schema/` may be left in the profile directory. They are safe to delete.
+
+## Host-provided peers
+
+A DSH profile installs plugins with pnpm `autoInstallPeers` turned off and a hoisted `node_modules`. Packages the plugin only calls inside the host are resolved from that running installation, so the profile does not download a second copy.
+
+Those packages stay in `peerDependencies` with the same version ranges. Each one is marked `"optional": true` in `peerDependenciesMeta`. pnpm no longer lists these 12 as missing; one summary warning remains because of the upstream cordis peer, and `dsh plugin add` passes that warning through. The host still checks every `@deepseek-ai/dsh-*` peer range against the running DSH version before it loads the plugin. This package installs with npm, but importing it outside DSH fails with `ERR_MODULE_NOT_FOUND`. The optional peers are:
+
+| Peer | Range |
+| --- | --- |
+| `@deepseek-ai/cordis` | `4.0.4` |
+| `@deepseek-ai/dsh-fs` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-llm` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-sandbox-policy` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-session` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-session-persistence` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-session-projection` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-storage-domain` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-subagent` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-tool-present` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-tool-web` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-tools` | `>=0.2.0-rc.2 <0.3.0-0` |
+
+`@deepseek-ai/dsh-brand` is a direct dependency of this package. The published brand package declares its own required peer `@deepseek-ai/cordis@~4.0.4`. On a profile install, pnpm still reports that missing `cordis` peer. That declaration is upstream; this repository does not change it. The host provides the same cordis instance when the plugin runs.
 
 ## Writing workflow
 
@@ -117,7 +141,7 @@ The [development guide](docs/development/harness.md) explains scope, isolated fi
 
 ### Offline chapter lint
 
-`node scripts/chapter-lint.mjs` runs `src/chapter-lint.ts` over a stored body (`body.json`, or `--store $DSH_HOME/storages/story_writing.json --body-id …`) or an exported chapter `.md`, optionally with its chapter outline (`--outline` / `--outline-id`). It is report-only and not part of the writing pipeline: it never calls a model, never writes a store and always exits 0 after a report; bad arguments, unreadable or non-UTF-8 files and input it cannot interpret print one `chapter-lint: …` line and exit 2 (`--help` prints usage). Input errors name the file and the position: `chapter-lint: <file>:<line>:<column>: invalid JSON: …` for JSON syntax errors, and `chapter-lint: <file>: <$.field.path>: expected …, got …` for structure and type errors in a body, outline or typo table (every scene needs string `sceneId` and `text`; every typo entry needs a nonempty string `wrong` and a string `right`). With `--store`, the artifact id follows the file name, e.g. `chapter-lint: story_writing.json: artifact artifact_…: $.scenes[0].text: expected a string, got missing`. Checks: standalone 【】 line count against the outline's cap (plus duplicates), Arabic-numeral literals the outline requires, a number in the 【任务已发布】 panel when the outline asks for one, scene/obligation/anchor positions (`--anchor 标签=正则`), a typo table (`--typos table.json`) and advisory technical metaphors (a technology/finance term list, seeded from the ch1 v2 style audit, in the same sentence as a 「比…还/更/都」 comparison, excluding 比如/比较/无比; 像/如同/仿佛-style metaphors are left to the review prompts). Positions are code-point offsets into the scenes joined with blank lines, title excluded, punctuation and whitespace included, divided by the total code points.
+`node scripts/chapter-lint.mjs` runs `src/chapter-lint.ts` over a stored body (`body.json`, or `--store $DSH_HOME/storages/story_writing.json --body-id …`) or an exported chapter `.md`, optionally with its chapter outline (`--outline` / `--outline-id`). It is report-only and not part of the writing pipeline: it never calls a model, never writes a store and always exits 0 after a report; bad arguments, unreadable or non-UTF-8 files and input it cannot interpret print one `chapter-lint: …` line and exit 2 (`--help` prints usage). Input errors name the file and the position: `chapter-lint: <file>:<line>:<column>: invalid JSON: …` for JSON syntax errors, and `chapter-lint: <file>: <$.field.path>: expected …, got …` for structure and type errors in a body, outline or typo table (every scene needs string `sceneId` and `text`; every typo entry needs a nonempty string `wrong` and a string `right`). With `--store`, the artifact id follows the file name, e.g. `chapter-lint: story_writing.json: artifact artifact_…: $.scenes[0].text: expected a string, got missing`. Checks: standalone 【】 line count against the outline's cap (plus duplicates), Arabic-numeral literals the outline requires, a number in the 【任务已发布】 panel when the outline asks for one, scene/obligation/anchor positions (`--anchor 标签=正则`), a typo table (`--typos table.json`), advisory technical metaphors (a technology/finance term list, seeded from the ch1 v2 style audit, in the same sentence as a 「比…还/更/都」 comparison, excluding 比如/比较/无比; 像/如同/仿佛-style metaphors are left to the review prompts) and advisory empty 【】 placeholders (an unfilled pair, including one whose interior is only whitespace such as a full-width space; the finding carries the same code-point location as other findings, does not change the panel count and does not change the exit code). Positions are code-point offsets into the scenes joined with blank lines, title excluded, punctuation and whitespace included, divided by the total code points.
 
 ## Host integration
 
