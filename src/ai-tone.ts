@@ -8,6 +8,11 @@
  * leaves dialogue, quotations and genre formatting alone. Rules the skill exempts for fiction are not ported: adjacent
  * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Counts are evidence for an advisory
  * style review, never a gate; this module computes no chapter positions.
+ *
+ * The report is part of the prompt-version contract: prompt versions 3 and 4 copy it into the body-review task.
+ * tests/ai-tone.spec.ts freezes that report for the two chapter fixtures. Changing it makes a v3 or v4 run paused
+ * in body review hit attempt-conflict on resume, because the rebuilt task no longer matches the saved attempt.
+ * Bump CURRENT_PROMPT_VERSION in the same change.
  */
 
 export type AiToneRule = 'reversal' | 'enumeration' | 'dash' | 'opener' | 'nominalization' | 'long-attributive' | 'when-clause' | 'topic-shell' | 'connective' | 'restatement' | 'zero-subject-comment'
@@ -22,14 +27,17 @@ const patterns: readonly { readonly rule: Exclude<AiToneRule, 'zero-subject-comm
   { rule: 'opener', skillRule: '9 禁用起手式', pattern: /说白了|说穿了|先说结论/gu },
   { rule: 'nominalization', skillRule: '8 名词化概括', pattern: /(?:完成|实现|进行|开展)了?(?:对)?[^，。\n]{0,10}的(?:优化|提升|调整|分析|改造|升级)/gu },
   { rule: 'long-attributive', skillRule: '10 过长前置定语', pattern: /(?:一个|一种|一套|这种|这个)[^，。、；：！？\n]{15,}的[\u4e00-\u9fff]{2,5}/gu },
-  { rule: 'when-clause', skillRule: '10 当…时', pattern: /当[^，。\n]{2,20}(?<!的时候)时，/gu },
+  // 时， is the marker. 当…的时候， never reaches it, so a (?<!的时候) lookbehind changes nothing a reader would write.
+  { rule: 'when-clause', skillRule: '10 当…时', pattern: /当[^，。\n]{2,20}时，/gu },
   { rule: 'topic-shell', skillRule: '10 前置话题壳', pattern: /对于[^，。\n]{2,15}来说|对[^，。\n]{2,15}而言|就[^，。\n]{2,15}而言|在[^，。\n]{2,12}方面/gu },
-  { rule: 'connective', skillRule: '10 句首连接词', pattern: /(?:^|(?<=[。！？\n]))(?:然而|因此|此外|与此同时|换言之|总而言之)[，、]/gmu },
+  { rule: 'connective', skillRule: '10 句首连接词', pattern: /(?:^|(?<=[。！？.\n]))(?:然而|因此|此外|与此同时|换言之|总而言之)[，、]/gmu },
   { rule: 'restatement', skillRule: '10 这意味着式复述', pattern: /这意味着|这表明|这说明|换句话说/gu },
 ]
 const COMMENT = /^(?:听起来|看起来|看上去|听上去|说白了|说到底|换句话说|意味着|值得注意|不难看出|问题在于|原因在于|有意思的是|更重要的是|关键在于|真正的)/u
 const ANAPHOR = /(?:这|那|其|此|上面|前面|刚才|以上|该|它|他|她)/u
-const DIALOGUE = /「[^」]*」|“[^”]*”|^【[^\n]*】$/gmu
+// An unclosed 「 or “ stops at the line, so it cannot swallow narration through a later closing quote.
+// A 【】 panel may have trailing spaces; those lines are still panels.
+const DIALOGUE = /「[^」\n]*」|“[^”\n]*”|^【[^\n]*】[^\S\n]*$/gmu
 const HAN = /\p{Script=Han}/gu
 const MAX_EXAMPLES = 3
 const CONTEXT = 8

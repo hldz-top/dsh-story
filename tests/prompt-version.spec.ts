@@ -156,7 +156,8 @@ describe('runs keep their prompt version', () => {
     expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 2 })
     for (const { prompt } of record.seen) expect(prompt).not.toContain(AI_TONE_PHRASE)
     const bodyReview = record.seen.find(item => item.stage.kind === 'review' && typeof item.stage.task?.measuredWordCount === 'number')
-    const task = JSON.parse((bodyReview?.stage.data as { task: string }).task) as object
+    if (bodyReview === undefined) throw new Error('version-2 resume produced no body review')
+    const task = JSON.parse((bodyReview.stage.data as { task: string }).task) as object
     expect(task).toHaveProperty('measuredBeats.totalChars')
     expect(task).not.toHaveProperty('aiToneMarkers')
   })
@@ -172,6 +173,9 @@ describe('runs keep their prompt version', () => {
     expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 3 })
     expect(record.seen.some(item => item.stage.kind === 'body')).toBe(true)
     for (const { prompt } of record.seen) expect(prompt).not.toContain(AI_TONE_WRITING_PHRASE)
+    const bodyReview = record.seen.find(item => item.stage.kind === 'review' && typeof item.stage.task?.measuredWordCount === 'number')
+    if (bodyReview === undefined) throw new Error('version-3 resume produced no body review')
+    expect(JSON.parse((bodyReview.stage.data as { task: string }).task)).toHaveProperty('aiToneMarkers.source', 'lieflat-less-ai-tone@27d2923 (MIT)')
   })
 
   it('starts new runs on version 4 and hands body reviews host-measured beats and AI-tone markers', { timeout: 120_000 }, async () => {
@@ -185,10 +189,11 @@ describe('runs keep their prompt version', () => {
     for (const item of record.seen.filter(item => item.stage.kind !== 'body')) expect(item.prompt).not.toContain(AI_TONE_WRITING_PHRASE)
     expect(record.seen.find(item => item.stage.kind === 'chapter-outline')?.request).toContain('stateNotes')
     const bodyReview = record.seen.find(item => item.stage.kind === 'review' && typeof item.stage.task?.measuredWordCount === 'number')
-    expect(bodyReview?.prompt).toContain('task.measuredBeats')
-    expect(JSON.parse((bodyReview?.stage.data as { task: string }).task)).toHaveProperty('measuredBeats.totalChars')
-    expect(bodyReview?.prompt).toContain(AI_TONE_PHRASE)
-    expect(JSON.parse((bodyReview?.stage.data as { task: string }).task)).toHaveProperty('aiToneMarkers.source', 'lieflat-less-ai-tone@27d2923 (MIT)')
+    if (bodyReview === undefined) throw new Error('version-4 run produced no body review')
+    expect(bodyReview.prompt).toContain('task.measuredBeats')
+    expect(JSON.parse((bodyReview.stage.data as { task: string }).task)).toHaveProperty('measuredBeats.totalChars')
+    expect(bodyReview.prompt).toContain(AI_TONE_PHRASE)
+    expect(JSON.parse((bodyReview.stage.data as { task: string }).task)).toHaveProperty('aiToneMarkers.source', 'lieflat-less-ai-tone@27d2923 (MIT)')
     const otherReviews = record.seen.filter(item => item.stage.kind === 'review' && item !== bodyReview && typeof item.stage.task?.measuredWordCount !== 'number')
     expect(otherReviews.length).toBeGreaterThan(0)
     for (const review of otherReviews) expect(JSON.parse((review.stage.data as { task: string }).task)).not.toHaveProperty('aiToneMarkers')

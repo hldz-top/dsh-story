@@ -363,6 +363,17 @@ describe.each(['json', 'sqlite'] as const)('%s durable writing runs', backend =>
     ] })
   })
 
+  it('reopens stored prompt versions 3 and 4', async () => {
+    const h = await useRunStorage(backend, limits)
+    const third = await h.store.begin(owner, { ...input, requestId: parseRequestId('prompt-v3') }, 3)
+    await h.store.finish(owner, third.id, 'stopped', 'Stored on prompt version 3.')
+    const fourth = await h.store.begin(owner, { ...input, requestId: parseRequestId('prompt-v4') }, 4)
+    await h.store.finish(owner, fourth.id, 'stopped', 'Stored on prompt version 4.')
+    await h.restart()
+    expect(h.store.get(owner, third.id).promptVersion).toBe(3)
+    expect(h.store.get(owner, fourth.id).promptVersion).toBe(4)
+  })
+
 })
 
 it.each(['json', 'sqlite'] as const)('%s retains exact upstream revision intent across reopen and rejects request drift', async backend => {

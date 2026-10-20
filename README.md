@@ -39,6 +39,10 @@ Use `dsh-story-weaver@next` for release candidates. In the DSH web UI you can in
 
 **Profiles other than `web`.** The bundle does not add the `present` tool, and the `headless` profile (like other non-web profiles) does not enable it by default. Without it, `story_write` is refused with `Writing requires the native present tool in this Agent scope` and no run is created. Enable `@deepseek-ai/dsh-tool-present` in that profile before writing; reading and preview tools work without it.
 
+### Upgrading
+
+Once runs with prompt version 3 or 4 exist, rolling the plugin back to an older version makes those run files unreadable.
+
 ### Uninstalling
 
 Remove it with `dsh plugin --profile web remove dsh-story-weaver` (use the same `--profile` you installed into). This removes the package, its dependencies and the bundle from the profile. Two things intentionally or harmlessly remain:
@@ -101,7 +105,7 @@ The only bypass is operator-side: the plugin config option `allowIncompleteSetti
 
 ### AI-tone review
 
-Body reviews on prompt version 3 receive `task.aiToneMarkers` with host-detected AI-tone markers in the chapter narration: counts per thousand Han characters plus exact excerpts. Dialogue and 【】 panel lines are skipped. The reviewer reports real instances as advisory style issues; AI tone never blocks. The markers and their limits are adapted from [lieflat-less-ai-tone](https://github.com/larashero3-dotcom/lieflat-less-ai-tone) (commit 27d2923, MIT License, Copyright (c) 2026 shiujan; notice in [third_party/lieflat-less-ai-tone.LICENSE](third_party/lieflat-less-ai-tone.LICENSE)). [src/ai-tone.ts](src/ai-tone.ts) lists the ported rules and those left out for fiction. From prompt version 4 the body-writing prompt also carries one short rule set from the same skill: no set-up-and-overturn framing, no 、 strings of three or more items, few reveal dashes, no set openers, nominalised summaries or translationese, and paragraph-opening comments that name their subject; dialogue, questions and rhythm are exempt, and the technical-metaphor ban takes precedence. Runs created on earlier prompt versions keep their original prompts.
+Body reviews from prompt version 3 receive `task.aiToneMarkers` with host-detected AI-tone markers in the chapter narration: counts per thousand Han characters plus exact excerpts. Dialogue and 【】 panel lines are skipped. The reviewer reports real instances as advisory style issues; AI tone never blocks. The markers and their limits are adapted from [lieflat-less-ai-tone](https://github.com/larashero3-dotcom/lieflat-less-ai-tone) (commit 27d2923, MIT License, Copyright (c) 2026 shiujan; notice in [third_party/lieflat-less-ai-tone.LICENSE](third_party/lieflat-less-ai-tone.LICENSE)). [src/ai-tone.ts](https://github.com/hldz-top/dsh-story/blob/main/src/ai-tone.ts) lists the ported rules and those left out for fiction. From prompt version 4 the body-writing prompt also carries one short rule set from the same skill: no set-up-and-overturn framing, no 、 strings of three or more items, few reveal dashes, no set openers, nominalised summaries or translationese, and paragraph-opening comments that name their subject; dialogue, questions and rhythm are exempt, and the technical-metaphor ban takes precedence. Runs created on earlier prompt versions keep their original prompts.
 
 ### Importing author settings
 
