@@ -179,21 +179,21 @@ export const SETTINGS_INCOMPLETE = 'settings-incomplete'
  * A refused new writing request or resume. It extends HarnessError so the host records `error: { name, code: 'settings-incomplete' }`
  * on the tool result outside model content. The message keeps the human sentence and ends with one JSON line
  * `{"code":"settings-incomplete","missing":[...]}`, because tool error text is the only channel that carries the missing codes.
- * A refused resume whose selected settings also hold imports awaiting review adds `"pendingReview":[...]` in the
- * {@link ImportItem} format of `import-refused`; the field is omitted when no import is pending.
+ * A refused resume whose selected settings also hold imports awaiting review adds `"importItems":[...]` (the same key and
+ * {@link ImportItem} format as `import-refused` and `review-blocked`); the field is omitted when no import is pending.
  */
 export class SettingsIncompleteError extends HarnessError {
   /** Missing required codes in catalog order. */
   readonly missing: readonly string[]
   /** Selected imports still awaiting a collection review (resume only); empty when none, and then absent from the JSON line. */
-  readonly pendingReview: readonly ImportItem[]
-  constructor(missing: readonly { readonly code: string; readonly name: string }[], pendingReview: readonly ImportItem[] = []) {
+  readonly importItems: readonly ImportItem[]
+  constructor(missing: readonly { readonly code: string; readonly name: string }[], importItems: readonly ImportItem[] = []) {
     const codes = missing.map(item => item.code)
-    const pending = pendingReview.length === 0 ? '' : ` Imported settings also await a consistency review (${pendingReview.map(item => item.dimensionCode).join(', ')}); a new story_update reviews them.`
-    super(`Required novel settings are missing: ${missing.map(item => `${item.code} (${item.name})`).join(', ')}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.length === 1 ? 'it' : 'them'}; ["a4", "a5", "g2"] covers every required setting.${pending}\n${JSON.stringify({ code: SETTINGS_INCOMPLETE, missing: codes, ...(pendingReview.length === 0 ? {} : { pendingReview }) })}`, SETTINGS_INCOMPLETE)
+    const pending = importItems.length === 0 ? '' : ` Imported settings also await a consistency review (${importItems.map(item => item.dimensionCode).join(', ')}); this run cannot resume. Stop it if needed and start a new story_update to review them.`
+    super(`Required novel settings are missing: ${missing.map(item => `${item.code} (${item.name})`).join(', ')}. Complete the settings first: choose settingsRoots whose dependencies cover ${missing.length === 1 ? 'it' : 'them'}; ["a4", "a5", "g2"] covers every required setting.${pending}\n${JSON.stringify({ code: SETTINGS_INCOMPLETE, missing: codes, ...(importItems.length === 0 ? {} : { importItems }) })}`, SETTINGS_INCOMPLETE)
     this.name = 'SettingsIncompleteError'
     this.missing = Object.freeze(codes)
-    this.pendingReview = Object.freeze([...pendingReview])
+    this.importItems = Object.freeze([...importItems])
   }
 }
 

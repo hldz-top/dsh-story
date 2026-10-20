@@ -1,4 +1,4 @@
-/** T4: a resume refused by the required-settings gate also names selected imports awaiting review; the two codes stay separate. */
+/** T4: a resume refused by the required-settings gate also names selected imports awaiting review (importItems); the two codes stay separate. */
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { ImportRefusedError, SettingsIncompleteError, parseRequestId } from '../src/contracts.ts'
@@ -47,7 +47,7 @@ async function importOne(fixture: Fixture, code: string) {
   return imported.value
 }
 
-it('T4 both: a resume missing required settings with a pending import reports settings-incomplete carrying pendingReview, and changes nothing', async () => {
+it('T4 both: a resume missing required settings with a pending import reports settings-incomplete carrying importItems, and changes nothing', async () => {
   const fixture = await written(['a4', 'a5', 'g2'])
   // g2 is pending too but outside the e1-only run's settingsRoots closure, so neither error names it.
   const { run, imported } = await stoppedRun(fixture, ['e1'], 'g2', 'e1')
@@ -61,36 +61,36 @@ it('T4 both: a resume missing required settings with a pending import reports se
   const reason = result.status === 'rejected' ? result.reason : null
   expect(reason).toBeInstanceOf(SettingsIncompleteError)
   expect(reason).not.toBeInstanceOf(ImportRefusedError)
-  expect(reason).toMatchObject({ name: 'SettingsIncompleteError', code: 'settings-incomplete', missing: ['a3', 'a4', 'a5', 'g1', 'g2'], pendingReview: [item] })
-  expect(lastLine(reason)).toEqual({ code: 'settings-incomplete', missing: ['a3', 'a4', 'a5', 'g1', 'g2'], pendingReview: [item] })
-  // The pendingReview items use exactly the import-refused importItems format.
+  expect(reason).toMatchObject({ name: 'SettingsIncompleteError', code: 'settings-incomplete', missing: ['a3', 'a4', 'a5', 'g1', 'g2'], importItems: [item] })
+  expect(lastLine(reason)).toEqual({ code: 'settings-incomplete', missing: ['a3', 'a4', 'a5', 'g1', 'g2'], importItems: [item] })
+  // The items use exactly the key and format of the import-refused line.
   const bypassed = await fixture.run(exec => runnerWith(fixture, { allowIncompleteSettings: true }).resume(exec, run.id, false))
   expect(bypassed.status).toBe('rejected')
   const refused = bypassed.status === 'rejected' ? bypassed.reason : null
   expect(refused).toBeInstanceOf(ImportRefusedError)
   expect(lastLine(refused)).toEqual({ code: 'import-refused', reason: 'pending-review', importItems: [item] })
-  expect(lastLine(reason).pendingReview).toEqual(lastLine(refused).importItems)
+  expect(lastLine(reason).importItems).toEqual(lastLine(refused).importItems)
 
   const message = String((reason as Error).message)
   expect(message).toContain('Required novel settings are missing: a3 (')
-  expect(message).toContain('Imported settings also await a consistency review (e1); a new story_update reviews them.')
+  expect(message).toContain('Imported settings also await a consistency review (e1); this run cannot resume. Stop it if needed and start a new story_update to review them.')
   expect(message).not.toContain('allowIncompleteSettings')
   expect(fixture.runs.get(fixture.actor, run.id)).toEqual(before)
   expect(fixture.stages.size).toBe(stages)
 }, SLOW)
 
-it('T4 settings only: without a pending import the settings-incomplete line has no pendingReview field', async () => {
+it('T4 settings only: without a pending import the settings-incomplete line has no importItems field', async () => {
   const fixture = await written(['e1'])
   const { run } = await stoppedRun(fixture, ['e1'])
   const result = await fixture.run(exec => runnerWith(fixture, { allowIncompleteSettings: false }).resume(exec, run.id, false))
   const reason = result.status === 'rejected' ? result.reason : null
   expect(reason).toBeInstanceOf(SettingsIncompleteError)
-  expect(reason).toMatchObject({ missing: ['a3', 'a4', 'a5', 'g1', 'g2'], pendingReview: [] })
+  expect(reason).toMatchObject({ missing: ['a3', 'a4', 'a5', 'g1', 'g2'], importItems: [] })
   expect(lastLine(reason)).toEqual({ code: 'settings-incomplete', missing: ['a3', 'a4', 'a5', 'g1', 'g2'] })
   expect(String((reason as Error).message)).not.toContain('Imported settings also await')
 }, SLOW)
 
-it('T4 new request: a write refused by the gate never carries pendingReview, because a new story_update is what reviews imports', async () => {
+it('T4 new request: a write refused by the gate never carries importItems, because a new story_update is what reviews imports', async () => {
   const fixture = await written(['e1'])
   await stoppedRun(fixture, ['e1'], 'e1')
   const result = await fixture.run(exec => runnerWith(fixture, { allowIncompleteSettings: false }).start(exec, { ...fixture.input, requestId: parseRequestId('new-e1'), settingsRoots: ['e1'], chapterCount: 1, throughChapter: 1, mode: 'update' }))
