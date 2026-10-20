@@ -73,7 +73,8 @@ export class WritingRunner {
   async resume(exec: ToolExecution, runId: RunId, retryUnknown: boolean): Promise<WritingRun> {
     const actor = await writingActor(this.ctx, exec)
     const stored = this.runs.get(actor, runId)
-    this.admit(actor, stored, true)
+    // A completed run cannot resume at all, so it skips only the settings gate: it still goes through the brief, present and limit checks and is then refused with run-state by RunStore.resume (as on main).
+    this.admit(actor, stored, true, stored.status !== 'completed')
     this.requirePresentation(exec)
     this.requireRunLimits(stored)
     const active = this.active.get(runId)
@@ -130,13 +131,14 @@ export class WritingRunner {
   /**
    * New requests must select every required novel dimension (catalog requiredFor: novel_writing) in their settingsRoots
    * closure before any settings, outline or chapter work starts, unless the operator set allowIncompleteSettings in the plugin config.
-   * A resume continues an already admitted run and is not re-gated.
+   * A resume is re-gated too, so runs admitted with incomplete settings cannot continue unless the operator bypass is set.
+   * A completed run is not gated (`gated` false): it cannot resume anyway and keeps the run store's run-state refusal.
    */
-  private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false): void {
+  private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false, gated = true): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
     if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
-    if (!resuming && this.options.allowIncompleteSettings !== true) {
+    if (gated && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
       if (missing.length > 0) throw new SettingsIncompleteError(missing)
     }
