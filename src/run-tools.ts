@@ -7,7 +7,7 @@ import type { WritingRunner } from './writing-runner.ts'
 import { planSettings, summarizeSettingsCatalog } from './settings-plan.ts'
 import type { ManuscriptCandidateView } from './manuscript.ts'
 import type { SettingsCandidateView } from './settings.ts'
-import { artifactIdParameter, artifactProperties, attemptIdParameter, defineStoryTool, novelIdParameter, parseToolAttemptId, parseToolBaseArtifactId, parseToolBriefArtifactId, parseToolExpectedAppliedId, parseToolNovelId, parseToolRequestId, parseToolRunId, requestIdParameter, runIdParameter, writingActor } from './tools.ts'
+import { artifactIdParameter, artifactProperties, attemptIdParameter, defineStoryTool, expectedAppliedIdParameter, novelIdParameter, parseToolAttemptId, parseToolBaseArtifactId, parseToolBriefArtifactId, parseToolExpectedAppliedId, parseToolNovelId, parseToolRequestId, parseToolRunId, requestIdParameter, runIdParameter, writingActor } from './tools.ts'
 
 const text = { type: 'string', required: true } as const
 const integer = { type: 'integer', required: true } as const
@@ -133,7 +133,7 @@ export function registerRunTools(ctx: Context, service: WritingService, runner: 
   })))
   if (options.allowSettingsImport === true) ctx.effect(() => ctx.tools.register(defineStoryTool({
     name: 'story_settings_import', description: 'Adopt author-written text for one settings dimension in place of its exact current head, without a model call. The host derives input references, validates the document and records it as an author import that reuses the replaced head\'s research. It stays pendingReview, and no outline or chapter can use the settings, until a new story_update reviews the assembled settings; a blocking review stops that run without regenerating, and a run also stops instead of regenerating an import made stale by an upstream change. Refused while the novel has a running or interrupted run. Import in dependency order, upstream first. Back up the entire story storage (story_writing and story_runs) before the first import: a plugin from before settings import fails to load for every novel once the store contains one imported version.',
-    parameters: { novelId: novelIdParameter, requestId: requestIdParameter, dimensionCode: text, expectedAppliedId: artifactIdParameter,
+    parameters: { novelId: novelIdParameter, requestId: requestIdParameter, dimensionCode: text, expectedAppliedId: expectedAppliedIdParameter,
       output: { ...text, description: 'The complete settings-dimension JSON document (version, dimensionCode, contentMarkdown, facts); inputRefs is replaced by the host.' } },
     output: { schema: settingsCandidate, render: renderJson },
     async execute(args, exec) {

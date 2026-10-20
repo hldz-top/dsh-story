@@ -15,8 +15,10 @@ const uuidValue = (prefix: string) => `${prefix}_ plus a lowercase UUID, copied 
 export const novelIdParameter = { type: 'string', required: true, description: uuidValue('novel') } as const
 /** Model-facing run id. The schema stays a string; admission owns the format error. */
 export const runIdParameter = { type: 'string', required: true, description: uuidValue('run') } as const
-/** Model-facing artifact id, also used for plan, brief, base and expected-head ids. */
+/** Model-facing artifact id, also used for plan, brief and base ids. */
 export const artifactIdParameter = { type: 'string', required: true, description: uuidValue('artifact') } as const
+/** The current applied head being replaced. */
+export const expectedAppliedIdParameter = { type: 'string', required: true, description: `${uuidValue('artifact')} (the current head being replaced)` } as const
 /** Model-facing attempt id. */
 export const attemptIdParameter = { type: 'string', required: true, description: uuidValue('attempt') } as const
 /** Caller idempotency key. Blank and overlong values are invalid. */
@@ -72,15 +74,17 @@ export function parseToolAttemptId(value: unknown): AttemptId { return admitTool
 /** @param value - Untrusted tool requestId. @returns A parsed request id. */
 export function parseToolRequestId(value: unknown): RequestId { return admitToolId(parseRequestId, 'requestId', value) }
 
+function isIdParam(name: string): name is ToolIdParam {
+  return Object.hasOwn(idFormatMessage, name)
+}
+
 function idTypeError(error: unknown): WritingError | undefined {
   if (!(error instanceof ToolArgsError)) return undefined
   const messages: string[] = []
   for (const violation of error.violations) {
-    const match = /^"([^"]+)" must be a string$/.exec(violation)
-    if (match === null) return undefined
-    const message = idFormatMessage[match[1] as ToolIdParam]
-    if (message === undefined) return undefined
-    messages.push(message)
+    const name = /^"([^"]+)" must be a string$/.exec(violation)?.[1]
+    if (name === undefined || !isIdParam(name)) return undefined
+    messages.push(idFormatMessage[name])
   }
   const message = messages[0]
   return message === undefined ? undefined : new WritingError('invalid-input', message)

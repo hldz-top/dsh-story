@@ -17,7 +17,7 @@ import { z } from 'zod'
 import * as Story from '../src/index.ts'
 import { WritingError, parseArtifactId, parseNovelId, parseRequestId, type Actor } from '../src/contracts.ts'
 import { parseRunId } from '../src/run-store.ts'
-import { admitToolId, artifactIdParameter, attemptIdParameter, idFormatMessage, novelIdParameter, parseToolNovelId, parseToolRunId, requestIdParameter, runIdParameter } from '../src/tools.ts'
+import { admitToolId, artifactIdParameter, attemptIdParameter, expectedAppliedIdParameter, idFormatMessage, novelIdParameter, parseToolNovelId, parseToolRunId, requestIdParameter, runIdParameter, type ToolIdParam } from '../src/tools.ts'
 import { mountPluginRuntime } from './support/plugin-runtime.ts'
 import { call, ScriptedModel, stop } from './support/model.ts'
 
@@ -198,7 +198,8 @@ it('rejects a malformed novelId or runId from every tool without a zod dump', as
   expect(propertiesOf('story_get_research').planId).toEqual({ type: 'string', description: artifactIdParameter.description })
   expect(propertiesOf('story_write').briefArtifactId).toEqual({ type: 'string', description: artifactIdParameter.description })
   expect(propertiesOf('story_revise').baseArtifactId).toEqual({ type: 'string', description: artifactIdParameter.description })
-  expect(propertiesOf('story_settings_import').expectedAppliedId).toEqual({ type: 'string', description: artifactIdParameter.description })
+  expect(propertiesOf('story_settings_import').expectedAppliedId).toEqual({ type: 'string', description: expectedAppliedIdParameter.description })
+  expect(expectedAppliedIdParameter.description).toContain('current head being replaced')
   for (const description of [novelIdParameter.description, runIdParameter.description, artifactIdParameter.description, attemptIdParameter.description]) {
     expect(description).toContain('lowercase UUID')
   }
@@ -274,6 +275,73 @@ it('still runs every id-taking tool when the novelId or runId is valid', async (
   const resume = await refused('story_resume', { runId: completed.id, retryUnknown: false })
   expect(resume).toContain('Completed runs cannot resume')
   expect(resume).not.toContain(runMessage)
+})
+
+it('rejects every schema id field without a raw zod error', async () => {
+  const { ctx, actor, execute } = await setup()
+  const created = await ctx.story.createNovel(actor, { requestId: parseRequestId('matrix-novel'), title: '潮汐城', brief: '守塔人找到了失踪日志。' })
+  const plan = await ctx.story.startResearch(actor, {
+    novelId: created.id, requestId: parseRequestId('matrix-plan'), briefArtifactId: created.brief.id,
+    questions: [{ id: 'genre', kind: 'creative', question: '体裁？', reason: '作者决定。' }],
+  }, 0)
+  const base: Record<string, unknown> = {
+    novelId: created.id, runId: `run_${uuid}`, artifactId: plan.planId, planId: plan.planId,
+    briefArtifactId: created.brief.id, baseArtifactId: created.brief.id, expectedAppliedId: created.brief.id,
+    attemptId: `attempt_${uuid}`, requestId: 'request-ok', title: '潮汐城', brief: '守塔人找到了失踪日志。', text: '下一版。',
+    expectedRevision: created.revision, offset: 0, limit: 1, settingsRoots: ['e1'], chapterCount: 1, fromChapter: 1, throughChapter: 1,
+    instructions: '改开场。', retryUnknown: false, dimensionCode: 'a1', output: '{}',
+    questions: [{ id: 'genre', kind: 'creative', question: '体裁？', reason: '作者决定。' }], callId: 'call-1', sourceIndex: 0,
+    findings: [{ questionId: 'genre', callIds: [], conclusion: '悬疑。', adequate: true, selections: [] }],
+  }
+  const kinds = Object.keys(idFormatMessage)
+  const pairs = ctx.tools.schemas().flatMap(schema => {
+    const properties = schema.parameters.properties
+    if (typeof properties !== 'object' || properties === null) return []
+    return Object.keys(properties).flatMap(key => kinds.includes(key) ? [[schema.name, key as ToolIdParam] as const] : [])
+  })
+  expect(pairs).toHaveLength(43)
+  expect(new Set(pairs.map(([, key]) => key)).size).toBe(kinds.length)
+  for (const [name, key] of pairs) {
+    for (const value of ['', 123, null, 'bad'] as const) {
+      const label = `${name} ${key} ${String(value)}`
+      const outcome = await execute(name, { ...base, [key]: value })
+      // 'bad' is a legal requestId (nonblank, at most 256 characters). Every other sample is rejected.
+      if (key === 'requestId' && value === 'bad') {
+        const rendered = JSON.stringify(outcome)
+        expect(rendered, label).not.toMatch(zodDump)
+        continue
+      }
+      expect(errorText(outcome, label), label).toBe(`Error: ${idFormatMessage[key]}`)
+    }
+  }
+})
+
+it('does not blame briefArtifactId when resuming after the creative brief changes', async () => {
+  const { ctx, actor, execute } = await setup()
+  const created = await ctx.story.createNovel(actor, { requestId: parseRequestId('resume-novel'), title: '潮汐城', brief: '第一版。' })
+  const runner = ctx.storyRunner
+  const run = await runner.runs.begin(actor, {
+    novelId: created.id, briefArtifactId: created.brief.id, requestId: parseRequestId('resume-run'), settingsRoots: ['a1'],
+    chapterCount: 1, fromChapter: 1, throughChapter: 1, mode: 'write', revision: null, executionLimits: runner.limits,
+    serviceLimits: { ...ctx.story.limits, ...ctx.story.researchLimits },
+  })
+  const completed = await runner.runs.finish(actor, run.id, 'completed')
+  await ctx.story.saveBrief(actor, { novelId: created.id, requestId: parseRequestId('resume-brief'), expectedRevision: created.revision, text: '第二版。' })
+  const text = errorText(await execute('story_resume', { runId: completed.id, retryUnknown: false }), 'resume')
+  expect(text).toContain('Completed runs cannot resume')
+  expect(text).not.toContain('briefArtifactId')
+})
+
+it('keeps the research brief mismatch wording when briefArtifactId is not current', async () => {
+  const { ctx, actor, execute } = await setup()
+  const created = await ctx.story.createNovel(actor, { requestId: parseRequestId('brief-novel'), title: '潮汐城', brief: '第一版。' })
+  await ctx.story.saveBrief(actor, { novelId: created.id, requestId: parseRequestId('brief-next'), expectedRevision: created.revision, text: '第二版。' })
+  const text = errorText(await execute('story_start_research', {
+    novelId: created.id, requestId: 'research-old-brief', briefArtifactId: created.brief.id,
+    questions: [{ id: 'genre', kind: 'creative', question: '体裁？', reason: '作者决定。' }],
+  }), 'old brief')
+  expect(text).toBe('Error: Research plan does not match the current creative brief')
+  expect(text).not.toContain('briefArtifactId')
 })
 
 it('records the friendly id error in the model-visible tool result', async () => {

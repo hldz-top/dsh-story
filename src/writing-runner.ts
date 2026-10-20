@@ -73,7 +73,8 @@ export class WritingRunner {
   async resume(exec: ToolExecution, runId: RunId, retryUnknown: boolean): Promise<WritingRun> {
     const actor = await writingActor(this.ctx, exec)
     const stored = this.runs.get(actor, runId)
-    // A completed run cannot resume at all, so it skips only the settings gate: it still goes through the brief, present and limit checks and is then refused with run-state by RunStore.resume (as on main).
+    // A completed run cannot resume at all, so it skips only the settings gate. Resume does not
+    // re-check briefArtifactId: the caller did not pass one, and the run keeps its stored brief.
     this.admit(actor, stored, true, stored.status !== 'completed')
     this.requirePresentation(exec)
     this.requireRunLimits(stored)
@@ -137,7 +138,7 @@ export class WritingRunner {
   private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false, gated = true): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
-    if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'briefArtifactId must name the current creative brief')
+    if (!resuming && novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'briefArtifactId must name the current creative brief')
     if (gated && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
       if (missing.length > 0) throw new SettingsIncompleteError(missing)
