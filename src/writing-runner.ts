@@ -73,8 +73,8 @@ export class WritingRunner {
   async resume(exec: ToolExecution, runId: RunId, retryUnknown: boolean): Promise<WritingRun> {
     const actor = await writingActor(this.ctx, exec)
     const stored = this.runs.get(actor, runId)
-    // A completed run cannot resume at all, so it skips only the settings gate. Resume does not
-    // re-check briefArtifactId: the caller did not pass one, and the run keeps its stored brief.
+    // A completed run cannot resume at all, so it skips only the settings gate. Resume still
+    // compares the run's stored brief with the current one; the caller does not pass briefArtifactId.
     this.admit(actor, stored, true, stored.status !== 'completed')
     this.requirePresentation(exec)
     this.requireRunLimits(stored)
@@ -138,7 +138,12 @@ export class WritingRunner {
   private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false, gated = true): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
-    if (!resuming && novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'briefArtifactId must name the current creative brief')
+    // Resume compares the stored brief. A matching completed run still fails later as run-state.
+    if (novel.brief.id !== input.briefArtifactId && (resuming || gated)) {
+      throw new WritingError('revision-conflict', resuming
+        ? "This run's creative brief is no longer current; start story_update with the current briefArtifactId"
+        : 'briefArtifactId must name the current creative brief')
+    }
     if (gated && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
       if (missing.length > 0) throw new SettingsIncompleteError(missing)

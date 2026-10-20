@@ -316,8 +316,29 @@ it('rejects every schema id field without a raw zod error', async () => {
   }
 })
 
-it('does not blame briefArtifactId when resuming after the creative brief changes', async () => {
-  const { ctx, actor, execute } = await setup()
+it.each(['stopped', 'failed'] as const)('refuses to resume a %s run after the brief changes and leaves it unchanged', async status => {
+  const model = new ScriptedModel(() => stop())
+  const { ctx, actor, execute } = await setup(model)
+  const reason = status === 'stopped' ? 'Stopped before the brief changed.' : 'Failed before the brief changed.'
+  const created = await ctx.story.createNovel(actor, { requestId: parseRequestId(`resume-${status}`), title: '潮汐城', brief: '第一版。' })
+  const runner = ctx.storyRunner
+  const run = await runner.runs.begin(actor, {
+    novelId: created.id, briefArtifactId: created.brief.id, requestId: parseRequestId(`run-${status}`), settingsRoots: ['a1'],
+    chapterCount: 1, fromChapter: 1, throughChapter: 1, mode: 'write', revision: null, executionLimits: runner.limits,
+    serviceLimits: { ...ctx.story.limits, ...ctx.story.researchLimits },
+  })
+  const settled = await runner.runs.finish(actor, run.id, status, reason)
+  await ctx.story.saveBrief(actor, { novelId: created.id, requestId: parseRequestId(`brief-${status}`), expectedRevision: created.revision, text: '第二版。' })
+  const text = errorText(await execute('story_resume', { runId: settled.id, retryUnknown: true }), status)
+  expect(text).toBe("Error: This run's creative brief is no longer current; start story_update with the current briefArtifactId")
+  expect(text).not.toContain('briefArtifactId must name')
+  expect(runner.runs.get(actor, settled.id)).toMatchObject({ status, error: reason })
+  expect(model.requests).toHaveLength(0)
+})
+
+it('keeps the completed-run refusal when its creative brief is still current', async () => {
+  const model = new ScriptedModel(() => stop())
+  const { ctx, actor, execute } = await setup(model)
   const created = await ctx.story.createNovel(actor, { requestId: parseRequestId('resume-novel'), title: '潮汐城', brief: '第一版。' })
   const runner = ctx.storyRunner
   const run = await runner.runs.begin(actor, {
@@ -326,10 +347,10 @@ it('does not blame briefArtifactId when resuming after the creative brief change
     serviceLimits: { ...ctx.story.limits, ...ctx.story.researchLimits },
   })
   const completed = await runner.runs.finish(actor, run.id, 'completed')
-  await ctx.story.saveBrief(actor, { novelId: created.id, requestId: parseRequestId('resume-brief'), expectedRevision: created.revision, text: '第二版。' })
   const text = errorText(await execute('story_resume', { runId: completed.id, retryUnknown: false }), 'resume')
   expect(text).toContain('Completed runs cannot resume')
-  expect(text).not.toContain('briefArtifactId')
+  expect(runner.runs.get(actor, completed.id)).toMatchObject({ status: 'completed', error: null })
+  expect(model.requests).toHaveLength(0)
 })
 
 it('keeps the research brief mismatch wording when briefArtifactId is not current', async () => {
