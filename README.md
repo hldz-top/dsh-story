@@ -90,6 +90,8 @@ An import stays `pendingReview` until an assembled-settings collection containin
 
 **Downgrading after an import affects the whole store.** A plugin from before settings import (anything older than PR #18) cannot open a store that contains even one imported version: its strict schema rejects the whole `story_writing` domain, so the plugin does not load at all. Every novel and every story tool is unavailable, not only the imported novel, and `dsh` headless exits with status 1. The older plugin does not rewrite or repair the store; reinstalling a current plugin opens it again. A store imported by this version and then opened by the first settings-import release (PR #18, commit `8675246`) loads, but that release does not know the new import receipt format, so `story_get_settings` reports `Settings metadata or source content cannot be verified` for the novel and its settings cannot be displayed (lists still read). Before the first import, back up the entire DSH `storages` directory (both `story_writing` and `story_runs`), and keep that backup until you no longer need to go back.
 
+Import records are checked for integrity, not authenticity: the stored receipt detects edits that no longer match, but whoever can write the storage can also forge a matching record, and an import record's importing Session is not covered by its receipt. See [Stored records and compatibility](docs/api/settings.md#records).
+
 ## Reading and previews
 
 Tool results provide typed metadata and exact version references. Models read complete text through bounded `story_read_artifact` pages, following `nextOffset` until `eof`; retained raw stage output has a separate bounded reader. References contain identity, digest and size metadata rather than full document text.
