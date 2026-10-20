@@ -69,6 +69,10 @@ The plugin does not set a process exit code. In the headless DSH used for smoke 
 
 The only bypass is operator-side: the plugin config option `allowIncompleteSettings` (default `false`), for smoke and unit tests. It is not a tool argument, so the model cannot set it.
 
+### AI-tone review
+
+Body reviews on prompt version 3 receive `task.aiToneMarkers` with host-detected AI-tone markers in the chapter narration: counts per thousand Han characters plus exact excerpts. Dialogue and 【】 panel lines are skipped. The reviewer reports real instances as advisory style issues; AI tone never blocks. The markers and their limits are adapted from [lieflat-less-ai-tone](https://github.com/larashero3-dotcom/lieflat-less-ai-tone) (commit 27d2923, MIT License, Copyright (c) 2026 shiujan; notice in [third_party/lieflat-less-ai-tone.LICENSE](third_party/lieflat-less-ai-tone.LICENSE)). [src/ai-tone.ts](src/ai-tone.ts) lists the ported rules and those left out for fiction. Runs created on earlier prompt versions keep their original prompts.
+
 ## Reading and previews
 
 Tool results provide typed metadata and exact version references. Models read complete text through bounded `story_read_artifact` pages, following `nextOffset` until `eof`; retained raw stage output has a separate bounded reader. References contain identity, digest and size metadata rather than full document text.
