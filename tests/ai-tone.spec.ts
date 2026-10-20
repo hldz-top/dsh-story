@@ -53,6 +53,12 @@ describe('detectAiTone', () => {
     expect(narrationOf(text)).toContain('说白了')
   })
 
+  it('does not let an unclosed “ swallow narration up to a later ”', () => {
+    const text = '他说：“还没说完\n说白了，旁白还在。\n“这句闭合了”'
+    expect(rules(text).opener).toBe(1)
+    expect(narrationOf(text)).toContain('说白了')
+  })
+
   it('skips a panel line that has trailing spaces', () => {
     const text = '他停下。\n【时间、地点、人物】 \n门还开着。'
     expect(rules(text).enumeration).toBeUndefined()
@@ -64,8 +70,14 @@ describe('detectAiTone', () => {
     expect(rules('当他来的时候，门开了。')['when-clause']).toBeUndefined()
   })
 
-  it('flags a connective immediately after an ASCII period', () => {
+  it('flags a connective after an ASCII period with or without a following space', () => {
     expect(rules('压力还在.然而，门关了。').connective).toBe(1)
+    expect(rules('He left. 然而，门关了。').connective).toBe(1)
+  })
+
+  it('does not treat a period after a digit as a sentence break', () => {
+    expect(rules('第3.然而，门关了。').connective).toBeUndefined()
+    expect(rules('第3. 然而，门关了。').connective).toBeUndefined()
   })
 
   it('reports the ch1 v1 dash habit and keeps the v2 draft nearly clean', () => {

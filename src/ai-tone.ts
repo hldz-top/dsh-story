@@ -30,7 +30,8 @@ const patterns: readonly { readonly rule: Exclude<AiToneRule, 'zero-subject-comm
   // 时， is the marker. 当…的时候， never reaches it, so a (?<!的时候) lookbehind changes nothing a reader would write.
   { rule: 'when-clause', skillRule: '10 当…时', pattern: /当[^，。\n]{2,20}时，/gu },
   { rule: 'topic-shell', skillRule: '10 前置话题壳', pattern: /对于[^，。\n]{2,15}来说|对[^，。\n]{2,15}而言|就[^，。\n]{2,15}而言|在[^，。\n]{2,12}方面/gu },
-  { rule: 'connective', skillRule: '10 句首连接词', pattern: /(?:^|(?<=[。！？.\n]))(?:然而|因此|此外|与此同时|换言之|总而言之)[，、]/gmu },
+  // An ASCII period may have spaces before the connective. A period after a digit (第3.) is a list marker, not a sentence break.
+  { rule: 'connective', skillRule: '10 句首连接词', pattern: /(?:^|(?<=[。！？\n])|(?<=(?<!\d)\.[ \t]*))(?:然而|因此|此外|与此同时|换言之|总而言之)[，、]/gmu },
   { rule: 'restatement', skillRule: '10 这意味着式复述', pattern: /这意味着|这表明|这说明|换句话说/gu },
 ]
 const COMMENT = /^(?:听起来|看起来|看上去|听上去|说白了|说到底|换句话说|意味着|值得注意|不难看出|问题在于|原因在于|有意思的是|更重要的是|关键在于|真正的)/u
