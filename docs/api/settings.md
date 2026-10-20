@@ -109,6 +109,8 @@ Compatibility is explicit: strict version 4 records preserve their state and ass
 
 Author imports (`importSettings`) add an optional `origin` field to settings history entries without a record-version change. `origin: "import"` marks author text adopted in place of the current head: it requires non-null `revisionOf`, `applied: true` and an empty review history, it is exempt from the applied-needs-nonblocking-review rule, and its provenance hash is prefixed with `import`, so relabelling a record in either direction fails validation as corrupt. A missing `origin` means `stage`; writes never add it to older entries. Views derive `origin` and `pendingReview` (an import head that no passing assembled-settings review has covered). An older plugin cannot read a store containing an `origin` field; its strict schema rejects the whole domain.
 
+An import stores its content artifact before the novel update that publishes it, like other settings writes. Unlike them, it removes that artifact again when the update refuses or is cancelled (admission check, head or input conflict, abort), and a concurrent call with the same `requestId` that replays the winning import removes its own unpublished copy, so a refused import leaves no unreferenced artifact. The removal is best-effort: it runs only while no settings record references the artifact, and if the delete itself fails the unreferenced artifact stays, which public reads already refuse.
+
 <a id="limits"></a>
 ## Known limits
 
