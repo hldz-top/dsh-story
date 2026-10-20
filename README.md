@@ -88,7 +88,7 @@ An import stays `pendingReview` until an assembled-settings collection containin
 {"code":"review-blocked","reason":"stale-import","importItems":[{"dimensionCode":"g2","artifactId":"…","pendingReview":true}]}
 ```
 
-A store containing an imported version cannot be opened by an older plugin: its strict schema rejects the whole `story_writing` domain, not only that novel. Back up the storage before the first import.
+**Downgrading after an import affects the whole store.** A plugin from before settings import (anything older than PR #18) cannot open a store that contains even one imported version: its strict schema rejects the whole `story_writing` domain, so the plugin does not load at all. Every novel and every story tool is unavailable, not only the imported novel, and `dsh` headless exits with status 1. The older plugin does not rewrite or repair the store; reinstalling a current plugin opens it again. A store imported by this version and then opened by the first settings-import release (PR #18, commit `8675246`) loads, but that release does not know the new import receipt format, so `story_get_settings` reports `Settings metadata or source content cannot be verified` for the novel and its settings cannot be displayed (lists still read). Before the first import, back up the entire DSH `storages` directory (both `story_writing` and `story_runs`), and keep that backup until you no longer need to go back.
 
 ## Reading and previews
 
