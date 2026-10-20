@@ -107,6 +107,8 @@ Each settings history entry stores the candidate reference, dimension code, rese
 
 Compatibility is explicit: strict version 4 records preserve their state and assign `revisionOf: null` to existing candidates. Strict T03 version 3, T02 version 2, and the original T01 record each preserve their known fields and add empty collections for later features. Existing artifact content and brief references are retained. Arbitrary missing fields in a version 5 record are not filled with defaults.
 
+Author imports (`importSettings`) add an optional `origin` field to settings history entries without a record-version change. `origin: "import"` marks author text adopted in place of the current head: it requires non-null `revisionOf`, `applied: true` and an empty review history, it is exempt from the applied-needs-nonblocking-review rule, and its provenance hash is prefixed with `import`, so relabelling a record in either direction fails validation as corrupt. A missing `origin` means `stage`; writes never add it to older entries. Views derive `origin` and `pendingReview` (an import head that no passing assembled-settings review has covered). An older plugin cannot read a store containing an `origin` field; its strict schema rejects the whole domain.
+
 <a id="limits"></a>
 ## Known limits
 

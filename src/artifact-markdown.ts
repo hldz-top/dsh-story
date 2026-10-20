@@ -44,9 +44,9 @@ function sourceLink(url: string): string {
   return `<${new URL(url).href.replaceAll('<', '%3C').replaceAll('>', '%3E')}>`
 }
 
-/** @param artifact - Exact stored version. @returns Its readable Markdown representation. */
-export function artifactMarkdown(artifact: Artifact): string {
-  return renderArtifact(artifact, readableStyle)
+/** @param artifact - Exact stored version. @param options - imported marks a settings dimension adopted through story_settings_import. @returns Its readable Markdown representation. */
+export function artifactMarkdown(artifact: Artifact, options: { readonly imported?: boolean } = {}): string {
+  return renderArtifact(artifact, readableStyle, options.imported === true)
 }
 
 /**
@@ -59,7 +59,7 @@ export function legacyArtifactMarkdown(artifact: Artifact): string {
   return renderArtifact(artifact, legacyStyle)
 }
 
-function renderArtifact(artifact: Artifact, style: BlockStyle): string {
+function renderArtifact(artifact: Artifact, style: BlockStyle, imported = false): string {
   if (artifact.kind === 'creative-brief') return artifact.text
   const sections: string[] = []
   const provenance = [
@@ -68,7 +68,7 @@ function renderArtifact(artifact: Artifact, style: BlockStyle): string {
   ]
   if (artifact.kind === 'settings-dimension') {
     const settings = parseContent(StageOutputSchemas.settings, artifact.text)
-    sections.push('# Settings dimension', `Dimension: ${settings.dimensionCode}`, 'Document: Generated candidate',
+    sections.push('# Settings dimension', `Dimension: ${settings.dimensionCode}`, `Document: ${imported ? 'Author import (人工导入)' : 'Generated candidate'}`,
       '## Content', style.text(settings.contentMarkdown))
     for (const [index, fact] of settings.facts.entries()) {
       sections.push(`## Fact ${index + 1}`, 'Fact ID', style.text(fact.id), 'Statement', style.text(fact.statement))

@@ -201,7 +201,8 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
       const novelId = parseNovelId(args.novelId)
       const novel = service.getNovel(actor, novelId)
       const artifact = service.getArtifact(actor, { novelId, artifactId: parseArtifactId(args.artifactId) })
-      return projectArtifact(ctx, exec, actor, novel, artifact, previewDirectory)
+      const imported = artifact.kind === 'settings-dimension' && service.getSettings(actor, novelId).history.some(item => item.artifact.id === artifact.id && item.origin === 'import')
+      return projectArtifact(ctx, exec, actor, novel, artifact, previewDirectory, imported)
     },
   })))
 }

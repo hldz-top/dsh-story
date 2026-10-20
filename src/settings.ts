@@ -25,6 +25,25 @@ export interface SettingsCandidateView {
   readonly status: 'candidate' | 'reviewed' | 'blocked' | 'applied'
   readonly stale: boolean
   readonly review: ArtifactRef<'review'> | null
+  /** 'import' marks author text adopted through story_settings_import without a per-dimension review. */
+  readonly origin: 'stage' | 'import'
+  /**
+   * Derived, never stored: an imported current head that no settings collection containing it has passed (latest review nonblocking) since the import. Release is sticky.
+   * Until it clears, no downstream stage can use the collection, so it does not count as complete settings.
+   */
+  readonly pendingReview: boolean
+}
+/** Author text that replaces one adopted dimension without a model stage; the host derives every input reference. */
+export interface ImportSettingsRequest {
+  readonly novelId: NovelId
+  readonly requestId: RequestId
+  readonly dimensionCode: string
+  /** The current head being replaced; it becomes revisionOf and lends its research plan. */
+  readonly expectedAppliedId: ArtifactId
+  /** Complete settings-dimension document; its inputRefs are replaced by the host-derived current inputs. */
+  readonly output: unknown
+  /** The importing Session, recorded as the provenance owner. */
+  readonly childSessionId: SessionId
 }
 /** Current adopted dimensions and all historical candidates. */
 export interface SettingsView { readonly applied: readonly SettingsCandidateView[]; readonly history: readonly SettingsCandidateView[] }

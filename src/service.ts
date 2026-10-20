@@ -15,7 +15,7 @@ import { researchEvidenceContentSchema, researchPlanContentSchema, researchQuest
 import { settingsCatalog } from './settings-catalog.ts'
 import { proseView } from './prose-view.ts'
 import { parseSettingsDimensionOutput, parseReviewOutput, checkSettingsDimensionScope } from './stage-output.ts'
-import type { ApplySettingsCandidateRequest, SaveSettingsReviewRequest, SaveSettingsCandidateRequest, SettingsCandidateView, SettingsView } from './settings.ts'
+import type { ApplySettingsCandidateRequest, ImportSettingsRequest, SaveSettingsReviewRequest, SaveSettingsCandidateRequest, SettingsCandidateView, SettingsView } from './settings.ts'
 import { ManuscriptStore, type AssembleSettingsRequest, type ManuscriptCandidateView, type ManuscriptView, type SaveManuscriptReviewRequest, type ApplyManuscriptCandidateRequest, type ManuscriptLimits, type ManuscriptContext, type GeneratedManuscriptTarget, type SaveManuscriptCandidateRequest, type ApplyChapterRequest, type AppliedChapterView } from './manuscript.ts'
 
 function researchContent<T>(schema: z.ZodType<T>, text: string): T {
@@ -460,7 +460,7 @@ export class WritingService {
       checkSettingsDimensionScope(output, dimension.kind)
     }
     const text = JSON.stringify(output)
-    const hash = createHash('sha256').update(JSON.stringify([request.researchPlanId, request.childSessionId, output, ...(request.revisionOf === undefined ? [] : [request.revisionOf])])).digest('hex')
+    const hash = settingsHash({ researchPlanId: request.researchPlanId, childSessionId: request.childSessionId, revisionOf: request.revisionOf ?? null }, output)
     if (replay !== undefined) {
       this.sameRequest(replay.request.hash, hash)
       this.validateSettings(actor, novel, replay)
@@ -483,6 +483,60 @@ export class WritingService {
     })
     const saved = updated.settingsHistory.find(item => item.request.requestId === request.requestId)
     if (saved === undefined) throw new WritingError('corrupt-artifact', 'Settings candidate receipt is missing')
+    return this.settingsView(updated, saved)
+  }
+
+  /**
+   * Adopt author text for one dimension in place of its current head, without a model stage or per-dimension review.
+   * The record reuses the replaced head's research plan, keeps it as revisionOf, and is marked origin 'import'; it stays
+   * pendingReview until a settings collection containing it passes review. The writing runner refuses this while a run is unfinished.
+   * @param actor - Importing Session. @param request - Exact head to replace and the complete document.
+   * @param assertAdmissible - Checked synchronously inside the novel update, immediately before publication.
+   * @returns The adopted import.
+   */
+  async importSettings(actor: Actor, request: ImportSettingsRequest, assertAdmissible: () => void = () => {}): Promise<SettingsCandidateView> {
+    actor.signal?.throwIfAborted()
+    const novel = this.record(actor, request.novelId)
+    const dimension = settingsCatalog.find(item => item.code === request.dimensionCode)
+    if (dimension === undefined || !dimension.enabled || dimension.kind === 'edit_external') throw new WritingError('invalid-input', 'Settings dimension is not available for import')
+    if (typeof request.output !== 'object' || request.output === null || Array.isArray(request.output)) throw new WritingError('invalid-input', 'Imported settings must be one settings-dimension JSON object')
+    const replay = novel.settingsHistory.find(item => item.request.requestId === request.requestId)
+    if (replay !== undefined) {
+      if (replay.origin !== 'import' || replay.dimensionCode !== request.dimensionCode || replay.revisionOf !== request.expectedAppliedId) throw new WritingError('request-conflict', 'Request id was already used with different input')
+      const output = parseSettingsDimensionOutput({ ...request.output, inputRefs: replay.inputRefs }, { dimensionCode: request.dimensionCode, inputRefs: replay.inputRefs })
+      this.sameRequest(replay.request.hash, settingsHash({ origin: 'import', researchPlanId: replay.researchPlanId, childSessionId: request.childSessionId, revisionOf: replay.revisionOf }, output))
+      this.validateSettings(actor, novel, replay)
+      return this.settingsView(novel, replay)
+    }
+    const headId = novel.settingsHeads.find(head => head.dimensionCode === request.dimensionCode)?.artifactId
+    if (headId === undefined) throw new WritingError('invalid-input', 'Import replaces an adopted settings version; this dimension has none yet')
+    if (headId !== request.expectedAppliedId) throw new WritingError('revision-conflict', 'Another settings version is the current head')
+    const base = this.settingsCandidate(novel, headId)
+    const inputRefs = this.settingsInputs(actor, novel.id, request.dimensionCode, base.researchPlanId, base.artifact.id).map(ref => ({ artifactId: ref.id, sha256: ref.sha256 }))
+    const output = parseSettingsDimensionOutput({ ...request.output, inputRefs }, { dimensionCode: request.dimensionCode, inputRefs })
+    checkSettingsDimensionScope(output, dimension.kind)
+    const text = JSON.stringify(output)
+    checkModelArtifactBytes(text, this.limits.maxArtifactBytes, 'Imported settings')
+    const hash = settingsHash({ origin: 'import', researchPlanId: base.researchPlanId, childSessionId: request.childSessionId, revisionOf: base.artifact.id }, output)
+    const artifact = this.artifact(novel.id, 1, text, 'settings-dimension')
+    await this.domain.table('artifacts').put(artifact.id, artifact)
+    actor.signal?.throwIfAborted()
+    const updated = await this.domain.table('novels').update(novel.id, current => {
+      actor.signal?.throwIfAborted()
+      const duplicate = current.settingsHistory.find(item => item.request.requestId === request.requestId)
+      if (duplicate !== undefined) { this.sameRequest(duplicate.request.hash, hash); return current }
+      if (current.settingsHeads.find(head => head.dimensionCode === request.dimensionCode)?.artifactId !== base.artifact.id) throw new WritingError('revision-conflict', 'Another settings version was adopted before this import')
+      const actual = this.settingsInputs(actor, current.id, request.dimensionCode, base.researchPlanId, base.artifact.id).map(ref => ({ artifactId: ref.id, sha256: ref.sha256 }))
+      if (!isDeepStrictEqual(actual, inputRefs)) throw new WritingError('revision-conflict', 'Settings inputs changed before import')
+      assertAdmissible()
+      return { ...current,
+        settingsHistory: [...current.settingsHistory, { artifact: reference(artifact), dimensionCode: request.dimensionCode, researchPlanId: base.researchPlanId, inputRefs,
+          revisionOf: base.artifact.id, childSessionId: request.childSessionId, request: { requestId: request.requestId, hash }, reviewHistory: [], applied: true, origin: 'import' as const }],
+        settingsHeads: [...current.settingsHeads.filter(head => head.dimensionCode !== request.dimensionCode), { dimensionCode: request.dimensionCode, artifactId: artifact.id }],
+      }
+    })
+    const saved = updated.settingsHistory.find(item => item.request.requestId === request.requestId)
+    if (saved === undefined) throw new WritingError('corrupt-artifact', 'Settings import receipt is missing')
     return this.settingsView(updated, saved)
   }
 
@@ -566,7 +620,7 @@ export class WritingService {
         if (parsed.issues.some(issue => issue.severity === 'blocking') !== review.blocking) throw new Error('Review status differs from immutable findings')
       }
       const latest = candidate.reviewHistory.at(-1)
-      if (candidate.applied && (latest === undefined || latest.blocking)) throw new Error('An applied settings candidate requires a nonblocking review')
+      if (candidate.applied && candidate.origin !== 'import' && (latest === undefined || latest.blocking)) throw new Error('An applied settings candidate requires a nonblocking review')
     } catch (cause) { throw new WritingError('corrupt-artifact', 'Settings review or adoption status cannot be verified', { cause }) }
   }
 
@@ -611,7 +665,8 @@ export class WritingService {
         this.validateSettings(actor, novel, base, path)
         expected.push(base.artifact.id)
       }
-      const expectedHash = createHash('sha256').update(JSON.stringify([candidate.researchPlanId, candidate.childSessionId, output, ...(candidate.revisionOf === null ? [] : [candidate.revisionOf])])).digest('hex')
+      if (candidate.origin === 'import' && (candidate.revisionOf === null || !candidate.applied || candidate.reviewHistory.length > 0)) throw new Error('An imported settings version must be an adopted, unreviewed replacement of an earlier version')
+      const expectedHash = settingsHash(candidate, output)
       if (candidate.request.hash !== expectedHash) throw new Error('Settings provenance differs from its publication receipt')
       if (candidate.inputRefs.length !== expected.length || candidate.inputRefs.some(ref => !expected.includes(ref.artifactId))) throw new Error('Settings index differs from its required source versions')
       for (const input of candidate.inputRefs) {
@@ -651,7 +706,19 @@ export class WritingService {
     return structuredClone({ dimensionCode: candidate.dimensionCode, artifact: candidate.artifact,
       inputRefs: candidate.inputRefs, revisionOf: candidate.revisionOf, childSessionId: candidate.childSessionId, stale: this.settingsStale(novel, candidate),
       status: candidate.applied ? 'applied' : review === undefined ? 'candidate' : review.blocking ? 'blocked' : 'reviewed',
-      review: review?.artifact ?? null })
+      review: review?.artifact ?? null, origin: candidate.origin ?? 'stage', pendingReview: this.importPending(novel, candidate) })
+  }
+
+  /**
+   * Pending import: an imported current head with no passing settings-collection review since it was imported. Any collection
+   * containing the import was assembled after it, and a review is admitted only while that collection's inputs are current, so a
+   * collection whose latest review is nonblocking releases the import for good; later roots or upstream changes do not undo that.
+   */
+  private importPending(novel: NovelRecord, candidate: SettingsRecord): boolean {
+    if (candidate.origin !== 'import') return false
+    if (novel.settingsHeads.find(head => head.dimensionCode === candidate.dimensionCode)?.artifactId !== candidate.artifact.id) return false
+    return !novel.manuscriptHistory.some(item => item.target.kind === 'settings' && item.inputRefs.some(ref => ref.artifactId === candidate.artifact.id)
+      && item.reviewHistory.length > 0 && item.reviewHistory.at(-1)?.blocking === false)
   }
 
   /** @returns Completion after the domain has drained its queued writes. */
@@ -695,6 +762,12 @@ export class WritingService {
     if (bytes > this.limits.maxArtifactBytes) throw new WritingError('artifact-too-large', 'Artifact exceeds the configured UTF-8 byte limit')
     return bytes
   }
+}
+
+/** Publication receipt: an import is prefixed so it can never pass as, or be passed off as, a model-stage record. */
+function settingsHash(record: { readonly origin?: 'stage' | 'import' | undefined; readonly researchPlanId: ArtifactId; readonly childSessionId: string; readonly revisionOf: ArtifactId | null }, output: unknown): string {
+  const body = [record.researchPlanId, record.childSessionId, output, ...(record.revisionOf === null ? [] : [record.revisionOf])]
+  return createHash('sha256').update(JSON.stringify(record.origin === 'import' ? ['import', ...body] : body)).digest('hex')
 }
 
 /** @param facility - The host's mounted storage domain service. @param limits - Explicit size limits. @param researchLimits - Explicit research limits. @param manuscriptLimits - Explicit inclusive chapter word bounds. @returns One domain-owning writing service. */

@@ -55,6 +55,7 @@ const nullableArtifact = { required: true, oneOf: [artifactSchema, { type: 'null
 const candidateStatus = { ...text, enum: ['candidate', 'reviewed', 'blocked', 'applied'] } as const
 const settingsCandidate = { type: 'object', additionalProperties: false, properties: {
   dimensionCode: text, revisionOf: nullableText, artifact, inputRefs, childSessionId: text, status: candidateStatus, stale: boolean, review: nullableArtifact,
+  origin: { ...text, enum: ['stage', 'import'] }, pendingReview: boolean,
 } } as const
 const manuscriptCandidate = { type: 'object', additionalProperties: false, properties: {
   target: { required: true, oneOf: [
@@ -75,7 +76,7 @@ const appliedChapter = { type: 'object', additionalProperties: false, properties
 } } as const
 function settingsValue(candidate: SettingsCandidateView) {
   return { dimensionCode: candidate.dimensionCode, revisionOf: candidate.revisionOf, artifact: candidate.artifact, inputRefs: candidate.inputRefs.map(ref => ({ ...ref })),
-    childSessionId: candidate.childSessionId, status: candidate.status, stale: candidate.stale, review: candidate.review }
+    childSessionId: candidate.childSessionId, status: candidate.status, stale: candidate.stale, review: candidate.review, origin: candidate.origin, pendingReview: candidate.pendingReview }
 }
 function manuscriptValue(candidate: ManuscriptCandidateView) {
   return { target: candidate.target, revisionOf: candidate.revisionOf, artifact: candidate.artifact, inputRefs: candidate.inputRefs.map(ref => ({ ...ref })),
@@ -96,8 +97,9 @@ function runValue(run: WritingRun) {
  * @param ctx - Scope owning every registration effect.
  * @param service - Authoritative artifact and workspace owner.
  * @param runner - Native execution owner and durable run store.
+ * @param options - allowSettingsImport (operator config, default false) registers story_settings_import; otherwise the model never sees it.
  */
-export function registerRunTools(ctx: Context, service: WritingService, runner: WritingRunner): void {
+export function registerRunTools(ctx: Context, service: WritingService, runner: WritingRunner, options: { readonly allowSettingsImport?: boolean } = {}): void {
   const startParameters = { novelId: text, briefArtifactId: text, requestId: text, settingsRoots: strings,
     chapterCount: { ...integer, description: 'Positive total book chapter count.' }, fromChapter: { ...integer, description: 'First requested chapter, starting at 1.' },
     throughChapter: { ...integer, description: 'Last requested chapter, fromChapter <= throughChapter <= chapterCount.' } } as const
@@ -129,6 +131,18 @@ export function registerRunTools(ctx: Context, service: WritingService, runner: 
     name: 'story_stop', description: 'Stop the exact owned writing run, cancel native work, and wait for it to settle before returning persisted progress.',
     parameters: { runId: text }, output: { schema: runSchema, render: renderJson }, isConcurrencySafe: () => true,
     async execute(args, exec) { return runValue(await runner.stop(exec, parseRunId(args.runId))) },
+  })))
+  if (options.allowSettingsImport === true) ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'story_settings_import', description: 'Adopt author-written text for one settings dimension in place of its exact current head, without a model call. The host derives input references, validates the document and records it as an author import that reuses the replaced head\'s research. It stays pendingReview, and no outline or chapter can use the settings, until a new story_update reviews the assembled settings; a blocking review stops that run without regenerating, and a run also stops instead of regenerating an import made stale by an upstream change. Refused while the novel has a running or interrupted run. Import in dependency order, upstream first. Back up the story storage before the first import: an older plugin cannot open a store that contains imported settings.',
+    parameters: { novelId: text, requestId: text, dimensionCode: text, expectedAppliedId: { ...text, description: 'Artifact id of the current applied head being replaced.' },
+      output: { ...text, description: 'The complete settings-dimension JSON document (version, dimensionCode, contentMarkdown, facts); inputRefs is replaced by the host.' } },
+    output: { schema: settingsCandidate, render: renderJson },
+    async execute(args, exec) {
+      let output: unknown
+      try { output = JSON.parse(args.output) } catch { throw new WritingError('invalid-input', 'Imported settings output must be JSON text') }
+      return settingsValue(await runner.importSettings(exec, { novelId: parseNovelId(args.novelId), requestId: parseRequestId(args.requestId), dimensionCode: args.dimensionCode,
+        expectedAppliedId: parseArtifactId(args.expectedAppliedId), output }))
+    },
   })))
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'story_get_settings', description: 'Read applied settings and every retained candidate with exact artifact/review references and upstream staleness. Read full content through story_read_artifact.',

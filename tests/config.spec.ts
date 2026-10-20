@@ -28,6 +28,7 @@ it.each(unsafeDirectories)('rejects unsafe previewDirectory %j before accessing 
 it('keeps the default preview directory relative to the Session workspace', () => {
   expect(new Story.Config().previewDirectory).toBe('.dsh-story')
   expect(new Story.Config().allowIncompleteSettings).toBe(false)
+  expect(new Story.Config().allowSettingsImport).toBe(false)
 })
 
 it.each(['.dsh-story', 'novels/versions', '小说/预览'])('loads the plugin with relative previewDirectory %j', async (previewDirectory) => {

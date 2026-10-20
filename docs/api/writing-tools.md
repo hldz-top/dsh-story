@@ -41,7 +41,9 @@ Reads and stop are marked concurrency-safe; the runner and storage service own s
 
 ## Settings and manuscript metadata
 
-`story_get_settings(novelId)` returns `{novelId, applied, history}`. Every settings entry exposes `dimensionCode`, nullable `revisionOf`, exact `artifact`, `inputRefs`, `childSessionId`, `status`, `stale` and nullable `review`. Status distinguishes candidates, reviewed/blocked versions and applied versions. Full settings content remains in the referenced artifact.
+`story_get_settings(novelId)` returns `{novelId, applied, history}`. Every settings entry exposes `dimensionCode`, nullable `revisionOf`, exact `artifact`, `inputRefs`, `childSessionId`, `status`, `stale` and nullable `review`. Status distinguishes candidates, reviewed/blocked versions and applied versions. Full settings content remains in the referenced artifact. Each entry also has derived `origin` (`stage`, or `import` for author text; records written before imports report `stage`) and `pendingReview` (an import no passing assembled-settings review has covered yet).
+
+`story_settings_import(novelId, requestId, dimensionCode, expectedAppliedId, output)` is registered only when the plugin config `allowSettingsImport` is `true`. See [Importing author settings](../../README.md#importing-author-settings) for its rules and machine-readable refusals.
 
 `story_get_manuscript(novelId)` returns `{novelId, history, heads, appliedChapters}`. Candidate entries expose `target`, nullable `revisionOf`, exact `artifact`, `inputRefs`, nullable `childSessionId`, `status`, nullable `review`, `stale`, `changedInputs`, nullable `wordCount` and nullable `length`. The target identifies a settings collection and its selected codes, a book outline and chapter count, a numbered chapter outline/body, or numbered continuity with its exact body ID. Length reports `within-range`, `too-short` or `too-long` with the associated blocking flag.
 
