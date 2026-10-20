@@ -54,7 +54,7 @@ Those packages stay in `peerDependencies` with the same version ranges. Each one
 
 | Peer | Range |
 | --- | --- |
-| `@deepseek-ai/cordis` | `4.0.4` |
+| `@deepseek-ai/cordis` | `~4.0.4` |
 | `@deepseek-ai/dsh-fs` | `>=0.2.0-rc.2 <0.3.0-0` |
 | `@deepseek-ai/dsh-llm` | `>=0.2.0-rc.2 <0.3.0-0` |
 | `@deepseek-ai/dsh-sandbox-policy` | `>=0.2.0-rc.2 <0.3.0-0` |
