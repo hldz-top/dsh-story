@@ -1,6 +1,26 @@
-# Apply after the Story plugin is mounted, only for a newly authorized run.
-# The entry id is the plugin id `dsh-story-weaver` (renamed from `dsh-story`); a patch with the old id is skipped without a visible error.
+# Apply with `dsh --patch` after the Story plugin is mounted, only for a newly authorized run.
+#
+# DSH does not merge `config:` blocks key by key: this entry's `config:` REPLACES the whole config that earlier layers
+# (the bundle and your profile's cordis.patch.yml) gave `dsh-story-weaver`. Every key you leave out falls back to the
+# plugin default, so this file spells out the full config. The values below are the plugin defaults except
+# maxResearchSources (default 24, raised to 96). Before using it, copy every setting you changed elsewhere into this
+# block, including operator switches such as allowIncompleteSettings or allowSettingsImport, then check the result
+# with `dsh --profile <profile> --patch <this file> --dump-config`.
+#
+# A run freezes the limits it started with. Resuming it later is refused ("Restore the captured writing and research
+# limits…") unless the same research and chapter-word limits are in effect, so resume with this same patch.
+#
+# The entry id is the plugin id `dsh-story-weaver` (renamed from `dsh-story`). A patch with the old id is skipped at
+# runtime without an error; only `--dump-config` prints `patch: entry "dsh-story" not found` on stderr.
 - id: dsh-story-weaver
   config:
+    stageProvider: spawn
+    minChapterWords: 3000
+    maxChapterWords: 5000
+    maxParallelStages: 3
+    maxRepairAttempts: 2
+    maxRunAttempts: 512
+    stageTimeoutMs: 600000
     maxResearchCalls: 12
     maxResearchSources: 96
+    # allowIncompleteSettings: true   # only if your profile already sets it
