@@ -141,7 +141,7 @@ export class WritingRunner {
     // In admit, before the settings gate: a mismatched brief is revision-conflict, the same kind main uses.
     // Resume compares the run's stored brief and does not ask the caller for briefArtifactId.
     // A matching completed run still fails later as run-state.
-    if (novel.brief.id !== input.briefArtifactId && (resuming || gated)) {
+    if (novel.brief.id !== input.briefArtifactId) {
       throw new WritingError('revision-conflict', resuming
         ? "This run's creative brief is no longer current; start story_update with the current briefArtifactId"
         : 'briefArtifactId must name the current creative brief')

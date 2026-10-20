@@ -369,6 +369,24 @@ it.each(['stopped', 'failed'] as const)('refuses to resume a %s run after the br
   expect(model.requests).toHaveLength(0)
 })
 
+it('refuses a completed run after the brief changes and leaves it unchanged', async () => {
+  const model = new ScriptedModel(() => stop())
+  const { ctx, actor, execute } = await setup(model)
+  const created = await ctx.story.createNovel(actor, { requestId: parseRequestId('resume-completed-changed'), title: '潮汐城', brief: '第一版。' })
+  const runner = ctx.storyRunner
+  const run = await runner.runs.begin(actor, {
+    novelId: created.id, briefArtifactId: created.brief.id, requestId: parseRequestId('run-completed-changed'), settingsRoots: ['a1'],
+    chapterCount: 1, fromChapter: 1, throughChapter: 1, mode: 'write', revision: null, executionLimits: runner.limits,
+    serviceLimits: { ...ctx.story.limits, ...ctx.story.researchLimits },
+  })
+  const completed = await runner.runs.finish(actor, run.id, 'completed')
+  await ctx.story.saveBrief(actor, { novelId: created.id, requestId: parseRequestId('brief-completed-changed'), expectedRevision: created.revision, text: '第二版。' })
+  const text = errorText(await execute('story_resume', { runId: completed.id, retryUnknown: false }), 'completed')
+  expect(text).toBe("Error: This run's creative brief is no longer current; start story_update with the current briefArtifactId")
+  expect(runner.runs.get(actor, completed.id)).toMatchObject({ status: 'completed', error: null })
+  expect(model.requests).toHaveLength(0)
+})
+
 it('keeps the completed-run refusal when its creative brief is still current', async () => {
   const model = new ScriptedModel(() => stop())
   const { ctx, actor, execute } = await setup(model)
