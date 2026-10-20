@@ -1,49 +1,114 @@
 /** Model-facing writing operations use the calling Session's workspace. */
 import type { Context } from '@deepseek-ai/cordis'
-import { defineTool, type ToolExecution } from '@deepseek-ai/dsh-tools'
+import { defineTool, ToolArgsError, type ToolDefinition, type ToolExecution } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
 import { z } from 'zod'
-import { WritingError, type Actor, type NovelId, type NovelView } from './contracts.ts'
+import { WritingError, type Actor, type ArtifactId, type NovelId, type NovelView, type RequestId } from './contracts.ts'
 import { artifactKinds, parseArtifactId, parseNovelId, parseRequestId } from './contracts.ts'
-import { parseRunId, type RunId } from './run-store.ts'
+import { parseAttemptId, parseRunId, type AttemptId, type RunId } from './run-store.ts'
 import type { WritingService } from './service.ts'
 import { projectArtifact } from './projection.ts'
 
-/** Identifier arguments stay untyped in JSON Schema so a non-string still reaches the parser. */
-export const novelIdParameter = { type: 'json', required: true } as const
-/** Identifier arguments stay untyped in JSON Schema so a non-string still reaches the parser. */
-export const runIdParameter = { type: 'json', required: true } as const
+const uuidValue = (prefix: string) => `${prefix}_ plus a lowercase UUID, copied exactly from a previous tool result`
 
-function rejectMalformedId(error: unknown, message: string): never {
-  if (error instanceof z.ZodError) throw new WritingError('invalid-input', message)
-  throw error
-}
+/** Model-facing novel id. The schema stays a string; admission owns the format error. */
+export const novelIdParameter = { type: 'string', required: true, description: uuidValue('novel') } as const
+/** Model-facing run id. The schema stays a string; admission owns the format error. */
+export const runIdParameter = { type: 'string', required: true, description: uuidValue('run') } as const
+/** Model-facing artifact id, also used for plan, brief, base and expected-head ids. */
+export const artifactIdParameter = { type: 'string', required: true, description: uuidValue('artifact') } as const
+/** Model-facing attempt id. */
+export const attemptIdParameter = { type: 'string', required: true, description: uuidValue('attempt') } as const
+/** Caller idempotency key. Blank and overlong values are invalid. */
+export const requestIdParameter = { type: 'string', required: true, description: 'nonblank string of at most 256 characters' } as const
+
+/** Readable invalid-input text for each tool id parameter. */
+export const idFormatMessage = {
+  novelId: 'novelId must look like novel_<lowercase uuid>',
+  runId: 'runId must look like run_<lowercase uuid>',
+  artifactId: 'artifactId must look like artifact_<lowercase uuid>',
+  planId: 'planId must look like artifact_<lowercase uuid>',
+  briefArtifactId: 'briefArtifactId must look like artifact_<lowercase uuid>',
+  baseArtifactId: 'baseArtifactId must look like artifact_<lowercase uuid>',
+  expectedAppliedId: 'expectedAppliedId must look like artifact_<lowercase uuid>',
+  attemptId: 'attemptId must look like attempt_<lowercase uuid>',
+  requestId: 'requestId must be a nonblank string of at most 256 characters',
+} as const
+
+export type ToolIdParam = keyof typeof idFormatMessage
 
 /**
- * Admit a tool novelId. A malformed value is invalid-input, not a Zod issue dump.
+ * Admit one tool id. Zod failures become invalid-input; every other error is unchanged.
+ * @param parse - Existing parser. Valid values keep that parser's result.
+ * @param param - Parameter whose message names the real format.
  * @param value - Untrusted tool argument.
- * @returns The identity parseNovelId already accepts.
+ * @returns The identity the parser already accepts.
  */
-export function parseToolNovelId(value: unknown): NovelId {
+export function admitToolId<T>(parse: (value: unknown) => T, param: ToolIdParam, value: unknown): T {
   try {
-    return parseNovelId(value)
+    return parse(value)
   } catch (error) {
-    rejectMalformedId(error, 'novelId must look like novel_<uuid>')
+    if (error instanceof z.ZodError) throw new WritingError('invalid-input', idFormatMessage[param])
+    throw error
   }
 }
 
-/**
- * Admit a tool runId. A malformed value is invalid-input, not a Zod issue dump.
- * @param value - Untrusted tool argument.
- * @returns The identity parseRunId already accepts.
- */
-export function parseToolRunId(value: unknown): RunId {
-  try {
-    return parseRunId(value)
-  } catch (error) {
-    rejectMalformedId(error, 'runId must look like run_<uuid>')
+/** @param value - Untrusted tool novelId. @returns A parsed novel id. */
+export function parseToolNovelId(value: unknown): NovelId { return admitToolId(parseNovelId, 'novelId', value) }
+/** @param value - Untrusted tool runId. @returns A parsed run id. */
+export function parseToolRunId(value: unknown): RunId { return admitToolId(parseRunId, 'runId', value) }
+/** @param value - Untrusted tool artifactId. @returns A parsed artifact id. */
+export function parseToolArtifactId(value: unknown): ArtifactId { return admitToolId(parseArtifactId, 'artifactId', value) }
+/** @param value - Untrusted tool planId. @returns A parsed artifact id. */
+export function parseToolPlanId(value: unknown): ArtifactId { return admitToolId(parseArtifactId, 'planId', value) }
+/** @param value - Untrusted tool briefArtifactId. @returns A parsed artifact id. */
+export function parseToolBriefArtifactId(value: unknown): ArtifactId { return admitToolId(parseArtifactId, 'briefArtifactId', value) }
+/** @param value - Untrusted tool baseArtifactId. @returns A parsed artifact id. */
+export function parseToolBaseArtifactId(value: unknown): ArtifactId { return admitToolId(parseArtifactId, 'baseArtifactId', value) }
+/** @param value - Untrusted tool expectedAppliedId. @returns A parsed artifact id. */
+export function parseToolExpectedAppliedId(value: unknown): ArtifactId { return admitToolId(parseArtifactId, 'expectedAppliedId', value) }
+/** @param value - Untrusted tool attemptId. @returns A parsed attempt id. */
+export function parseToolAttemptId(value: unknown): AttemptId { return admitToolId(parseAttemptId, 'attemptId', value) }
+/** @param value - Untrusted tool requestId. @returns A parsed request id. */
+export function parseToolRequestId(value: unknown): RequestId { return admitToolId(parseRequestId, 'requestId', value) }
+
+function idTypeError(error: unknown): WritingError | undefined {
+  if (!(error instanceof ToolArgsError)) return undefined
+  const messages: string[] = []
+  for (const violation of error.violations) {
+    const match = /^"([^"]+)" must be a string$/.exec(violation)
+    if (match === null) return undefined
+    const message = idFormatMessage[match[1] as ToolIdParam]
+    if (message === undefined) return undefined
+    messages.push(message)
   }
+  const message = messages[0]
+  return message === undefined ? undefined : new WritingError('invalid-input', message)
 }
+
+/**
+ * defineTool, plus a translation of wrong-type id arguments into the same invalid-input text.
+ * The published schema stays type string. Other failures, including non-Zod errors, are unchanged.
+ * @param options - Tool definition.
+ * @returns The registered tool definition.
+ */
+function buildStoryTool(options: never): ToolDefinition {
+  const tool = defineTool(options)
+  const run = tool.execute.bind(tool)
+  tool.execute = async (args, exec) => {
+    try {
+      return await run(args, exec)
+    } catch (error) {
+      const translated = idTypeError(error)
+      if (translated !== undefined) throw translated
+      throw error
+    }
+  }
+  return tool
+}
+
+/** Same call-site inference as defineTool, with id type errors translated after schema validation. */
+export const defineStoryTool = buildStoryTool as typeof defineTool
 
 /** Shared public metadata for an exact stored artifact version. */
 export const artifactProperties = {
@@ -97,11 +162,11 @@ export async function writingActor(ctx: Context, exec: ToolExecution): Promise<A
  * @param previewDirectory - Configured Session-relative version directory.
  */
 export function registerWritingTools(ctx: Context, service: WritingService, previewDirectory: string): void {
-  ctx.effect(() => ctx.tools.register(defineTool({
+  ctx.effect(() => ctx.tools.register(defineStoryTool({
     name: 'story_create_novel',
     description: 'Create a novel and save its initial creative brief. Reuse the same requestId only for the same request. Creation does not change the selected novel.',
     parameters: {
-      requestId: { type: 'string', required: true },
+      requestId: requestIdParameter,
       title: { type: 'string', required: true },
       brief: { type: 'string', required: true },
     },
@@ -109,31 +174,31 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
     async execute(args, exec) {
       const actor = await writingActor(ctx, exec)
       exec.signal.throwIfAborted()
-      return novelValue(await service.createNovel(actor, { ...args, requestId: parseRequestId(args.requestId) }))
+      return novelValue(await service.createNovel(actor, { ...args, requestId: parseToolRequestId(args.requestId) }))
     },
   })))
-  ctx.effect(() => ctx.tools.register(defineTool({
+  ctx.effect(() => ctx.tools.register(defineStoryTool({
     name: 'story_save_brief',
     description: 'Save a new immutable creative-brief version. Supply the current novel revision as expectedRevision; revision conflicts require rereading before deciding another change. Reuse requestId only for the same request.',
     parameters: {
       novelId: novelIdParameter,
-      requestId: { type: 'string', required: true },
+      requestId: requestIdParameter,
       expectedRevision: { type: 'integer', required: true, description: 'Positive current novel revision.' },
       text: { type: 'string', required: true },
     },
     output: novelOutput,
     async execute(args, exec) {
       return novelValue(await service.saveBrief(await writingActor(ctx, exec), {
-        ...args, novelId: parseToolNovelId(args.novelId), requestId: parseRequestId(args.requestId),
+        ...args, novelId: parseToolNovelId(args.novelId), requestId: parseToolRequestId(args.requestId),
       }))
     },
   })))
-  ctx.effect(() => ctx.tools.register(defineTool({
+  ctx.effect(() => ctx.tools.register(defineStoryTool({
     name: 'story_read_artifact',
     description: `Read an exact artifact version in Unicode code-point pages. Follow nextOffset until eof. Explicit limit must be between 1 and ${service.limits.maxReadChars}.`,
     parameters: {
       novelId: novelIdParameter,
-      artifactId: { type: 'string', required: true },
+      artifactId: artifactIdParameter,
       offset: { type: 'integer', required: true, description: 'Nonnegative Unicode code-point offset.' },
       limit: { type: 'integer', required: true, description: `Positive page length up to ${service.limits.maxReadChars} code points.` },
     },
@@ -161,11 +226,11 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
       // Review children always read the reader-facing prose view; the host decides, not the child.
       const view = service.readsProse(exec.agent?.session.id) ? 'prose' : 'stored'
       return service.readArtifact(await writingActor(ctx, exec), {
-        ...args, novelId: parseToolNovelId(args.novelId), artifactId: parseArtifactId(args.artifactId), view,
+        ...args, novelId: parseToolNovelId(args.novelId), artifactId: parseToolArtifactId(args.artifactId), view,
       })
     },
   })))
-  ctx.effect(() => ctx.tools.register(defineTool({
+  ctx.effect(() => ctx.tools.register(defineStoryTool({
     name: 'story_get_novel',
     description: 'Read an owned novel, its current revision and immutable creative-brief history without embedding document text.',
     parameters: { novelId: novelIdParameter },
@@ -175,7 +240,7 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
       return novelValue(service.getNovel(await writingActor(ctx, exec), parseToolNovelId(args.novelId)))
     },
   })))
-  ctx.effect(() => ctx.tools.register(defineTool({
+  ctx.effect(() => ctx.tools.register(defineStoryTool({
     name: 'story_list_novels',
     description: 'List novels owned by the current Session workspace. Text remains available through exact artifact reads.',
     parameters: {},
@@ -188,7 +253,7 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
       return service.listNovels(await writingActor(ctx, exec)).map(novelValue)
     },
   })))
-  ctx.effect(() => ctx.tools.register(defineTool({
+  ctx.effect(() => ctx.tools.register(defineStoryTool({
     name: 'story_select_novel',
     description: 'Select an existing novel for this Session. Other Sessions retain their selections.',
     parameters: { novelId: novelIdParameter },
@@ -197,7 +262,7 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
       return novelValue(await service.selectNovel(await writingActor(ctx, exec), parseToolNovelId(args.novelId)))
     },
   })))
-  ctx.effect(() => ctx.tools.register(defineTool({
+  ctx.effect(() => ctx.tools.register(defineStoryTool({
     name: 'story_get_selection',
     description: 'Read the novel selected in this Session. Null means no selection; creation does not select a novel.',
     parameters: {},
@@ -211,12 +276,12 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
       return selected === null ? null : novelValue(selected)
     },
   })))
-  ctx.effect(() => ctx.tools.register(defineTool({
+  ctx.effect(() => ctx.tools.register(defineStoryTool({
     name: 'story_preview',
     description: 'Open a complete immutable artifact version in the current Session document preview. Requires an exact novelId and artifactId from writing tool results.',
     parameters: {
       novelId: novelIdParameter,
-      artifactId: { type: 'string', required: true },
+      artifactId: artifactIdParameter,
     },
     output: {
       schema: {
@@ -238,7 +303,7 @@ export function registerWritingTools(ctx: Context, service: WritingService, prev
       const actor = await writingActor(ctx, exec)
       const novelId = parseToolNovelId(args.novelId)
       const novel = service.getNovel(actor, novelId)
-      const artifact = service.getArtifact(actor, { novelId, artifactId: parseArtifactId(args.artifactId) })
+      const artifact = service.getArtifact(actor, { novelId, artifactId: parseToolArtifactId(args.artifactId) })
       const imported = artifact.kind === 'settings-dimension' && service.getSettings(actor, novelId).history.some(item => item.artifact.id === artifact.id && item.origin === 'import')
       return projectArtifact(ctx, exec, actor, novel, artifact, previewDirectory, imported)
     },

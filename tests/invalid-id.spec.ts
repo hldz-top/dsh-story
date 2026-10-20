@@ -17,13 +17,13 @@ import { z } from 'zod'
 import * as Story from '../src/index.ts'
 import { WritingError, parseArtifactId, parseNovelId, parseRequestId, type Actor } from '../src/contracts.ts'
 import { parseRunId } from '../src/run-store.ts'
-import { parseToolNovelId, parseToolRunId } from '../src/tools.ts'
+import { admitToolId, artifactIdParameter, attemptIdParameter, idFormatMessage, novelIdParameter, parseToolNovelId, parseToolRunId, requestIdParameter, runIdParameter } from '../src/tools.ts'
 import { mountPluginRuntime } from './support/plugin-runtime.ts'
 import { call, ScriptedModel, stop } from './support/model.ts'
 
 const uuid = '00c38d7c-50d8-4a1b-93f0-188daf5a9859'
-const novelMessage = 'novelId must look like novel_<uuid>'
-const runMessage = 'runId must look like run_<uuid>'
+const novelMessage = idFormatMessage.novelId
+const runMessage = idFormatMessage.runId
 const artifactId = `artifact_${uuid}`
 const attemptId = `attempt_${uuid}`
 const zodDump = /invalid_format|invalid_type|ZodError|"origin"|"pattern"/
@@ -135,7 +135,7 @@ function expectWritingError(value: unknown, message: string): void {
   }
 }
 
-async function setup(model = new ScriptedModel(() => stop())) {
+async function setup(model = new ScriptedModel(() => stop()), allowIncompleteSettings = false) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-story-invalid-id-'))
   const cwd = join(root, 'novel-workspace')
   await mkdir(cwd)
@@ -152,7 +152,7 @@ async function setup(model = new ScriptedModel(() => stop())) {
   await ctx.plugin(LocalFileSystem, { cwd: root })
   await ctx.plugin(Present, new Present.Config())
   ctx.effect(() => ctx.llm.registerAdapter(['fixture'], model))
-  await ctx.plugin(Story, new Story.Config({ ...new Story.Config(), maxArtifactBytes: 100_000, maxReadChars: 1024, previewDirectory: '.dsh-story', allowSettingsImport: true }))
+  await ctx.plugin(Story, new Story.Config({ ...new Story.Config(), maxArtifactBytes: 100_000, maxReadChars: 1024, previewDirectory: '.dsh-story', allowSettingsImport: true, allowIncompleteSettings }))
   const harness = await mountAgentLoopTestHarness(ctx)
   const agent = await harness.create(SessionId(randomUUID()), { provider: 'fixture', model: 'deterministic' }, { cwd })
   const execute = (name: string, args: Record<string, unknown>) => ctx.tools.execute({
@@ -183,6 +183,25 @@ it('rejects a malformed novelId or runId from every tool without a zod dump', as
   const names = (key: 'novelId' | 'runId') => ctx.tools.schemas().flatMap(schema => parameterNames(schema).includes(key) ? [schema.name] : []).sort()
   expect(names('novelId')).toEqual([...novelTools].sort())
   expect(names('runId')).toEqual([...runTools].sort())
+  const propertiesOf = (name: string) => {
+    const schema = ctx.tools.schemas().find(item => item.name === name)
+    if (schema === undefined) throw new Error(`missing tool ${name}`)
+    const properties = schema.parameters.properties
+    if (typeof properties !== 'object' || properties === null) throw new Error(`${name} has no properties`)
+    return properties as Record<string, unknown>
+  }
+  expect(propertiesOf('story_get_novel').novelId).toEqual({ type: 'string', description: novelIdParameter.description })
+  expect(propertiesOf('story_get_run').runId).toEqual({ type: 'string', description: runIdParameter.description })
+  expect(propertiesOf('story_read_artifact').artifactId).toEqual({ type: 'string', description: artifactIdParameter.description })
+  expect(propertiesOf('story_read_run_output').attemptId).toEqual({ type: 'string', description: attemptIdParameter.description })
+  expect(propertiesOf('story_save_brief').requestId).toEqual({ type: 'string', description: requestIdParameter.description })
+  expect(propertiesOf('story_get_research').planId).toEqual({ type: 'string', description: artifactIdParameter.description })
+  expect(propertiesOf('story_write').briefArtifactId).toEqual({ type: 'string', description: artifactIdParameter.description })
+  expect(propertiesOf('story_revise').baseArtifactId).toEqual({ type: 'string', description: artifactIdParameter.description })
+  expect(propertiesOf('story_settings_import').expectedAppliedId).toEqual({ type: 'string', description: artifactIdParameter.description })
+  for (const description of [novelIdParameter.description, runIdParameter.description, artifactIdParameter.description, attemptIdParameter.description]) {
+    expect(description).toContain('lowercase UUID')
+  }
   for (const [label, value] of malformed('novel')) {
     for (const name of novelTools) {
       const text = errorText(await execute(name, novelCall(name, value)), `${name} ${label}`)
@@ -250,7 +269,7 @@ it('still runs every id-taking tool when the novelId or runId is valid', async (
   expect(await read('story_stop', { runId: completed.id })).toMatchObject({ id: completed.id, status: 'completed' })
   expect(await read('story_list_runs', { novelId })).toMatchObject([{ id: completed.id }])
   const page = await refused('story_read_run_output', { runId: completed.id, attemptId, offset: 0, limit: 1 })
-  expect(page).toContain('Attempt does not belong to this run')
+  expect(page).toContain('attemptId does not belong to this run')
   expect(page).not.toContain(runMessage)
   const resume = await refused('story_resume', { runId: completed.id, retryUnknown: false })
   expect(resume).toContain('Completed runs cannot resume')
@@ -283,4 +302,91 @@ it('records the friendly id error in the model-visible tool result', async () =>
     ? event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : [])
     : [])
   expect(logged).toEqual(texts)
+  expect(texts.join('\n')).not.toContain('invalid-input')
+})
+
+it('rethrows a non-Zod error from id parsing or the tool handler unchanged', async () => {
+  const boom = new Error('storage exploded')
+  expect(() => admitToolId(() => { throw boom }, 'novelId', 'x')).toThrow(boom)
+  try {
+    admitToolId(() => { throw boom }, 'novelId', 'x')
+  } catch (error) {
+    expect(error).toBe(boom)
+    expect(error).not.toBeInstanceOf(WritingError)
+  }
+  const { ctx } = await setup()
+  const outcome = await ctx.tools.execute({
+    callId: ToolCallId(randomUUID()), name: 'story_get_novel', arguments: { novelId: `novel_${uuid}` }, signal: new AbortController().signal,
+  })
+  expect(outcome.isError).toBe(true)
+  if (!outcome.isError) throw new Error('expected a handler error')
+  expect(outcome.error.message).toBe('Writing tools require a Session workspace')
+  expect(outcome.error.message).not.toContain('invalid-input')
+  expect(outcome.content).toEqual([{ type: 'text', text: 'Error: Writing tools require a Session workspace' }])
+})
+
+it('rejects every other id kind and names a missing id', async () => {
+  const { ctx, actor, execute } = await setup()
+  const brief = '守塔人找到了失踪日志。'
+  const created = await ctx.story.createNovel(actor, { requestId: parseRequestId('create-other-ids'), title: '潮汐城', brief })
+  const novelId = created.id
+  const missingArtifact = `artifact_${uuid}`
+  const refused = async (name: string, args: Record<string, unknown>) => errorText(await execute(name, args), name)
+  const scope = { novelId, briefArtifactId: created.brief.id, settingsRoots: ['e1'], chapterCount: 1, fromChapter: 1, throughChapter: 1 }
+  for (const [name, args, message] of [
+    ['story_read_artifact', { novelId, artifactId: 'nope', offset: 0, limit: 1 }, idFormatMessage.artifactId],
+    ['story_read_artifact', { novelId, artifactId: '', offset: 0, limit: 1 }, idFormatMessage.artifactId],
+    ['story_read_artifact', { novelId, artifactId: 1, offset: 0, limit: 1 }, idFormatMessage.artifactId],
+    ['story_save_brief', { novelId, requestId: '', expectedRevision: 1, text: '下一版。' }, idFormatMessage.requestId],
+    ['story_save_brief', { novelId, requestId: '   ', expectedRevision: 1, text: '下一版。' }, idFormatMessage.requestId],
+    ['story_save_brief', { novelId, requestId: null, expectedRevision: 1, text: '下一版。' }, idFormatMessage.requestId],
+    ['story_create_novel', { requestId: '', title: '潮汐城', brief }, idFormatMessage.requestId],
+    ['story_get_research', { novelId, planId: 'nope' }, idFormatMessage.planId],
+    ['story_get_research', { novelId, planId: '' }, idFormatMessage.planId],
+    ['story_get_research', { novelId, planId: null }, idFormatMessage.planId],
+    ['story_write', { ...scope, requestId: 'write-bad-brief', briefArtifactId: '' }, idFormatMessage.briefArtifactId],
+    ['story_write', { ...scope, requestId: 'write-bad-brief-type', briefArtifactId: 1 }, idFormatMessage.briefArtifactId],
+    ['story_revise', { ...scope, requestId: 'revise-bad-base', baseArtifactId: '', instructions: '改。' }, idFormatMessage.baseArtifactId],
+    ['story_revise', { ...scope, requestId: 'revise-bad-base-type', baseArtifactId: null, instructions: '改。' }, idFormatMessage.baseArtifactId],
+    ['story_settings_import', { novelId, requestId: 'import-bad-head', dimensionCode: 'a1', expectedAppliedId: '', output: '{}' }, idFormatMessage.expectedAppliedId],
+    ['story_settings_import', { novelId, requestId: 'import-bad-head-type', dimensionCode: 'a1', expectedAppliedId: 1, output: '{}' }, idFormatMessage.expectedAppliedId],
+    ['story_read_run_output', { runId: `run_${uuid}`, attemptId: 'bad', offset: 0, limit: 1 }, idFormatMessage.attemptId],
+    ['story_read_run_output', { runId: `run_${uuid}`, attemptId: '', offset: 0, limit: 1 }, idFormatMessage.attemptId],
+    ['story_read_run_output', { runId: `run_${uuid}`, attemptId: null, offset: 0, limit: 1 }, idFormatMessage.attemptId],
+  ] as const) {
+    expect(await refused(name, { ...args }), `${name} ${message}`).toBe(`Error: ${message}`)
+  }
+  expect(await refused('story_get_novel', { novelId: `novel_${uuid}` })).toContain('novelId does not exist')
+  expect(await refused('story_read_artifact', { novelId, artifactId: missingArtifact, offset: 0, limit: 1 })).toContain('artifactId is not published in this novel')
+  expect(await refused('story_get_run', { runId: `run_${uuid}` })).toContain('runId does not exist')
+  expect(await refused('story_get_research', { novelId, planId: missingArtifact })).toContain('planId is not published in this novel')
+  expect(await refused('story_write', { ...scope, requestId: 'write-missing-brief', briefArtifactId: missingArtifact })).toContain('briefArtifactId')
+  const saved = z.object({ brief: z.object({ id: z.string() }) }).parse(await (async () => {
+    const outcome = await execute('story_save_brief', { novelId, requestId: 'fresh-request-id', expectedRevision: created.revision, text: '第二版。' })
+    if (outcome.isError) throw new Error(outcome.error.message)
+    return outcome.value
+  })())
+  expect(saved.brief.id).not.toBe(created.brief.id)
+  expect(await refused('story_settings_import', { novelId, requestId: 'import-missing-head', dimensionCode: 'a1', expectedAppliedId: missingArtifact, output: '{}' })).toContain('expectedAppliedId')
+  const runner = ctx.storyRunner
+  const run = await runner.runs.begin(actor, {
+    novelId, briefArtifactId: parseArtifactId(saved.brief.id), requestId: parseRequestId('run-for-attempt'), settingsRoots: ['a1'],
+    chapterCount: 1, fromChapter: 1, throughChapter: 1, mode: 'write', revision: null, executionLimits: runner.limits,
+    serviceLimits: { ...ctx.story.limits, ...ctx.story.researchLimits },
+  })
+  expect(await refused('story_read_run_output', { runId: run.id, attemptId, offset: 0, limit: 1 })).toContain('attemptId does not belong to this run')
+})
+
+it('names a missing baseArtifactId without treating a valid id as malformed', async () => {
+  const { ctx, actor, execute } = await setup(new ScriptedModel(() => stop()), true)
+  const created = await ctx.story.createNovel(actor, { requestId: parseRequestId('create-base'), title: '潮汐城', brief: '守塔人。' })
+  const outcome = await execute('story_revise', {
+    novelId: created.id, briefArtifactId: created.brief.id, requestId: 'revise-missing-base', settingsRoots: ['a1'],
+    chapterCount: 1, fromChapter: 1, throughChapter: 1, baseArtifactId: `artifact_${uuid}`, instructions: '改开场。',
+  })
+  expect(outcome.isError).toBe(false)
+  if (outcome.isError) throw new Error(outcome.error.message)
+  expect(outcome.value).toMatchObject({ status: 'failed', error: expect.stringContaining('baseArtifactId') })
+  const valid = await execute('story_get_novel', { novelId: created.id })
+  expect(valid.isError).toBe(false)
 })

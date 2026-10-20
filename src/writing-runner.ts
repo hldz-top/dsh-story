@@ -137,7 +137,7 @@ export class WritingRunner {
   private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false, gated = true): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
-    if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
+    if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'briefArtifactId must name the current creative brief')
     if (gated && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
       if (missing.length > 0) throw new SettingsIncompleteError(missing)
@@ -287,7 +287,7 @@ export class WritingRunner {
       return
     }
     const base = manuscript.heads.find(item => item.artifact.id === revision.baseArtifactId)
-    if (base === undefined || (base.target.kind !== 'book-outline' && base.target.kind !== 'chapter-outline')) throw new WritingError('revision-conflict', 'Revision base must be the current applied settings dimension or outline')
+    if (base === undefined || (base.target.kind !== 'book-outline' && base.target.kind !== 'chapter-outline')) throw new WritingError('revision-conflict', 'baseArtifactId must be the current applied settings dimension or outline')
     const candidate = await this.generated(inv, base.target, revision)
     if (candidate.review === null) throw new WritingError('review-blocked', 'Upstream revision requires a passing review')
     await this.service.applyManuscriptCandidate(inv.actor, { novelId: inv.run.novelId, candidateId: candidate.artifact.id, reviewId: candidate.review.id, expectedAppliedId: revision.baseArtifactId })
