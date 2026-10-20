@@ -11,6 +11,7 @@ DSH Story is a standalone TypeScript plugin for researched settings, book and ch
 ## Table of Contents
 
 - [Installation](#installation)
+- [Host-provided peers](#host-provided-peers)
 - [Writing workflow](#writing-workflow)
 - [Reading and previews](#reading-and-previews)
 - [Local development](#local-development)
@@ -42,6 +43,29 @@ Remove it with `dsh plugin --profile web remove dsh-story-weaver` (use the same 
 
 - Your novels and run history stay in `$DSH_HOME/storages/story_writing.json` and `$DSH_HOME/storages/story_runs.json`. Reinstalling picks them up again; delete these files yourself if you want the data gone.
 - Empty scope directories such as `node_modules/@deepseek-ai/` and `node_modules/@standard-schema/` may be left in the profile directory. They are safe to delete.
+
+## Host-provided peers
+
+A DSH profile installs plugins with pnpm `autoInstallPeers` turned off and a hoisted `node_modules`. Packages the plugin only calls inside the host are resolved from that running installation, so the profile does not download a second copy.
+
+Those packages stay in `peerDependencies` with the same version ranges. Each one is marked `"optional": true` in `peerDependenciesMeta`, so a profile `pnpm install` (and `dsh plugin add`) stays quiet when they are absent. The host still checks every `@deepseek-ai/dsh-*` peer range against the running DSH version before it loads the plugin. The optional peers are:
+
+| Peer | Range |
+| --- | --- |
+| `@deepseek-ai/cordis` | `4.0.4` |
+| `@deepseek-ai/dsh-fs` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-llm` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-sandbox-policy` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-session` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-session-persistence` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-session-projection` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-storage-domain` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-subagent` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-tool-present` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-tool-web` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-tools` | `>=0.2.0-rc.2 <0.3.0-0` |
+
+`@deepseek-ai/dsh-brand` is a direct dependency of this package. The published brand package declares its own required peer `@deepseek-ai/cordis@~4.0.4`. On a profile install, pnpm still reports that missing `cordis` peer. That declaration is upstream; this repository does not change it. The host provides the same cordis instance when the plugin runs.
 
 ## Writing workflow
 
