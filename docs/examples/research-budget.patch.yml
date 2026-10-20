@@ -8,7 +8,8 @@
 # with `dsh --profile <profile> --patch <this file> --dump-config`.
 #
 # A run freezes the limits it started with. Resuming it later is refused ("Restore the captured writing and research
-# limits…") unless the same research and chapter-word limits are in effect, so resume with this same patch.
+# limits…") unless the same research and chapter-word limits (and, on prompt version 5, the same aiToneBlocking) are in
+# effect, so resume with this same patch.
 #
 # The entry id is the plugin id `dsh-story-weaver` (renamed from `dsh-story`). A patch with the old id is skipped at
 # runtime without an error; only `--dump-config` prints `patch: entry "dsh-story" not found` on stderr.
@@ -24,3 +25,4 @@
     maxResearchCalls: 12
     maxResearchSources: 96
     # allowIncompleteSettings: true   # only if your profile already sets it
+    # aiToneBlocking: false           # default true; set it here, in this same entry, e.g. for experiment arms

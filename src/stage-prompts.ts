@@ -9,9 +9,9 @@ import { ENUM_SETTINGS_KINDS, MAX_ENUM_SETTINGS_CONTENT_CHARS, MAX_ENUM_SETTINGS
  * prompt under an existing key). Version 1 is the text before chapter-quality guardrails and stays frozen; runs stored
  * without a version are version 1.
  */
-export type PromptVersion = 1 | 2 | 3 | 4
+export type PromptVersion = 1 | 2 | 3 | 4 | 5
 /** The version new runs record. */
-export const CURRENT_PROMPT_VERSION: PromptVersion = 4
+export const CURRENT_PROMPT_VERSION: PromptVersion = 5
 
 /** Business purpose of one independently executed stage. */
 export type StagePromptKind = 'settings' | 'review' | 'book-outline' | 'chapter-outline' | 'body' | 'continuity'
@@ -33,6 +33,12 @@ export interface StagePromptRequest {
   readonly reviewedKind?: StagePromptKind
   /** The run's recorded prompt version; omitted means version 1, the frozen pre-guardrail text. */
   readonly promptVersion?: PromptVersion
+  /**
+   * Version 5 only: the run froze aiToneBlocking on, so a body review gets the blocking AI-tone sentence in place of the
+   * advisory version-3 one. Omitted or false keeps the version-4 text byte for byte; ignored before version 5 and for
+   * every other stage.
+   */
+  readonly aiToneBlocking?: boolean
 }
 
 const stageInstructions: Record<StagePromptKind, readonly string[]> = {
@@ -73,6 +79,19 @@ const stageInstructions: Record<StagePromptKind, readonly string[]> = {
 const aiToneGuardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
   review: [
     'When task.aiToneMarkers is present, review the narration for AI tone using those host-detected markers (after lieflat-less-ai-tone): reversal framing (不是…而是), dense 、 lists, revealing dashes, set openers (说白了), nominalised summaries, translationese (当…时, 对于…来说, sentence-initial 然而/因此/此外, 这意味着) and zero-subject paragraph comments. Report each real instance as an advisory style issue quoting the narration; ignore dialogue and panels, and never treat questions, metaphors, sentence-length rhythm, passive voice or long sentences as AI tone. Markers can be false positives; AI tone is never blocking.',
+  ],
+}
+
+/**
+ * Version 5 with aiToneBlocking on replaces the version-3 sentence (and its "AI tone is never blocking") in body reviews.
+ * The reviewer still files AI tone as advisory style issues, because admission rejects a blocking style issue
+ * (stage-output.ts); the id prefix marks them, and WritingRunner decides in code which of them block: those whose quote is
+ * a verbatim excerpt of the body carrying a host marker. Versions 1-4, and version 5 with the switch off, keep their bytes.
+ */
+export const AI_TONE_ISSUE_PREFIX = 'ai-tone'
+const aiToneBlockingGuardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
+  review: [
+    'When task.aiToneMarkers is present, review the narration for AI tone using those host-detected markers (after lieflat-less-ai-tone): reversal framing (不是…而是), dense 、 lists, revealing dashes, set openers (说白了), nominalised summaries, translationese (当…时, 对于…来说, sentence-initial 然而/因此/此外, 这意味着) and zero-subject paragraph comments. Report each real instance as a style issue with severity advisory and an id starting with "ai-tone-", and quote the offending narration from the reviewed body as its evidence, copied character for character as one exact excerpt of the body. Keep these issues advisory: the host itself blocks the chapter and returns it for repair for every such issue whose quote occurs verbatim in the body and contains one of the markers; an AI-tone issue without such a quote is recorded but does not block. Ignore dialogue and panels, never treat questions, metaphors, sentence-length rhythm, passive voice or long sentences as AI tone, and do not report markers that are false positives.',
   ],
 }
 
@@ -167,7 +186,8 @@ export function buildStagePrompt(request: StagePromptRequest): string {
       : request.kind === 'review' ? reviewInstructions(request.settingsDimensionKind, request.settingsCollectionKinds)
       : stageInstructions[request.kind]),
     ...((request.promptVersion ?? 1) >= 2 ? guardrails[request.kind] ?? [] : []),
-    ...((request.promptVersion ?? 1) >= 3 && (request.kind !== 'review' || request.reviewedKind === 'body') ? aiToneGuardrails[request.kind] ?? [] : []),
+    ...((request.promptVersion ?? 1) >= 3 && (request.kind !== 'review' || request.reviewedKind === 'body')
+      ? ((request.promptVersion ?? 1) >= 5 && request.aiToneBlocking === true && request.kind === 'review' ? aiToneBlockingGuardrails : aiToneGuardrails)[request.kind] ?? [] : []),
     ...((request.promptVersion ?? 1) >= 4 ? aiToneWritingGuardrails[request.kind] ?? [] : []),
   ]
   return [...instructions, 'TASK_DATA', JSON.stringify({

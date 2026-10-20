@@ -6,8 +6,9 @@
  *
  * Only narration is scanned: 「」 and “” dialogue and standalone 【】 panel lines are removed first, because the skill
  * leaves dialogue, quotations and genre formatting alone. Rules the skill exempts for fiction are not ported: adjacent
- * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Counts are evidence for an advisory
- * style review, never a gate; this module computes no chapter positions.
+ * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Counts are evidence for the
+ * style review; from prompt version 5 with aiToneBlocking on, {@link hasAiToneMarker} also decides which quoted spans
+ * block (see WritingRunner). This module computes no chapter positions.
  */
 
 export type AiToneRule = 'reversal' | 'enumeration' | 'dash' | 'opener' | 'nominalization' | 'long-attributive' | 'when-clause' | 'topic-shell' | 'connective' | 'restatement' | 'zero-subject-comment'
@@ -56,4 +57,16 @@ export function detectAiTone(text: string): AiToneReport {
   const paragraphs = text.split('\n').map(line => line.trim()).filter(line => line.length >= 8 && !/^[「“【]/u.test(line))
   add('zero-subject-comment', '11 段首零主语评论', paragraphs.slice(1).filter(paragraph => COMMENT.test(paragraph) && !ANAPHOR.test(paragraph.split(/[，。！？]/u)[0] ?? '')).map(paragraph => paragraph.split(/[，。！？]/u)[0] ?? paragraph))
   return { source: 'lieflat-less-ai-tone@27d2923 (MIT)', narrationHan, markers }
+}
+
+/**
+ * @param span - One exact excerpt of the chapter quoted by an AI-tone review issue.
+ * @returns Whether the excerpt's narration itself carries a host marker (any pattern above, or a zero-subject comment
+ * opener). The prompt-version-5 gate blocks only on such spans, so the decision rests on host markers plus the verbatim
+ * quote, never on the reviewer's severity.
+ */
+export function hasAiToneMarker(span: string): boolean {
+  const narration = narrationOf(span)
+  if (patterns.some(({ pattern }) => { pattern.lastIndex = 0; return [...narration.matchAll(pattern)].length > 0 })) return true
+  return narration.split('\n').some(line => COMMENT.test(line.trim()) && !ANAPHOR.test(line.trim().split(/[，。！？]/u)[0] ?? ''))
 }

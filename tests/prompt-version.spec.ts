@@ -69,7 +69,7 @@ describe('version 3 AI-tone review', () => {
 })
 
 describe('version 2 guardrails', () => {
-  it('is followed by version 4 for new runs', () => { expect(CURRENT_PROMPT_VERSION).toBe(4) })
+  it('is followed by version 5 for new runs', () => { expect(CURRENT_PROMPT_VERSION).toBe(5) })
 
   it('appends each sentence only to its own stage', () => {
     for (const kind of kinds) {
@@ -174,12 +174,28 @@ describe('runs keep their prompt version', () => {
     for (const { prompt } of record.seen) expect(prompt).not.toContain(AI_TONE_WRITING_PHRASE)
   })
 
-  it('starts new runs on version 4 and hands body reviews host-measured beats and AI-tone markers', { timeout: 120_000 }, async () => {
+  it('resumes a version-4 run with the version-4 prompts after a stop', { timeout: 120_000 }, async () => {
+    const record = recorder()
+    const fixture = await useWritingFixture({ maxReadChars: 8192, onChildRequest: record.onChildRequest })
+    const run = await fixture.runs.begin(fixture.actor, { ...fixture.input, chapterCount: 1, throughChapter: 1, revision: null,
+      executionLimits: fixture.runner.limits, serviceLimits: { ...fixture.service.limits, ...fixture.service.researchLimits } }, 4)
+    await fixture.runs.finish(fixture.actor, run.id, 'stopped', 'Stored on prompt version 4.')
+    const outcome = await fixture.run(exec => fixture.runner.resume(exec, run.id, false))
+    if (outcome.status === 'rejected') throw outcome.reason
+    expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 4 })
+    expect(outcome.value.executionLimits).not.toHaveProperty('aiToneBlocking')
+    expect(record.seen.find(item => item.stage.kind === 'body')?.prompt).toContain(AI_TONE_WRITING_PHRASE)
+    const bodyReview = record.seen.find(item => item.stage.kind === 'review' && typeof item.stage.task?.measuredWordCount === 'number')
+    expect(bodyReview?.prompt).toContain('AI tone is never blocking')
+    expect(bodyReview?.prompt).not.toContain('the host itself blocks the chapter')
+  })
+
+  it('starts new runs on version 5 and hands body reviews host-measured beats and AI-tone markers', { timeout: 120_000 }, async () => {
     const record = recorder()
     const fixture = await useWritingFixture({ maxReadChars: 8192, onChildRequest: record.onChildRequest })
     const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, chapterCount: 1, throughChapter: 1 }))
     if (outcome.status === 'rejected') throw outcome.reason
-    expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 4 })
+    expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 5, executionLimits: { aiToneBlocking: true } })
     expect(record.seen.find(item => item.stage.kind === 'body')?.prompt).toContain('tool or equipment list in the settings')
     expect(record.seen.find(item => item.stage.kind === 'body')?.prompt).toContain(AI_TONE_WRITING_PHRASE)
     for (const item of record.seen.filter(item => item.stage.kind !== 'body')) expect(item.prompt).not.toContain(AI_TONE_WRITING_PHRASE)

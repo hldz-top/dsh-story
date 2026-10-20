@@ -28,6 +28,9 @@ const executionLimitsSchema = z.strictObject({
   maxRepairAttempts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), maxParallelStages: positive,
   maxStageRequests: positive, stageTimeoutMs: positive.max(2_147_483_647), maxDelegationDepth: positive,
   minChapterWords: positive, maxChapterWords: positive, stageProvider: z.string().min(1).refine(value => value.trim().length > 0),
+  // Prompt version 5 and later only: whether AI-tone findings in a body review block. Recorded on every such run (begin fills
+  // the default, on); absent on runs created before version 5, which keep advisory AI tone whatever the current config says.
+  aiToneBlocking: z.boolean().optional(),
 }).refine(value => value.minChapterWords <= value.maxChapterWords, 'Invalid chapter word range')
 /** Native execution and writing limits captured before a run; model selection stays with DSH. */
 export type RunExecutionLimits = z.infer<typeof executionLimitsSchema>
@@ -99,7 +102,7 @@ const runSchema = z.strictObject({
   startedBy: sessionIdSchema, lastResumedBy: sessionIdSchema,
   attempts: z.array(attemptSchema), error: z.string().nullable(),
   // Prompt text version fixed at creation so a resume rebuilds identical prompts; absent on runs created before versioning (= 1).
-  promptVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional(),
+  promptVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional(),
 })
 /** Detached progress metadata; raw stage outputs are read explicitly. */
 export type WritingRun = Omit<RunRecord, 'attempts'> & { readonly attempts: readonly WritingAttempt[] }
@@ -139,6 +142,7 @@ export class RunStore {
     actor.signal?.throwIfAborted()
     const parsed = beginSchema.safeParse(input)
     if (!parsed.success) fail('invalid-input', parsed.error.message)
+    const request = withAiToneBlocking(parsed.data, promptVersion)
     await this.ensureNovel(actor, parsed.data.novelId)
     let result: RunRecord | undefined
     await this.domain.table('novels').update(parsed.data.novelId, current => {
@@ -147,13 +151,13 @@ export class RunStore {
       const existing = current.runs.find(run => run.requestId === parsed.data.requestId)
       if (existing !== undefined) {
         requireServiceLimits(existing)
-        if (!isDeepStrictEqual(beginSchema.parse(pickRequest(existing)), parsed.data)) fail('request-conflict', 'Request ID already names different writing inputs')
+        if (!isDeepStrictEqual(beginSchema.parse(pickRequest(existing)), withAiToneBlocking(parsed.data, existing.promptVersion ?? 1))) fail('request-conflict', 'Request ID already names different writing inputs')
         result = existing
         return current
       }
       validateRevisionBudget(parsed.data, this.limits)
       if (current.runs.some(active)) fail('active-run', 'The novel already has an unfinished writing run')
-      result = { ...parsed.data, limits: { ...this.limits }, id: brandString<RunId>(`run_${randomUUID()}`), status: 'running', startedBy: actor.sessionId, lastResumedBy: actor.sessionId, attempts: [], error: null, promptVersion }
+      result = { ...request, limits: { ...this.limits }, id: brandString<RunId>(`run_${randomUUID()}`), status: 'running', startedBy: actor.sessionId, lastResumedBy: actor.sessionId, attempts: [], error: null, promptVersion }
       return { ...current, version: 2, runs: [...current.runs, result] }
     })
     if (result === undefined) fail('corrupt-run', 'Run creation did not produce a record')
@@ -363,6 +367,15 @@ export class RunStore {
 }
 function pickRequest(run: RunRecord) {
   return { serviceLimits: run.serviceLimits, executionLimits: run.executionLimits, novelId: run.novelId, requestId: run.requestId, briefArtifactId: run.briefArtifactId, settingsRoots: run.settingsRoots, chapterCount: run.chapterCount, fromChapter: run.fromChapter, throughChapter: run.throughChapter, mode: run.mode, revision: run.revision }
+}
+
+/**
+ * A run on prompt version 5 or later always records aiToneBlocking (default on when the caller passed none); an older run
+ * never does, so its body reviews stay advisory regardless of the deployment's current switch.
+ */
+function withAiToneBlocking(input: BeginRunInput, promptVersion: PromptVersion): BeginRunInput {
+  const { aiToneBlocking, ...limits } = input.executionLimits
+  return { ...input, executionLimits: promptVersion >= 5 ? { ...limits, aiToneBlocking: aiToneBlocking ?? true } : limits }
 }
 
 function requireServiceLimits(run: RunRecord): void {

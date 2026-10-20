@@ -30,7 +30,7 @@ const runSchema = {
     chapterCount: integer, fromChapter: integer, throughChapter: integer, mode: { ...text, enum: ['write', 'update', 'revise'] },
     status: { ...text, enum: ['running', 'interrupted', 'completed', 'failed', 'stopped'] },
     revision: { required: true, oneOf: [{ type: 'object', additionalProperties: false, properties: { baseArtifactId: text, instructions: text } }, { type: 'null' }] },
-    startedBy: text, lastResumedBy: text, error: nullableText, promptVersion: { type: 'integer', enum: [1, 2, 3, 4] },
+    startedBy: text, lastResumedBy: text, error: nullableText, promptVersion: { type: 'integer', enum: [1, 2, 3, 4, 5] },
     limits: { type: 'object', required: true, additionalProperties: false, properties: { maxAttempts: integer, maxOutputBytes: integer } },
     serviceLimits: { required: true, oneOf: [{ type: 'object', additionalProperties: false, properties: {
       maxArtifactBytes: integer, maxReadChars: integer, maxResearchQuestions: integer, maxResearchCalls: integer,
@@ -38,7 +38,7 @@ const runSchema = {
     } }, { type: 'null' }] },
     executionLimits: { type: 'object', required: true, additionalProperties: false, properties: {
       maxRepairAttempts: integer, maxParallelStages: integer, maxStageRequests: integer, stageTimeoutMs: integer,
-      maxDelegationDepth: integer, minChapterWords: integer, maxChapterWords: integer, stageProvider: text,
+      maxDelegationDepth: integer, minChapterWords: integer, maxChapterWords: integer, stageProvider: text, aiToneBlocking: { type: 'boolean' },
     } },
     attempts: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
       id: text, parentSessionId: text, key: text, inputRefs, status: { ...text, enum: ['prepared', 'running', 'succeeded', 'failed', 'unknown'] },
@@ -85,8 +85,8 @@ function manuscriptValue(candidate: ManuscriptCandidateView) {
 }
 
 function renderJson<T>(_args: object, value: T) { return [{ type: 'text' as const, text: JSON.stringify(value) }] }
-function runValue({ promptVersion, ...run }: WritingRun) {
-  return { ...run, ...(promptVersion === undefined ? {} : { promptVersion }), settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(({ failureKind, evidenceEvents, ...attempt }) => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })),
+function runValue({ promptVersion, executionLimits: { aiToneBlocking, ...executionLimits }, ...run }: WritingRun) {
+  return { ...run, ...(promptVersion === undefined ? {} : { promptVersion }), executionLimits: { ...executionLimits, ...(aiToneBlocking === undefined ? {} : { aiToneBlocking }) }, settingsRoots: [...run.settingsRoots], attempts: run.attempts.map(({ failureKind, evidenceEvents, ...attempt }) => ({ ...attempt, inputRefs: attempt.inputRefs.map(ref => ({ ...ref })),
     ...(failureKind === undefined ? {} : { failureKind }),
     ...(evidenceEvents === undefined ? {} : { evidenceEvents: evidenceEvents.map(({ location, reason, ...event }) => ({ ...event, declared: { ...event.declared }, admitted: event.admitted.map(item => ({ ...item })),
       ...(location === undefined ? {} : { location }), ...(reason === undefined ? {} : { reason }) })) }) })) }

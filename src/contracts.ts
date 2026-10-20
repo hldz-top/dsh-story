@@ -204,13 +204,53 @@ export class ImportRefusedError extends HarnessError {
     this.name = 'ImportRefusedError'
   }
 }
+/** ai-tone: blocked with no repair attempt configured; ai-tone-repeat: a repair left a reported span (or the whole body) unchanged; ai-tone-exhausted: repair attempts ran out. */
+export type AiToneBlockReason = 'ai-tone' | 'ai-tone-repeat' | 'ai-tone-exhausted'
+/**
+ * The structured last line of every `review-blocked` stop, one discriminated union on `reason`: an import-aware settings
+ * stop (no reason, or `stale-import`) names `importItems`; an AI-tone body stop names the blocking body `spans` and never
+ * `importItems`.
+ */
+export type ReviewBlockedLine =
+  | { readonly code: 'review-blocked'; readonly reason?: 'stale-import'; readonly importItems: readonly ImportItem[] }
+  | { readonly code: 'review-blocked'; readonly reason: AiToneBlockReason; readonly spans: readonly string[] }
+/** @param line - One member of {@link ReviewBlockedLine}. @returns Its JSON text, the last line of the error message. */
+function reviewBlockedLine(line: ReviewBlockedLine): string { return JSON.stringify(line) }
+
 /** A blocking settings-collection review that would regenerate imported author text; the run stops instead. Ends with `{"code":"review-blocked","importItems":[...]}`. */
 export class ImportReviewBlockedError extends HarnessError {
   constructor(readonly importItems: readonly ImportItem[], readonly reason?: 'stale-import') {
     const codes = importItems.map(item => item.dimensionCode).join(', ')
     super(`${reason === 'stale-import'
       ? `Imported settings are out of date with their inputs (${codes}); stopped before regenerating any dimension, so imported text is not replaced. Import them again in dependency order (upstream first), then start a new story_update.`
-      : `The settings collection review is blocking and repair would regenerate imported settings (${codes}); stopped without regenerating any dimension. Correct the imported text and import it again, then start a new story_update.`}\n${JSON.stringify({ code: 'review-blocked', ...(reason === undefined ? {} : { reason }), importItems })}`, 'review-blocked')
+      : `The settings collection review is blocking and repair would regenerate imported settings (${codes}); stopped without regenerating any dimension. Correct the imported text and import it again, then start a new story_update.`}\n${reviewBlockedLine(reason === undefined ? { code: 'review-blocked', importItems } : { code: 'review-blocked', reason, importItems })}`, 'review-blocked')
     this.name = 'ImportReviewBlockedError'
   }
+}
+
+/** Exact body excerpts kept per stop line: at most this many spans of at most AI_TONE_SPAN_CHARS code points each. */
+const AI_TONE_MAX_SPANS = 20
+const AI_TONE_SPAN_CHARS = 200
+/**
+ * A body whose review keeps reporting AI tone while aiToneBlocking is on (prompt version 5). The chapter is not applied.
+ * Like the other stops its message ends with one JSON line `{"code":"review-blocked","reason":...,"spans":[...]}`.
+ */
+export class AiToneReviewBlockedError extends HarnessError {
+  readonly spans: readonly string[]
+  constructor(readonly reason: AiToneBlockReason, spans: readonly string[], key: string) {
+    const kept = spans.slice(0, AI_TONE_MAX_SPANS).map(span => [...span].slice(0, AI_TONE_SPAN_CHARS).join(''))
+    super(`${reason === 'ai-tone-repeat'
+      ? `The body review for ${key} reported AI tone again after a repair left the same text in place; stopped for human review without further repair attempts. The chapter was not applied.`
+      : reason === 'ai-tone-exhausted'
+        ? `The body review for ${key} still reports AI tone after every allowed repair attempt; stopped with the chapter unapplied.`
+        : `The body review for ${key} reports AI tone and no repair attempt is configured (maxRepairAttempts 0); stopped with the chapter unapplied.`} Revise the quoted passages, or turn aiToneBlocking off for new runs.\n${reviewBlockedLine({ code: 'review-blocked', reason, spans: kept })}`, 'review-blocked')
+    this.name = 'AiToneReviewBlockedError'
+    this.spans = Object.freeze(kept)
+  }
+}
+
+/** @param spans - Blocking AI-tone excerpts of one body review. @returns The repair instruction handed to the next body attempt, ending with the same structured line (reason ai-tone). */
+export function aiToneRepairInstruction(spans: readonly string[]): string {
+  const kept = spans.slice(0, AI_TONE_MAX_SPANS).map(span => [...span].slice(0, AI_TONE_SPAN_CHARS).join(''))
+  return `The body review reported AI tone in these exact passages of the narration; rewrite each one so that it no longer reads as AI tone, keeping the facts, events and voice, and return the complete chapter. Repeating a quoted passage unchanged stops the run for human review.\n${reviewBlockedLine({ code: 'review-blocked', reason: 'ai-tone', spans: kept })}`
 }
