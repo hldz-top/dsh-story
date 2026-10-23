@@ -1,0 +1,16 @@
+{
+  "source": "lieflat-less-ai-tone@27d2923 (MIT)",
+  "narrationHan": 3668,
+  "markers": [
+    {
+      "rule": "enumeration",
+      "skillRule": "2 顿号罗列过密",
+      "count": 2,
+      "perThousandHan": 0.5,
+      "examples": [
+        "一样一样数过去：安全绳、撬杆、气密胶、应急锁环，还有",
+        "一条一条往下看。巡检、试阀、贴片读数、交接字据，条目"
+      ]
+    }
+  ]
+}

@@ -491,6 +491,8 @@ export class WritingRunner {
       ...('length' in candidate ? { measuredWordCount: candidate.wordCount, measuredLength: candidate.length } : {}),
       // Version-1 runs keep their original task text; later runs hand the body review host-measured positions to cite.
       ...('beats' in candidate && candidate.beats !== null && promptVersionOf(inv.run) >= 2 ? { measuredBeats: candidate.beats } : {}),
+      // Version 3 body reviews also get host-detected AI-tone markers in narration (advisory evidence only).
+      ...('aiTone' in candidate && candidate.aiTone !== null && promptVersionOf(inv.run) >= 3 ? { aiToneMarkers: candidate.aiTone } : {}),
       ...(settingsDimensionKind === undefined ? {} : { dimensionKind: settingsDimensionKind }),
       ...(settingsCollectionKinds === undefined ? {} : { dimensionKinds: settingsCollectionKinds }) },
       [candidate.artifact], settingsDimensionKind, settingsCollectionKinds, reviewedKind)
@@ -549,7 +551,7 @@ export class WritingRunner {
           ? 'Condense or expand across all scenes to reach the aim; preserve required events, established facts and scene identities rather than passage wording.'
           : 'Repair the defects documented in the supplied prior candidate and review. Preserve unaffected facts and passages and return the entire candidate.'] : []),
       ], ...(settingsDimensionKind === undefined ? {} : { settingsDimensionKind }), ...(settingsCollectionKinds === undefined ? {} : { settingsCollectionKinds }),
-      promptVersion: promptVersionOf(inv.run) })
+      ...(kind === 'review' && reviewedKind !== undefined ? { reviewedKind } : {}), promptVersion: promptVersionOf(inv.run) })
     return this.capture(inv, key, prompt, allRefs, nativeStageOutputSchema(kind, promptVersionOf(inv.run)), ['story_read_artifact'], undefined, prose ? 'prose' : 'stored')
   }
 

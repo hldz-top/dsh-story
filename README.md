@@ -39,6 +39,12 @@ Use `dsh-story-weaver@next` for release candidates. In the DSH web UI you can in
 
 **Profiles other than `web`.** The bundle does not add the `present` tool, and the `headless` profile (like other non-web profiles) does not enable it by default. Without it, `story_write` is refused with `Writing requires the native present tool in this Agent scope` and no run is created. Enable `@deepseek-ai/dsh-tool-present` in that profile before writing; reading and preview tools work without it.
 
+### Upgrading
+
+Rolling back to an older plugin that does not know prompt versions 3 and 4 makes every run in that novel unreadable, including version 1 and 2 runs: the old code rejects stored versions 3 and 4.
+
+Resuming on this code hits attempt-conflict only for version 3 or 4 runs created on `07ab432` or earlier, and only for a chapter whose body review was started but not accepted (interrupted, outcome unknown, failed, or rejected and being retried), when that chapter's AI-tone markers change. For a run created on `07ab432` the only changed inputs are an ASCII period followed by whitespace (`. 然而，`, `.　然而，`) and a digit before the period (`第3.然而，`); for an earlier run, also an unclosed “ or 「, `.然而`, or a panel line with trailing spaces. An already-accepted body review is not rebuilt and does not conflict. Version 1 and 2 runs are not affected. An experiment that has already started must be resumed on the commit that created it.
+
 ### Uninstalling
 
 Remove it with `dsh plugin --profile web remove dsh-story-weaver` (use the same `--profile` you installed into). This removes the package, its dependencies and the bundle from the profile. Two things intentionally or harmlessly remain:
@@ -98,6 +104,10 @@ A blocked request stores no run. An empty `settingsRoots` is treated the same wa
 The plugin does not set a process exit code. In the headless DSH used for smoke runs, the process exits 0 even when a story tool fails, so scripts must check the tool result rather than the exit status. `story_resume` runs the same check against the run's stored `settingsRoots` before touching it, so a run admitted with incomplete settings (before this gate existed, or under the bypass) is refused with the same `settings-incomplete` error and last line. The refused run is left exactly as it was (still `stopped`, `interrupted` or `failed`, with its attempts) and can resume later under the bypass. A completed run is not checked: it keeps the `run-state` refusal (`Completed runs cannot resume`). A run's `settingsRoots` cannot change, so without the bypass start a new run whose roots cover every required setting. A refused `interrupted` run still counts as the novel's unfinished run and keeps holding it: call `story_stop` on it first, otherwise the new `story_write` is refused with `active-run`. A refused `stopped` or `failed` run does not hold the novel.
 
 The only bypass is operator-side: the plugin config option `allowIncompleteSettings` (default `false`), for smoke and unit tests. It is not a tool argument, so the model cannot set it.
+
+### AI-tone review
+
+Body reviews from prompt version 3 receive `task.aiToneMarkers` with host-detected AI-tone markers in the chapter narration: counts per thousand Han characters plus exact excerpts. Dialogue and 【】 panel lines are skipped. The reviewer reports real instances as advisory style issues; AI tone never blocks. The markers and their limits are adapted from [lieflat-less-ai-tone](https://github.com/larashero3-dotcom/lieflat-less-ai-tone) (commit 27d2923, MIT License, Copyright (c) 2026 shiujan; notice in [third_party/lieflat-less-ai-tone.LICENSE](third_party/lieflat-less-ai-tone.LICENSE)). [src/ai-tone.ts](https://github.com/hldz-top/dsh-story/blob/main/src/ai-tone.ts) lists the ported rules and those left out for fiction. From prompt version 4 the body-writing prompt also carries one short rule set from the same skill: no set-up-and-overturn framing, no 、 strings of three or more items, few reveal dashes, no set openers, nominalised summaries or translationese, and paragraph-opening comments that name their subject; dialogue, questions and rhythm are exempt, and the technical-metaphor ban takes precedence. Runs created on earlier prompt versions keep their original prompts.
 
 ### Importing author settings
 

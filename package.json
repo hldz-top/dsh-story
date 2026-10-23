@@ -44,7 +44,8 @@
     "!lib/types/chapter-lint.d.ts",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "third_party"
   ],
   "dsh": {
     "manifestVersion": 1,
