@@ -51,13 +51,13 @@ const keys = (fixture: Fixture, runId: Parameters<Fixture['runs']['get']>[1]) =>
 it('A1: refuses an import while the novel has a running run, with a machine-readable reason and no store change', async () => {
   const fixture = await written(['a1'])
   const before = fixture.service.getSettings(fixture.actor, fixture.novel.id)
-  await fixture.runs.begin(fixture.actor, { ...fixture.input, requestId: parseRequestId('running'), chapterCount: 1, throughChapter: 1, mode: 'update', revision: null, executionLimits: fixture.runner.limits, serviceLimits: { ...fixture.service.limits, ...fixture.service.researchLimits } })
+  const running = await fixture.runs.begin(fixture.actor, { ...fixture.input, requestId: parseRequestId('running'), chapterCount: 1, throughChapter: 1, mode: 'update', revision: null, executionLimits: fixture.runner.limits, serviceLimits: { ...fixture.service.limits, ...fixture.service.researchLimits } })
   const refused = await importText(fixture, 'a1', '运行中')
   expect(refused.status).toBe('rejected')
   const reason = refused.status === 'rejected' ? refused.reason : null
   expect(reason).toBeInstanceOf(ImportRefusedError)
-  expect(reason).toMatchObject({ code: 'import-refused', reason: 'run-active' })
-  expect(lastLine(reason)).toEqual({ code: 'import-refused', reason: 'run-active' })
+  expect(reason).toMatchObject({ code: 'import-refused', reason: 'run-active', runId: running.id })
+  expect(lastLine(reason)).toEqual({ code: 'import-refused', reason: 'run-active', runId: running.id })
   expect(fixture.service.getSettings(fixture.actor, fixture.novel.id)).toEqual(before)
 }, SLOW)
 
@@ -74,7 +74,7 @@ it('A2/A3: refuses an import while a run is interrupted after restart; allows it
   const output = { ...JSON.parse(fixture.service.getArtifact(fixture.actor, { novelId: fixture.novel.id, artifactId: current.artifact.id }).text) as object, contentMarkdown: '# 作者导入' }
   const request = { novelId: fixture.novel.id, requestId: parseRequestId('import-interrupted'), dimensionCode: 'a1', expectedAppliedId: current.artifact.id, output }
   const refused = await fixture.run(exec => runner.importSettings(exec, request))
-  expect(refused).toMatchObject({ status: 'rejected', reason: { code: 'import-refused', reason: 'run-active' } })
+  expect(refused).toMatchObject({ status: 'rejected', reason: { code: 'import-refused', reason: 'run-active', runId: running.id } })
   await reopened.finish(fixture.actor, running.id, 'failed', 'Simulated failure')
   const allowed = await fixture.run(exec => runner.importSettings(exec, request))
   expect(allowed).toMatchObject({ status: 'fulfilled', value: { origin: 'import', pendingReview: true, status: 'applied', revisionOf: current.artifact.id } })
@@ -115,7 +115,7 @@ it('A6: refuses to resume a run while an import in its settings awaits review', 
   expect(resumed.status).toBe('rejected')
   const reason = resumed.status === 'rejected' ? resumed.reason : null
   expect(reason).toBeInstanceOf(ImportRefusedError)
-  expect(lastLine(reason)).toEqual({ code: 'import-refused', reason: 'pending-review', importItems: [{ dimensionCode: 'a1', artifactId: imported.value.artifact.id, pendingReview: true }] })
+  expect(lastLine(reason)).toEqual({ code: 'import-refused', reason: 'pending-review', runId: stopped.id, importItems: [{ dimensionCode: 'a1', artifactId: imported.value.artifact.id, pendingReview: true }] })
   expect(fixture.runs.get(fixture.actor, stopped.id)).toMatchObject({ status: 'stopped', attempts: [] })
 }, SLOW)
 

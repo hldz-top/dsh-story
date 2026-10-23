@@ -521,32 +521,23 @@ export class WritingService {
     const hash = settingsHash({ origin: 'import', researchPlanId: base.researchPlanId, childSessionId: request.childSessionId, revisionOf: base.artifact.id }, output)
     const artifact = this.artifact(novel.id, 1, text, 'settings-dimension')
     await this.domain.table('artifacts').put(artifact.id, artifact)
-    let updated: NovelRecord
-    try {
+    actor.signal?.throwIfAborted()
+    const updated = await this.domain.table('novels').update(novel.id, current => {
       actor.signal?.throwIfAborted()
-      updated = await this.domain.table('novels').update(novel.id, current => {
-        actor.signal?.throwIfAborted()
-        const duplicate = current.settingsHistory.find(item => item.request.requestId === request.requestId)
-        if (duplicate !== undefined) { if (!settingsReceiptMatches(duplicate.request.hash, { ...duplicate, origin: 'import' }, output)) throw new WritingError('request-conflict', 'Request id was already used with different input'); return current }
-        if (current.settingsHeads.find(head => head.dimensionCode === request.dimensionCode)?.artifactId !== base.artifact.id) throw new WritingError('revision-conflict', 'Another settings version was adopted before this import')
-        const actual = this.settingsInputs(actor, current.id, request.dimensionCode, base.researchPlanId, base.artifact.id).map(ref => ({ artifactId: ref.id, sha256: ref.sha256 }))
-        if (!isDeepStrictEqual(actual, inputRefs)) throw new WritingError('revision-conflict', 'Settings inputs changed before import')
-        assertAdmissible()
-        return { ...current,
-          settingsHistory: [...current.settingsHistory, { artifact: reference(artifact), dimensionCode: request.dimensionCode, researchPlanId: base.researchPlanId, inputRefs,
-            revisionOf: base.artifact.id, childSessionId: request.childSessionId, request: { requestId: request.requestId, hash }, reviewHistory: [], applied: true, origin: 'import' as const }],
-          settingsHeads: [...current.settingsHeads.filter(head => head.dimensionCode !== request.dimensionCode), { dimensionCode: request.dimensionCode, artifactId: artifact.id }],
-        }
-      })
-    } catch (error) {
-      // P-2: a refused or cancelled publication does not leave its content artifact behind.
-      await this.discardUnpublishedArtifact(novel.id, artifact.id)
-      throw error
-    }
+      const duplicate = current.settingsHistory.find(item => item.request.requestId === request.requestId)
+      if (duplicate !== undefined) { if (!settingsReceiptMatches(duplicate.request.hash, { ...duplicate, origin: 'import' }, output)) throw new WritingError('request-conflict', 'Request id was already used with different input'); return current }
+      if (current.settingsHeads.find(head => head.dimensionCode === request.dimensionCode)?.artifactId !== base.artifact.id) throw new WritingError('revision-conflict', 'Another settings version was adopted before this import')
+      const actual = this.settingsInputs(actor, current.id, request.dimensionCode, base.researchPlanId, base.artifact.id).map(ref => ({ artifactId: ref.id, sha256: ref.sha256 }))
+      if (!isDeepStrictEqual(actual, inputRefs)) throw new WritingError('revision-conflict', 'Settings inputs changed before import')
+      assertAdmissible()
+      return { ...current,
+        settingsHistory: [...current.settingsHistory, { artifact: reference(artifact), dimensionCode: request.dimensionCode, researchPlanId: base.researchPlanId, inputRefs,
+          revisionOf: base.artifact.id, childSessionId: request.childSessionId, request: { requestId: request.requestId, hash }, reviewHistory: [], applied: true, origin: 'import' as const }],
+        settingsHeads: [...current.settingsHeads.filter(head => head.dimensionCode !== request.dimensionCode), { dimensionCode: request.dimensionCode, artifactId: artifact.id }],
+      }
+    })
     const saved = updated.settingsHistory.find(item => item.request.requestId === request.requestId)
     if (saved === undefined) throw new WritingError('corrupt-artifact', 'Settings import receipt is missing')
-    // A concurrent call with the same requestId published first and this one replays it: its own copy was never referenced.
-    if (saved.artifact.id !== artifact.id) await this.discardUnpublishedArtifact(novel.id, artifact.id)
     return this.settingsView(updated, saved)
   }
 
@@ -751,16 +742,6 @@ export class WritingService {
     return createHash('sha256').update(JSON.stringify([actor.workspace, actor.sessionId])).digest('hex')
   }
 
-  /**
-   * Best-effort removal of an import's content artifact that its novel update did not publish (P-2). It is deleted only
-   * while no settings record of the novel references it; a failed delete leaves the unreferenced artifact that public
-   * reads already refuse, and never replaces the original error.
-   */
-  private async discardUnpublishedArtifact(novelId: NovelId, artifactId: ArtifactId): Promise<void> {
-    if (this.domain.table('novels').get(novelId)?.settingsHistory.some(item => item.artifact.id === artifactId) !== false) return
-    try { await this.domain.table('artifacts').delete(artifactId) } catch { /* keep the unreferenced artifact */ }
-  }
-
   private record(actor: Actor, novelId: NovelId): NovelRecord {
     const record = this.domain.table('novels').get(novelId)
     if (!record) throw new WritingError('novel-not-found', 'novelId does not exist')
@@ -796,7 +777,7 @@ function settingsHash(record: SettingsReceiptRecord, output: unknown): string {
   return createHash('sha256').update(JSON.stringify(body)).digest('hex')
 }
 
-/** @returns Whether a stored receipt matches; import receipts written before the importing Session left the hash (PR #18 at 75874bd and earlier) still verify against their own recorded Session. */
+/** @returns Whether a stored receipt matches; import receipts written before the importing Session left the hash (#18, 8675246) still verify against their own recorded Session. */
 function settingsReceiptMatches(stored: string, record: SettingsReceiptRecord, output: unknown): boolean {
   if (stored === settingsHash(record, output)) return true
   if (record.origin !== 'import') return false

@@ -147,6 +147,16 @@ export class RunLimitsError extends RunStoreError {
     super('run-limits', `Restore the captured writing and research limits before resuming; legacy runs without a snapshot cannot resume. Differing: ${mismatched.map(item => `${item.key} (saved ${String(item.saved)}, current ${String(item.current)})`).join(', ')}.\n${JSON.stringify({ code: 'run-limits', mismatched })}`)
   }
 }
+/**
+ * The novel is held by another unfinished (running or interrupted) run. The readable sentence names it and the message ends with
+ * one JSON line `{"code":"active-run","runId":...}`, so a caller can stop or resume exactly that run.
+ */
+export class ActiveRunError extends RunStoreError {
+  constructor(message: string, readonly runId: RunId) {
+    super('active-run', `${message} (${runId}); stop it with story_stop or resume it with story_resume first\n${JSON.stringify({ code: 'active-run', runId })}`)
+    this.name = 'ActiveRunError'
+  }
+}
 function active(run: { readonly status: WritingRun['status'] }): boolean { return run.status === 'running' || run.status === 'interrupted' }
 
 /** Per-novel histories; native model execution and cancellation quiescence belong to the caller. */
@@ -175,7 +185,8 @@ export class RunStore {
         return current
       }
       validateRevisionBudget(parsed.data, this.limits)
-      if (current.runs.some(active)) fail('active-run', 'The novel already has an unfinished writing run')
+      const holder = current.runs.find(active)
+      if (holder !== undefined) throw new ActiveRunError('The novel already has an unfinished writing run', holder.id)
       result = { ...request, limits: { ...this.limits }, id: brandString<RunId>(`run_${randomUUID()}`), status: 'running', startedBy: actor.sessionId, lastResumedBy: actor.sessionId, attempts: [], error: null, promptVersion }
       return { ...current, version: 2, runs: [...current.runs, result] }
     })
@@ -206,7 +217,8 @@ export class RunStore {
       requireServiceLimits(original)
       const run = recoverOutputs(original, this.domain)
       if (run.status === 'completed') fail('run-state', 'Completed runs cannot resume')
-      if (record.runs.some(other => other.id !== run.id && active(other))) fail('active-run', 'Another unfinished run owns the novel')
+      const holder = record.runs.find(other => other.id !== run.id && active(other))
+      if (holder !== undefined) throw new ActiveRunError('Another unfinished run owns the novel', holder.id)
       if (latestAttempts(run).some(attempt => attempt.status === 'unknown') && !options.retryUnknown) fail('unknown-outcome', 'Explicit retry permission is required for unknown stage outcomes')
       return { ...run, status: 'running', lastResumedBy: actor.sessionId, error: null,
         attempts: run.attempts.map(attempt => attempt.status === 'unknown' && latestAttempts(run).some(latest => latest.id === attempt.id) ? { ...attempt, retryAuthorized: options.retryUnknown } : attempt) }
