@@ -9,5 +9,8 @@ it('README links into docs/, src/ and tests/ are GitHub URLs pinned to the packa
   expect(targets.filter(target => /^(\.\/)?(docs|src|tests)\//.test(target))).toEqual([])
   const repository = targets.filter(target => target.startsWith('https://github.com/hldz-top/dsh-story/blob/'))
   expect(repository.length).toBeGreaterThan(0)
-  expect(repository.filter(target => !target.startsWith(`https://github.com/hldz-top/dsh-story/blob/${tag}/`))).toEqual([])
+  // Prompt version 5 keeps the detector source on blob/main; every other README link stays pinned to this version's tag.
+  const moving = 'https://github.com/hldz-top/dsh-story/blob/main/src/ai-tone.ts'
+  expect(repository).toContain(moving)
+  expect(repository.filter(target => target !== moving && !target.startsWith(`https://github.com/hldz-top/dsh-story/blob/${tag}/`))).toEqual([])
 })

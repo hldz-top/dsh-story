@@ -32,6 +32,10 @@ it('rejects incompatible chapter bounds without changing the stopped run or occu
   fixture.ctx.effect(() => () => runner.close())
   const outcome = await fixture.run(exec => runner.resume(exec, run.id, false))
   expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'run-limits' } })
+  if (outcome.status !== 'rejected') throw new Error('Resume was not refused')
+  const message = (outcome.reason as Error).message
+  expect(message).toContain('maxChapterWords (saved 4500, current 5000)')
+  expect(JSON.parse(message.split('\n').at(-1)!)).toEqual({ code: 'run-limits', mismatched: [{ key: 'maxChapterWords', saved: 4500, current: 5000 }] })
   expect(fixture.childRequests).toEqual([])
   expect(fixture.runs.get(fixture.actor, run.id)).toEqual(stopped)
 })

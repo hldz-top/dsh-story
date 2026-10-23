@@ -6,13 +6,15 @@
  *
  * Only narration is scanned: 「」 and “” dialogue and standalone 【】 panel lines are removed first, because the skill
  * leaves dialogue, quotations and genre formatting alone. Rules the skill exempts for fiction are not ported: adjacent
- * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Counts are evidence for an advisory
- * style review, never a gate; this module computes no chapter positions.
+ * sentence isomorphism (3), numbered headings (6) and idealised-persona metaphors (7). Counts are evidence for the
+ * style review. From prompt version 5 with aiToneBlocking on, {@link aiToneHits} locates the same hits (as offsets in the
+ * narration view) so the host can decide which quoted spans block (see WritingRunner). Those offsets are in the narration
+ * view, not the assembled chapter.
  *
  * From prompt version 3 the body-review task includes this report. tests/ai-tone.spec.ts freezes it for the two
- * chapter fixtures. After versions 3 and 4 are in main, changing that report makes a paused body review hit
- * attempt-conflict on resume; bump CURRENT_PROMPT_VERSION in the same change. This pull request is what lands
- * those versions, so detection may still change here without a bump.
+ * chapter fixtures. Prompt versions 3 and 4 are on main: changing that report makes a paused body review hit
+ * attempt-conflict on resume, so bump CURRENT_PROMPT_VERSION in the same change. Excerpt windows stay the UTF-16
+ * slice used since version 3, so resumed v1–v4 prompts rebuild identical marker bytes.
  */
 
 export type AiToneRule = 'reversal' | 'enumeration' | 'dash' | 'opener' | 'nominalization' | 'long-attributive' | 'when-clause' | 'topic-shell' | 'connective' | 'restatement' | 'zero-subject-comment'
@@ -46,11 +48,23 @@ const CONTEXT = 8
 /** @param text - Assembled chapter text. @returns The text with dialogue and panel lines replaced by line breaks, so no match spans them. */
 export function narrationOf(text: string): string { return text.replace(DIALOGUE, '\n') }
 
-/** @returns The match widened by up to {@link CONTEXT} UTF-16 units on each side, never past a line break, so it stays an exact substring of the chapter. */
+/**
+ * @returns The match widened by up to {@link CONTEXT} UTF-16 units on each side, never past a line break, so it stays an
+ * exact substring of the chapter. Unchanged since prompt version 3 for every version: these excerpts only feed the review
+ * prompt's task.aiToneMarkers, so resumed runs rebuild identical prompt bytes; the window can cut a surrogate pair
+ * (emoji, rare CJK), which is accepted. Blocking spans never come from here.
+ */
 function excerpt(narration: string, index: number, length: number): string {
   const lineStart = narration.lastIndexOf('\n', index - 1) + 1
   const lineEnd = narration.indexOf('\n', index + length)
   return narration.slice(Math.max(lineStart, index - CONTEXT), Math.min(lineEnd < 0 ? narration.length : lineEnd, index + length + CONTEXT))
+}
+/** @returns Up to {@link CONTEXT} code points of narration on each side of a match, never past a line break. */
+function context(narration: string, index: number, length: number): { before: string; after: string } {
+  const lineStart = narration.lastIndexOf('\n', index - 1) + 1
+  const lineEnd = narration.indexOf('\n', index + length)
+  return { before: [...narration.slice(lineStart, index)].slice(-CONTEXT).join(''),
+    after: [...narration.slice(index + length, lineEnd < 0 ? narration.length : lineEnd)].slice(0, CONTEXT).join('') }
 }
 
 /** @param text - Assembled chapter text. @returns Marker counts per thousand narration Han characters, with exact excerpts. */
@@ -65,4 +79,92 @@ export function detectAiTone(text: string): AiToneReport {
   const paragraphs = text.split('\n').map(line => line.trim()).filter(line => line.length >= 8 && !/^[「“【]/u.test(line))
   add('zero-subject-comment', '11 段首零主语评论', paragraphs.slice(1).filter(paragraph => COMMENT.test(paragraph) && !ANAPHOR.test(paragraph.split(/[，。！？]/u)[0] ?? '')).map(paragraph => paragraph.split(/[，。！？]/u)[0] ?? paragraph))
   return { source: 'lieflat-less-ai-tone@27d2923 (MIT)', narrationHan, markers }
+}
+
+/** One detector hit located in the narration view, with a position-independent identity for repeat detection. */
+export interface AiToneHit {
+  readonly rule: AiToneRule
+  /** UTF-16 offsets in {@link AiToneHits.narration}; the hit is narration.slice(start, end). */
+  readonly start: number
+  readonly end: number
+  /**
+   * Identities for repeat detection: rule and hit text with the narration just before it, and with the narration just after
+   * it (up to the review excerpt's context on each side). A later body's hit is the same instance when any identity
+   * matches, so an edit on one side of the marker, or a reviewer quoting it with another length, still counts as a repeat,
+   * while another instance with the same marker text elsewhere does not. A side whose context is empty or only whitespace
+   * (a hit opening a paragraph or following dialogue) yields no identity, since every such hit would share it; a hit with
+   * no context on either side is identified by its text and its ordinal among identical such hits.
+   */
+  readonly keys: readonly string[]
+}
+/** The narration view of a chapter and every detector hit in it. */
+export interface AiToneHits { readonly narration: string; readonly hits: readonly AiToneHit[] }
+
+/** @returns {@link narrationOf} plus, for every text offset, its narration offset (-1 inside removed dialogue and panel lines). */
+function narrationWithOffsets(text: string): { narration: string; offsets: number[] } {
+  let narration = ''
+  const offsets: number[] = Array.from({ length: text.length }, () => -1)
+  let last = 0
+  const keep = (from: number, to: number) => {
+    for (let index = from; index < to; index++) offsets[index] = narration.length + index - from
+    narration += text.slice(from, to)
+  }
+  for (const match of text.matchAll(DIALOGUE)) {
+    keep(last, match.index)
+    narration += '\n'
+    last = match.index + match[0].length
+  }
+  keep(last, text.length)
+  return { narration, offsets }
+}
+
+/**
+ * Locate every hit of the same rules {@link detectAiTone} counts, in context: patterns run on the narration view (dialogue
+ * and panels removed, so sentence and line starts are real), and zero-subject comments only at the start of a paragraph
+ * that is not the first, as the detector requires. The prompt-version-5 gate blocks a quoted span only when one of its
+ * occurrences in this narration fully covers one of these hits.
+ * @param text - Assembled chapter text. @returns The narration view and its hits in document order.
+ */
+export function aiToneHits(text: string): AiToneHits {
+  const { narration, offsets } = narrationWithOffsets(text)
+  const hits: AiToneHit[] = []
+  const add = (rule: AiToneRule, start: number, length: number) => {
+    const { before, after } = context(narration, start, length)
+    const marker = narration.slice(start, start + length)
+    const keys = [...before.trim() === '' ? [] : [`${rule}\u0000${marker}\u0000<${before}`], ...after.trim() === '' ? [] : [`${rule}\u0000${marker}\u0000>${after}`]]
+    hits.push({ rule, start, end: start + length, keys })
+  }
+  for (const { rule, pattern } of patterns) {
+    for (const match of narration.matchAll(pattern)) {
+      if (match[0].length === 0) continue
+      if (rule !== 'enumeration') { add(rule, match.index, match[0].length); continue }
+      // The enumeration pattern's leading item is greedy (it can swallow a sentence lead-in); its hit is the core, from the
+      // character before the first 、 to the character after the second, so quoting just the listed items covers it.
+      const first = match.index + match[0].indexOf('、')
+      const second = match.index + match[0].indexOf('、', first - match.index + 1)
+      const start = first - (/[\uDC00-\uDFFF]/u.test(narration[first - 1] ?? '') ? 2 : 1)
+      const end = second + 1 + (/[\uD800-\uDBFF]/u.test(narration[second + 1] ?? '') ? 2 : 1)
+      add(rule, start, end - start)
+    }
+  }
+  let lineStart = 0
+  let qualifying = 0
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.length >= 8 && !/^[「“【]/u.test(trimmed)) {
+      const opener = qualifying++ > 0 ? COMMENT.exec(trimmed) : null
+      const start = offsets[lineStart + line.indexOf(trimmed)] ?? -1
+      if (opener !== null && start >= 0 && !ANAPHOR.test(trimmed.split(/[，。！？]/u)[0] ?? '')) add('zero-subject-comment', start, opener[0].length)
+    }
+    lineStart += line.length + 1
+  }
+  hits.sort((left, right) => left.start - right.start || left.end - right.end)
+  const ordinals = new Map<string, number>()
+  return { narration, hits: hits.map(hit => {
+    if (hit.keys.length > 0) return hit
+    const marker = `${hit.rule}\u0000${narration.slice(hit.start, hit.end)}`
+    const ordinal = ordinals.get(marker) ?? 0
+    ordinals.set(marker, ordinal + 1)
+    return { ...hit, keys: [`${marker}\u0000#${ordinal}`] }
+  }) }
 }

@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
+import { detectAiTone } from '../src/ai-tone.ts'
 import { measureBeats } from '../src/body-text.ts'
 import { nativeStageOutputSchema } from '../src/native-stage-schema.ts'
 import { StageOutputSchemas } from '../src/stage-output.ts'
@@ -57,6 +58,50 @@ describe('version 1 is frozen', () => {
   })
 })
 
+/** SHA-256 of every version-4 prompt and output schema for the request above (computed on #22 head d7edafb), so later edits cannot silently change what resumed v4 runs rebuild. */
+const frozenV4: Record<string, string> = {
+  'settings': '665f40d01dc0b8663aa8a00c64abaf1013f7ffd89430d6065ffdf394e23c6c87',
+  'review': 'c465e5f1f7a6dc09f66c3504c0e2efa503b0871e92cc38f1a03456d09304c87a',
+  'book-outline': '7100a4c61a77ddecd3e35d714e395297db81c2a1ebe052274d71bda6bc9b65e0',
+  'chapter-outline': 'ccc93e46f610fcd8a4aa2d63b4a8147bb832d0313833a264a8a132d52a745eaf',
+  'body': 'e8ccabfe084b9f215c915a31353df9187e46f0fb33aa74a1daaf06bfb3e9a998',
+  'continuity': 'a9798b274e9f7b347f476ac25dcca939a48a5fdba07185cd2c6db1d4716d3c9d',
+  'review/body': '48aa58cd632cc1c1f81a984282debb8dd73b451c41e97966e278ca37745fd773',
+  'schema/settings': '86f66293e41cd6e5b92d64ddf6f3a39536affacde2e0c2e4ce60a05fca94c88b',
+  'schema/review': '9731f7a748dd104095730772ad5cd0885a45340c865f1d7d0b75da95336c09c3',
+  'schema/book-outline': '62d1e8b93ee5b030549ba85fd483fc7fa12e409a63d224ee07fe0c26fd2ce0d2',
+  'schema/chapter-outline': '0285fb25e15cbfed01a7b157e83bdb5061ffeda3a999d11c6b2b69518d2f8ef5',
+  'schema/body': '21d5342669c4439400a3ff71b4bc16f297d262abfb823ac9f1868f57a32152f3',
+  'schema/continuity': 'ee4f82a9defc694c00b3c0b506310ae3ab5a998b5b9214bf291da121417b8ae0'
+}
+
+describe('version 4 is frozen', () => {
+  it('rebuilds every version-4 prompt and schema byte for byte', () => {
+    for (const kind of kinds) expect(sha(buildStagePrompt({ ...base, kind, promptVersion: 4 })), kind).toBe(frozenV4[kind])
+    expect(sha(buildStagePrompt({ ...base, kind: 'review', reviewedKind: 'body', promptVersion: 4 }))).toBe(frozenV4['review/body'])
+    for (const kind of kinds) expect(sha(JSON.stringify(nativeStageOutputSchema(kind, 4))), kind).toBe(frozenV4[`schema/${kind}`])
+  })
+})
+
+/**
+ * A body whose dash hit has emoji and 𠀀 inside its 8-unit marker context, cut mid surrogate pair on both sides. SHA-256 of
+ * the version-4 body-review prompt carrying detectAiTone(body) as task.aiToneMarkers, computed by building d7edafb (#22 head,
+ * before aiToneBlocking) with the same request, so resumed v3/v4 runs keep sending identical bytes.
+ */
+const ASTRAL_BODY = '雾港😀😀😀😀😀灯——𠀀𠀀𠀀灯𠀀塔亮了。'
+const ASTRAL_REVIEW_V4 = 'b3b46a65f334c9316ecdd6a0c36035f84e7331725726bce8a4288ef6a3c1c55a'
+
+describe('version 4 AI-tone markers are frozen', () => {
+  it('rebuilds the marker excerpts and review prompt of d7edafb byte for byte, astral context included', () => {
+    const report = detectAiTone(ASTRAL_BODY)
+    // UTF-16 window kept as is for every version: it may cut a surrogate pair, and only the prompt sees it (JSON-escaped).
+    expect(report.markers.flatMap(marker => marker.examples)).toEqual(['\uDE00😀😀😀灯——𠀀𠀀𠀀灯\uD840'])
+    const prompt = buildStagePrompt({ ...base, kind: 'review', reviewedKind: 'body', promptVersion: 4, task: JSON.stringify({ aiToneMarkers: report }) })
+    expect(prompt.isWellFormed()).toBe(true)
+    expect(sha(prompt)).toBe(ASTRAL_REVIEW_V4)
+  })
+})
+
 describe('version 3 AI-tone review', () => {
   it('adds the AI-tone sentence only to reviews of a body', () => {
     for (const reviewedKind of kinds) {
@@ -69,7 +114,7 @@ describe('version 3 AI-tone review', () => {
 })
 
 describe('version 2 guardrails', () => {
-  it('is followed by version 4 for new runs', () => { expect(CURRENT_PROMPT_VERSION).toBe(4) })
+  it('is followed by version 5 for new runs', () => { expect(CURRENT_PROMPT_VERSION).toBe(5) })
 
   it('appends each sentence only to its own stage', () => {
     for (const kind of kinds) {
@@ -178,12 +223,28 @@ describe('runs keep their prompt version', () => {
     expect(JSON.parse((bodyReview.stage.data as { task: string }).task)).toHaveProperty('aiToneMarkers.source', 'lieflat-less-ai-tone@27d2923 (MIT)')
   })
 
-  it('starts new runs on version 4 and hands body reviews host-measured beats and AI-tone markers', { timeout: 120_000 }, async () => {
+  it('resumes a version-4 run with the version-4 prompts after a stop', { timeout: 120_000 }, async () => {
+    const record = recorder()
+    const fixture = await useWritingFixture({ maxReadChars: 8192, onChildRequest: record.onChildRequest })
+    const run = await fixture.runs.begin(fixture.actor, { ...fixture.input, chapterCount: 1, throughChapter: 1, revision: null,
+      executionLimits: fixture.runner.limits, serviceLimits: { ...fixture.service.limits, ...fixture.service.researchLimits } }, 4)
+    await fixture.runs.finish(fixture.actor, run.id, 'stopped', 'Stored on prompt version 4.')
+    const outcome = await fixture.run(exec => fixture.runner.resume(exec, run.id, false))
+    if (outcome.status === 'rejected') throw outcome.reason
+    expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 4 })
+    expect(outcome.value.executionLimits).not.toHaveProperty('aiToneBlocking')
+    expect(record.seen.find(item => item.stage.kind === 'body')?.prompt).toContain(AI_TONE_WRITING_PHRASE)
+    const bodyReview = record.seen.find(item => item.stage.kind === 'review' && typeof item.stage.task?.measuredWordCount === 'number')
+    expect(bodyReview?.prompt).toContain('AI tone is never blocking')
+    expect(bodyReview?.prompt).not.toContain('the host itself blocks the chapter')
+  })
+
+  it('starts new runs on version 5 and hands body reviews host-measured beats and AI-tone markers', { timeout: 120_000 }, async () => {
     const record = recorder()
     const fixture = await useWritingFixture({ maxReadChars: 8192, onChildRequest: record.onChildRequest })
     const outcome = await fixture.run(exec => fixture.runner.start(exec, { ...fixture.input, chapterCount: 1, throughChapter: 1 }))
     if (outcome.status === 'rejected') throw outcome.reason
-    expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 4 })
+    expect(outcome.value).toMatchObject({ status: 'completed', promptVersion: 5, executionLimits: { aiToneBlocking: true } })
     expect(record.seen.find(item => item.stage.kind === 'body')?.prompt).toContain('tool or equipment list in the settings')
     expect(record.seen.find(item => item.stage.kind === 'body')?.prompt).toContain(AI_TONE_WRITING_PHRASE)
     for (const item of record.seen.filter(item => item.stage.kind !== 'body')) expect(item.prompt).not.toContain(AI_TONE_WRITING_PHRASE)
