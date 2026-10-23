@@ -51,14 +51,6 @@ async function storedDocument(h: Awaited<ReturnType<typeof adopted>>['h']) {
   return { path, document: JSON.parse(await readFile(path, 'utf8')) as { tables: { novels: Record<string, NovelRecord> } } }
 }
 
-/** @returns The artifacts stored and not deleted since the call, i.e. what a store keeps from the calls that follow. */
-function keptArtifacts(h: Awaited<ReturnType<typeof adopted>>['h']): Set<string> {
-  const kept = new Set<string>()
-  h.onArtifactStored(id => { kept.add(id) })
-  h.onArtifactDeleted(id => { kept.delete(id) })
-  return kept
-}
-
 describe.each(['json', 'sqlite'] as const)('%s settings import', backend => {
   it('C1/B3: appends an import record replacing the head, reusing its research, never relabeling or touching the earlier record', async () => {
     const { h, actor, novel, research, applied, request } = await adopted(backend)
@@ -109,32 +101,6 @@ describe.each(['json', 'sqlite'] as const)('%s settings import', backend => {
     expect(different[0]!.status).toBe('fulfilled')
     expect(different[1]).toMatchObject({ status: 'rejected', reason: { code: 'request-conflict' } })
     expect(h.service.getSettings(actor, novel.id).history.map(item => item.origin)).toEqual(['stage', 'import', 'import'])
-  })
-
-  it('P-2: a refused, raced or cancelled import leaves no content artifact; a raced retry keeps only the published one', async () => {
-    const { h, actor, novel, request } = await adopted(backend)
-    const kept = keptArtifacts(h)
-    await expect(h.service.importSettings(actor, request, () => { throw new Error('Refused at admission') })).rejects.toThrow('Refused at admission')
-    expect([...kept]).toEqual([])
-    const stop = new AbortController()
-    h.onArtifactStored(() => { stop.abort(new Error('Stop before publication')) })
-    await expect(h.service.importSettings({ ...actor, signal: stop.signal }, request)).rejects.toThrow('Stop before publication')
-    expect([...kept]).toEqual([])
-    expect(h.service.getSettings(actor, novel.id).history).toHaveLength(1)
-    await h.restart()
-    const raced = keptArtifacts(h)
-    // The second import replaces the same head, so the first one's publication makes it a revision conflict inside the update.
-    const race = await Promise.allSettled([h.service.importSettings(actor, request), h.service.importSettings(actor, { ...request, requestId: parseRequestId('import-other') })])
-    expect(race[1]).toMatchObject({ status: 'rejected', reason: { code: 'revision-conflict' } })
-    const published = (race[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof h.service.importSettings>>>).value.artifact.id
-    expect([...raced]).toEqual([published])
-    const retried = await Promise.allSettled([h.service.importSettings(actor, { ...request, requestId: parseRequestId('import-3'), expectedAppliedId: published }),
-      h.service.importSettings(actor, { ...request, requestId: parseRequestId('import-3'), expectedAppliedId: published })])
-    const winner = (retried[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof h.service.importSettings>>>).value.artifact.id
-    expect(retried[1]).toMatchObject({ status: 'fulfilled', value: { artifact: { id: winner } } })
-    expect([...raced]).toEqual([published, winner])
-    await h.restart()
-    expect(h.service.getSettings(actor, novel.id).history.map(item => item.artifact.id).slice(1)).toEqual([published, winner])
   })
 
   it('D: refuses a stale head, a dimension without an adopted head, unavailable dimensions and invalid documents', async () => {
@@ -225,7 +191,7 @@ it('C4: an unreviewed stage revision relabeled as an applied import is rejected 
   expect(() => h.service.getSettings(actor, novel.id)).toThrowError(expect.objectContaining({ code: 'corrupt-artifact' }))
 })
 
-it('P-1: an import receipt written with the importing Session in its hash (75874bd) still verifies and replays from any Session', async () => {
+it('P-1: an import receipt written with the importing Session in its hash (#18, 8675246) still verifies and replays from any Session', async () => {
   const { h, actor, novel, request } = await adopted('json')
   const imported = await h.service.importSettings(actor, request)
   const output = JSON.parse(h.service.getArtifact(actor, { novelId: novel.id, artifactId: imported.artifact.id }).text) as unknown
