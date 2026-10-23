@@ -103,6 +103,23 @@ A blocked request stores no run. An empty `settingsRoots` is treated the same wa
 
 The plugin does not set a process exit code. In the headless DSH used for smoke runs, the process exits 0 even when a story tool fails, so scripts must check the tool result rather than the exit status. `story_resume` runs the same check against the run's stored `settingsRoots` before touching it, so a run admitted with incomplete settings (before this gate existed, or under the bypass) is refused with the same `settings-incomplete` error and last line. The refused run is left exactly as it was (still `stopped`, `interrupted` or `failed`, with its attempts) and can resume later under the bypass. A completed run is not checked: it keeps the `run-state` refusal (`Completed runs cannot resume`). A run's `settingsRoots` cannot change, so without the bypass start a new run whose roots cover every required setting. A refused `interrupted` run still counts as the novel's unfinished run and keeps holding it: call `story_stop` on it first, otherwise the new `story_write` is refused with `active-run`. A refused `stopped` or `failed` run does not hold the novel.
 
+The `active-run` refusal names the run that holds the novel, both in the sentence and in a JSON last line, so a caller can pass it straight to `story_stop` (or `story_resume`):
+
+```text
+Error: The novel already has an unfinished writing run (run_…); stop it with story_stop or resume it with story_resume first
+{"code":"active-run","runId":"run_…"}
+```
+
+`story_resume` of one run while a different run holds the novel is refused the same way (`Another unfinished run owns the novel (run_…)…`), with the holder's `runId`.
+
+A resume can also be refused because an imported setting in the run's `settingsRoots` closure still awaits review (`import-refused`, `"reason":"pending-review"`, see [Importing author settings](#importing-author-settings)). The two refusals keep separate codes. When both apply, the required-settings check runs first and reports `settings-incomplete`, and its last line adds an optional `importItems` array that lists those imports with the same key and item format as `import-refused` and `review-blocked`, so one refusal names everything that blocks the resume; the line also carries the refused run's `runId`, as `import-refused` does. The sentence then also says `run <runId> cannot resume. Stop it if needed and start a new story_update to review them` (the `import-refused` sentence names the run the same way): an `interrupted` run keeps holding the novel, so a new `story_update` is refused with `active-run` until that run is stopped.
+
+```text
+{"code":"settings-incomplete","missing":["a3","a4","a5","g1","g2"],"runId":"run_…","importItems":[{"dimensionCode":"e1","artifactId":"…","pendingReview":true}]}
+```
+
+`runId` and `importItems` are omitted when no selected import is pending, and it never appears on a refused new `story_write`, `story_update` or `story_revise`: a new update is what reviews the imports.
+
 The only bypass is operator-side: the plugin config option `allowIncompleteSettings` (default `false`), for smoke and unit tests. It is not a tool argument, so the model cannot set it.
 
 ### AI-tone review
@@ -118,8 +135,8 @@ An import takes `novelId`, `requestId`, `dimensionCode`, `expectedAppliedId` (th
 An import stays `pendingReview` until an assembled-settings collection containing it passes review. Until then it does not count as complete settings for the book outline, and `story_resume` of a run that uses it is refused. Run `story_update` to review it. When that review blocks and the repair would regenerate any imported dimension (pending or already released), the run stops and regenerates nothing instead of replacing author text. A run also stops with `"reason":"stale-import"` before any settings work when an imported dimension is stale (for example after re-importing only its upstream dimension, or after a brief change), instead of regenerating it. Import every dimension in dependency order, upstream first, before the update. After a brief change, the research an import reuses is out of date. Re-importing is then refused (`research-incomplete`), and `story_update` stops with `stale-import` instead of regenerating the imported dimension, so the author's version cannot be kept as it is. The only way forward is `story_revise` on that imported dimension: it runs a model stage, which refreshes the research, and adopts a model-written version (`origin: "stage"`) in place of the author's text. The author's version stays in history but is no longer current. After that revision you can import the author's text again over the new head, adjusted to the new brief if needed. Plan brief changes before importing, or keep the author's source text so it can be re-imported. Imports are refused while a run is running or interrupted. Refusals and stops end with one JSON line, like the required-settings gate:
 
 ```text
-{"code":"import-refused","reason":"run-active"}
-{"code":"import-refused","reason":"pending-review","importItems":[{"dimensionCode":"e1","artifactId":"…","pendingReview":true}]}
+{"code":"import-refused","reason":"run-active","runId":"run_…"}
+{"code":"import-refused","reason":"pending-review","runId":"run_…","importItems":[{"dimensionCode":"e1","artifactId":"…","pendingReview":true}]}
 {"code":"review-blocked","importItems":[{"dimensionCode":"e1","artifactId":"…","pendingReview":false}]}
 {"code":"review-blocked","reason":"stale-import","importItems":[{"dimensionCode":"g2","artifactId":"…","pendingReview":true}]}
 ```
