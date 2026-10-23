@@ -9,9 +9,9 @@ import { ENUM_SETTINGS_KINDS, MAX_ENUM_SETTINGS_CONTENT_CHARS, MAX_ENUM_SETTINGS
  * prompt under an existing key). Version 1 is the text before chapter-quality guardrails and stays frozen; runs stored
  * without a version are version 1.
  */
-export type PromptVersion = 1 | 2
+export type PromptVersion = 1 | 2 | 3 | 4
 /** The version new runs record. */
-export const CURRENT_PROMPT_VERSION: PromptVersion = 2
+export const CURRENT_PROMPT_VERSION: PromptVersion = 4
 
 /** Business purpose of one independently executed stage. */
 export type StagePromptKind = 'settings' | 'review' | 'book-outline' | 'chapter-outline' | 'body' | 'continuity'
@@ -29,6 +29,8 @@ export interface StagePromptRequest {
   readonly settingsDimensionKind?: SettingsDimensionKind
   /** Every selected dimension's catalog kind, keyed by code; selects collection-scoped review wording when reviewing the assembled settings collection. Omitted otherwise. */
   readonly settingsCollectionKinds?: Readonly<Record<string, SettingsDimensionKind>>
+  /** For a 'review' stage, the kind of the reviewed candidate; the version-3 AI-tone sentence goes only to reviews of a body. */
+  readonly reviewedKind?: StagePromptKind
   /** The run's recorded prompt version; omitted means version 1, the frozen pre-guardrail text. */
   readonly promptVersion?: PromptVersion
 }
@@ -61,6 +63,26 @@ const stageInstructions: Record<StagePromptKind, readonly string[]> = {
     'Use only the previous applied final continuity as the state base. For the first chapter, use the host-supplied initial state. Derive the complete next state and each delta from the actual reviewed body, retaining exact quoted prose evidence. Planned chapter events are not facts and must not be merged first or counted twice.',
     'Track character location, knowledge, condition and relationships; consequential world facts, time, possessions, unresolved threads and required-event outcomes as requested by the schema. Preserve unchanged established facts and stable identities. Mark an obligation completed only when the actual prose supports that outcome. No-change conclusions require observed evidence and a reason; missing reads are not no changes.',
     'Repair only the reviewed defects and preserve unaffected state. Do not apply this candidate, publish the chapter or begin the next chapter: the host independently reviews the exact continuity version and publishes it with the reviewed body under current input-version checks.',
+  ],
+}
+
+/**
+ * Version 3 adds an AI-tone review of chapter narration, adapted from lieflat-less-ai-tone (MIT, see src/ai-tone.ts and
+ * third_party/lieflat-less-ai-tone.LICENSE). Version 2 text is unchanged underneath it.
+ */
+const aiToneGuardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
+  review: [
+    'When task.aiToneMarkers is present, review the narration for AI tone using those host-detected markers (after lieflat-less-ai-tone): reversal framing (不是…而是), dense 、 lists, revealing dashes, set openers (说白了), nominalised summaries, translationese (当…时, 对于…来说, sentence-initial 然而/因此/此外, 这意味着) and zero-subject paragraph comments. Report each real instance as an advisory style issue quoting the narration; ignore dialogue and panels, and never treat questions, metaphors, sentence-length rhythm, passive voice or long sentences as AI tone. Markers can be false positives; AI tone is never blocking.',
+  ],
+}
+
+/**
+ * Version 4 adds a short AI-tone writing rule to the body stage, adapted from lieflat-less-ai-tone (MIT, see src/ai-tone.ts and
+ * third_party/lieflat-less-ai-tone.LICENSE). Version 3 text is unchanged underneath it.
+ */
+const aiToneWritingGuardrails: Partial<Record<StagePromptKind, readonly string[]>> = {
+  body: [
+    'Keep the narration free of AI tone (after lieflat-less-ai-tone): do not set up a misreading only to overturn it (不是…而是, 说到底); do not string three or more items together with 、 in one sentence; use few dashes to stage a reveal; no set openers such as 说白了; no nominalised summaries such as 完成了对…的优化; avoid translationese such as 当…时，, 对于…来说, sentence-initial 然而，/因此，/此外， and 这意味着; a comment that opens a paragraph names what it comments on. Dialogue, questions and sentence rhythm are exempt. Metaphors follow the character’s voice, but the ban on technical metaphors comes first.',
   ],
 }
 
@@ -145,6 +167,8 @@ export function buildStagePrompt(request: StagePromptRequest): string {
       : request.kind === 'review' ? reviewInstructions(request.settingsDimensionKind, request.settingsCollectionKinds)
       : stageInstructions[request.kind]),
     ...((request.promptVersion ?? 1) >= 2 ? guardrails[request.kind] ?? [] : []),
+    ...((request.promptVersion ?? 1) >= 3 && (request.kind !== 'review' || request.reviewedKind === 'body') ? aiToneGuardrails[request.kind] ?? [] : []),
+    ...((request.promptVersion ?? 1) >= 4 ? aiToneWritingGuardrails[request.kind] ?? [] : []),
   ]
   return [...instructions, 'TASK_DATA', JSON.stringify({
     novelId: request.novelId, kind: request.kind, inputs: request.inputs, task: request.task, requirements: request.requirements,

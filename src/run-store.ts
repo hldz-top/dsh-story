@@ -99,7 +99,7 @@ const runSchema = z.strictObject({
   startedBy: sessionIdSchema, lastResumedBy: sessionIdSchema,
   attempts: z.array(attemptSchema), error: z.string().nullable(),
   // Prompt text version fixed at creation so a resume rebuilds identical prompts; absent on runs created before versioning (= 1).
-  promptVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  promptVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional(),
 })
 /** Detached progress metadata; raw stage outputs are read explicitly. */
 export type WritingRun = Omit<RunRecord, 'attempts'> & { readonly attempts: readonly WritingAttempt[] }
@@ -177,7 +177,7 @@ export class RunStore {
       const run = record.runs.find(item => item.id === runId)
       if (run !== undefined) { this.own(actor, record); return runView(run) }
     }
-    return fail('run-not-found', 'Writing run does not exist')
+    return fail('run-not-found', 'runId does not exist')
   }
 
   /** @param actor - Workspace owner. @param novelId - Novel whose history is requested. @returns Detached runs in creation order. */
@@ -245,7 +245,7 @@ export class RunStore {
   async saveOutput(actor: Actor, runId: RunId, attemptId: AttemptId, text: string): Promise<WritingAttempt> {
     actor.signal?.throwIfAborted()
     const run = this.get(actor, runId)
-    if (!run.attempts.some(attempt => attempt.id === attemptId)) fail('attempt-not-found', 'Attempt does not belong to this run')
+    if (!run.attempts.some(attempt => attempt.id === attemptId)) fail('attempt-not-found', 'attemptId does not belong to this run')
     const pending = this.outputWrites.get(attemptId)
     if (pending !== undefined) {
       if (pending.text !== text) fail('output-conflict', 'Attempt output is immutable')
@@ -260,7 +260,7 @@ export class RunStore {
   readOutput(actor: Actor, runId: RunId, attemptId: AttemptId): RunOutput {
     const run = this.get(actor, runId)
     const attempt = run.attempts.find(item => item.id === attemptId)
-    if (attempt === undefined) fail('attempt-not-found', 'Attempt does not belong to this run')
+    if (attempt === undefined) fail('attempt-not-found', 'attemptId does not belong to this run')
     if (attempt.output === null) fail('output-not-found', 'Attempt has no published raw output')
     const output = this.domain.table('outputs').get(attemptId)
     if (output === undefined || output.runId !== runId || !isDeepStrictEqual(outputRef(output), attempt.output)) fail('corrupt-run', 'Saved output does not match its attempt reference')
@@ -322,7 +322,7 @@ export class RunStore {
   private async persistOutput(actor: Actor, runId: RunId, attemptId: AttemptId, text: string): Promise<WritingAttempt> {
     const run = this.get(actor, runId)
     const attempt = run.attempts.find(item => item.id === attemptId)
-    if (attempt === undefined) fail('attempt-not-found', 'Attempt does not belong to this run')
+    if (attempt === undefined) fail('attempt-not-found', 'attemptId does not belong to this run')
     const existing = this.domain.table('outputs').get(attemptId)
     if (existing !== undefined && (existing.text !== text || existing.runId !== runId)) fail('output-conflict', 'Attempt output is immutable')
     if (attempt.status === 'succeeded') { this.readOutput(actor, runId, attemptId); return attempt }
@@ -388,7 +388,7 @@ function attemptView(attempt: AttemptRecord): WritingAttempt {
 function runView(run: RunRecord): WritingRun { return structuredClone({ ...run, attempts: run.attempts.map(attemptView) }) }
 function findAttempt(run: RunRecord, id: AttemptId): AttemptRecord {
   const attempt = run.attempts.find(item => item.id === id)
-  if (attempt === undefined) fail('attempt-not-found', 'Attempt does not belong to this run')
+  if (attempt === undefined) fail('attempt-not-found', 'attemptId does not belong to this run')
   return attempt
 }
 function replaceAttempt(run: RunRecord, id: AttemptId, transform: (attempt: AttemptRecord) => AttemptRecord): RunRecord {
