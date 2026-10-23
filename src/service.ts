@@ -167,7 +167,7 @@ export class WritingService {
       ...novel.researchHistory.flatMap(research => research.result === null ? [research.plan] : [research.plan, research.result]),
     ].find(ref => ref.id === request.artifactId)
     if (published === undefined) {
-      throw new WritingError('artifact-not-found', 'Artifact is not published in this novel')
+      throw new WritingError('artifact-not-found', 'artifactId is not published in this novel')
     }
     const artifact = this.domain.table('artifacts').get(request.artifactId)
     if (artifact === undefined) throw new WritingError('artifact-not-found', 'Published artifact is missing')
@@ -391,7 +391,7 @@ export class WritingService {
 
   private researchRecord(novel: NovelRecord, planId: ArtifactId): ResearchRecord {
     const research = novel.researchHistory.find(item => item.plan.id === planId)
-    if (research === undefined) throw new WritingError('research-not-found', 'Research plan is not published in this novel')
+    if (research === undefined) throw new WritingError('research-not-found', 'planId is not published in this novel')
     return research
   }
 
@@ -510,8 +510,8 @@ export class WritingService {
       return this.settingsView(novel, replay)
     }
     const headId = novel.settingsHeads.find(head => head.dimensionCode === request.dimensionCode)?.artifactId
-    if (headId === undefined) throw new WritingError('invalid-input', 'Import replaces an adopted settings version; this dimension has none yet')
-    if (headId !== request.expectedAppliedId) throw new WritingError('revision-conflict', 'Another settings version is the current head')
+    if (headId === undefined) throw new WritingError('invalid-input', 'expectedAppliedId does not match an adopted settings head; this dimension has none yet')
+    if (headId !== request.expectedAppliedId) throw new WritingError('revision-conflict', 'expectedAppliedId is not the current settings head')
     const base = this.settingsCandidate(novel, headId)
     const inputRefs = this.settingsInputs(actor, novel.id, request.dimensionCode, base.researchPlanId, base.artifact.id).map(ref => ({ artifactId: ref.id, sha256: ref.sha256 }))
     const output = parseSettingsDimensionOutput({ ...request.output, inputRefs }, { dimensionCode: request.dimensionCode, inputRefs })
@@ -744,7 +744,7 @@ export class WritingService {
 
   private record(actor: Actor, novelId: NovelId): NovelRecord {
     const record = this.domain.table('novels').get(novelId)
-    if (!record) throw new WritingError('novel-not-found', 'Novel does not exist')
+    if (!record) throw new WritingError('novel-not-found', 'novelId does not exist')
     if (record.workspace !== actor.workspace) throw new WritingError('workspace-mismatch', 'Novel belongs to another workspace')
     return record
   }

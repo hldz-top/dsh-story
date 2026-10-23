@@ -73,7 +73,8 @@ export class WritingRunner {
   async resume(exec: ToolExecution, runId: RunId, retryUnknown: boolean): Promise<WritingRun> {
     const actor = await writingActor(this.ctx, exec)
     const stored = this.runs.get(actor, runId)
-    // A completed run cannot resume at all, so it skips only the settings gate: it still goes through the brief, present and limit checks and is then refused with run-state by RunStore.resume (as on main).
+    // A completed run cannot resume at all, so it skips only the settings gate. Resume still
+    // compares the run's stored brief with the current one; the caller does not pass briefArtifactId.
     this.admit(actor, stored, true, stored.status !== 'completed')
     this.requirePresentation(exec)
     this.requireRunLimits(stored)
@@ -137,7 +138,14 @@ export class WritingRunner {
   private admit(actor: Actor, input: Pick<BeginRunInput, 'novelId' | 'briefArtifactId' | 'settingsRoots' | 'mode'>, resuming = false, gated = true): void {
     if (this.closed) throw new RunStoreError('runner-closed', 'The writing runner is closed')
     const novel = this.service.getNovel(actor, input.novelId)
-    if (novel.brief.id !== input.briefArtifactId) throw new WritingError('revision-conflict', 'Writing request must name the current creative brief')
+    // In admit, before the settings gate: a mismatched brief is revision-conflict, the same kind main uses.
+    // Resume compares the run's stored brief and does not ask the caller for briefArtifactId.
+    // A matching completed run still fails later as run-state.
+    if (novel.brief.id !== input.briefArtifactId) {
+      throw new WritingError('revision-conflict', resuming
+        ? "This run's creative brief is no longer current; start story_update with the current briefArtifactId"
+        : 'briefArtifactId must name the current creative brief')
+    }
     if (gated && this.options.allowIncompleteSettings !== true) {
       const missing = missingRequiredSettings(input.settingsRoots)
       if (missing.length > 0) throw new SettingsIncompleteError(missing)
@@ -287,7 +295,7 @@ export class WritingRunner {
       return
     }
     const base = manuscript.heads.find(item => item.artifact.id === revision.baseArtifactId)
-    if (base === undefined || (base.target.kind !== 'book-outline' && base.target.kind !== 'chapter-outline')) throw new WritingError('revision-conflict', 'Revision base must be the current applied settings dimension or outline')
+    if (base === undefined || (base.target.kind !== 'book-outline' && base.target.kind !== 'chapter-outline')) throw new WritingError('revision-conflict', 'baseArtifactId must be the current applied settings dimension or outline')
     const candidate = await this.generated(inv, base.target, revision)
     if (candidate.review === null) throw new WritingError('review-blocked', 'Upstream revision requires a passing review')
     await this.service.applyManuscriptCandidate(inv.actor, { novelId: inv.run.novelId, candidateId: candidate.artifact.id, reviewId: candidate.review.id, expectedAppliedId: revision.baseArtifactId })
@@ -483,6 +491,8 @@ export class WritingRunner {
       ...('length' in candidate ? { measuredWordCount: candidate.wordCount, measuredLength: candidate.length } : {}),
       // Version-1 runs keep their original task text; later runs hand the body review host-measured positions to cite.
       ...('beats' in candidate && candidate.beats !== null && promptVersionOf(inv.run) >= 2 ? { measuredBeats: candidate.beats } : {}),
+      // Version 3 body reviews also get host-detected AI-tone markers in narration (advisory evidence only).
+      ...('aiTone' in candidate && candidate.aiTone !== null && promptVersionOf(inv.run) >= 3 ? { aiToneMarkers: candidate.aiTone } : {}),
       ...(settingsDimensionKind === undefined ? {} : { dimensionKind: settingsDimensionKind }),
       ...(settingsCollectionKinds === undefined ? {} : { dimensionKinds: settingsCollectionKinds }) },
       [candidate.artifact], settingsDimensionKind, settingsCollectionKinds, reviewedKind)
@@ -541,7 +551,7 @@ export class WritingRunner {
           ? 'Condense or expand across all scenes to reach the aim; preserve required events, established facts and scene identities rather than passage wording.'
           : 'Repair the defects documented in the supplied prior candidate and review. Preserve unaffected facts and passages and return the entire candidate.'] : []),
       ], ...(settingsDimensionKind === undefined ? {} : { settingsDimensionKind }), ...(settingsCollectionKinds === undefined ? {} : { settingsCollectionKinds }),
-      promptVersion: promptVersionOf(inv.run) })
+      ...(kind === 'review' && reviewedKind !== undefined ? { reviewedKind } : {}), promptVersion: promptVersionOf(inv.run) })
     return this.capture(inv, key, prompt, allRefs, nativeStageOutputSchema(kind, promptVersionOf(inv.run)), ['story_read_artifact'], undefined, prose ? 'prose' : 'stored')
   }
 
