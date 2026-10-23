@@ -11,6 +11,7 @@ DSH Story is a standalone TypeScript plugin for researched settings, book and ch
 ## Table of Contents
 
 - [Installation](#installation)
+- [Host-provided peers](#host-provided-peers)
 - [Writing workflow](#writing-workflow)
 - [Reading and previews](#reading-and-previews)
 - [Local development](#local-development)
@@ -28,6 +29,8 @@ dsh plugin --profile web add dsh-story-weaver
 
 Use `dsh-story-weaver@next` for release candidates. In the DSH web UI you can instead open Plugins → Add plugin and enter `dsh-story-weaver`.
 
+**Cordis peer.** `@deepseek-ai/cordis` is declared as `~4.0.4`, the same range DSH 0.2.0-rc.2 uses. That host release resolves the range to 4.0.5. An exact `4.0.4` peer makes `npm install` fail with `ERESOLVE` when 4.0.5 is already present.
+
 **pnpm version.** Installation is verified with pnpm 11.7.0. With Node 22.19's bundled corepack, the pnpm 12.x that corepack fetches by default (12.14.0 at the time of testing) fails to start (`Cannot find module …/corepack/v1/pnpm/12.14.0/bin/pnpm.cjs`), and `dsh plugin add` fails. Pin the verified version, for example `corepack prepare pnpm@11.7.0 --activate` (or put a `pnpm` shim that runs `corepack pnpm@11.7.0` on `PATH`). If the default `COREPACK_HOME` is not writable, set `COREPACK_HOME` to a writable directory.
 
 **Plugin id and config patches.** The plugin id is `dsh-story-weaver`, the same as the package name; before the npm rename it was `dsh-story`. A config override in a DSH `--patch` file must target the new id, for example `- id: dsh-story-weaver` followed by `config:` (see [docs/examples/research-budget.patch.yml](docs/examples/research-budget.patch.yml)). A patch that still says `- id: dsh-story` matches no entry and is skipped: DSH starts normally and keeps the config the earlier layers gave the plugin, so the override silently does not apply. That includes operator switches such as `allowIncompleteSettings`, which then stays off. A normal run prints nothing about it; only `dsh --dump-config` reports `patch: entry "dsh-story" not found` on stderr. An `insert` patch that mounts the plugin by path and carries its own `config:` is not affected, whatever id it gives the entry.
@@ -36,12 +39,41 @@ Use `dsh-story-weaver@next` for release candidates. In the DSH web UI you can in
 
 **Profiles other than `web`.** The bundle does not add the `present` tool, and the `headless` profile (like other non-web profiles) does not enable it by default. Without it, `story_write` is refused with `Writing requires the native present tool in this Agent scope` and no run is created. Enable `@deepseek-ai/dsh-tool-present` in that profile before writing; reading and preview tools work without it.
 
+### Upgrading
+
+Rolling back to an older plugin that does not know a stored prompt version (versions 3, 4 and 5 on this code) makes every run in that novel unreadable, including version 1 and 2 runs: the old code rejects the novel record.
+
+Resuming on this code hits attempt-conflict only for version 3 or 4 runs created on `07ab432` or earlier, and only for a chapter whose body review was started but not accepted (interrupted, outcome unknown, failed, or rejected and being retried), when that chapter's AI-tone markers change. For a run created on `07ab432` the only changed inputs are an ASCII period followed by whitespace (`. 然而，`, `.　然而，`) and a digit before the period (`第3.然而，`); for an earlier run, also an unclosed “ or 「, `.然而`, or a panel line with trailing spaces. An already-accepted body review is not rebuilt and does not conflict. Version 1 and 2 runs are not affected. An experiment that has already started must be resumed on the commit that created it.
+
 ### Uninstalling
 
 Remove it with `dsh plugin --profile web remove dsh-story-weaver` (use the same `--profile` you installed into). This removes the package, its dependencies and the bundle from the profile. Two things intentionally or harmlessly remain:
 
 - Your novels and run history stay in `$DSH_HOME/storages/story_writing.json` and `$DSH_HOME/storages/story_runs.json`. Reinstalling picks them up again; delete these files yourself if you want the data gone.
 - Empty scope directories such as `node_modules/@deepseek-ai/` and `node_modules/@standard-schema/` may be left in the profile directory. They are safe to delete.
+
+## Host-provided peers
+
+A DSH profile installs plugins with pnpm `autoInstallPeers` turned off and a hoisted `node_modules`. Packages the plugin only calls inside the host are resolved from that running installation, so the profile does not download a second copy.
+
+Those packages stay in `peerDependencies` with the same version ranges. Each one is marked `"optional": true` in `peerDependenciesMeta`. pnpm no longer lists these 12 as missing; one summary warning remains because of the upstream cordis peer, and `dsh plugin add` passes that warning through. The host still checks every `@deepseek-ai/dsh-*` peer range against the running DSH version before it loads the plugin. This package installs with npm, but importing it outside DSH fails with `ERR_MODULE_NOT_FOUND`. The optional peers are:
+
+| Peer | Range |
+| --- | --- |
+| `@deepseek-ai/cordis` | `~4.0.4` |
+| `@deepseek-ai/dsh-fs` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-llm` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-sandbox-policy` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-session` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-session-persistence` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-session-projection` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-storage-domain` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-subagent` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-tool-present` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-tool-web` | `>=0.2.0-rc.2 <0.3.0-0` |
+| `@deepseek-ai/dsh-tools` | `>=0.2.0-rc.2 <0.3.0-0` |
+
+`@deepseek-ai/dsh-brand` is a direct dependency of this package. The published brand package declares its own required peer `@deepseek-ai/cordis@~4.0.4`. On a profile install, pnpm still reports that missing `cordis` peer. That declaration is upstream; this repository does not change it. The host provides the same cordis instance when the plugin runs.
 
 ## Writing workflow
 
@@ -75,7 +107,7 @@ The only bypass is operator-side: the plugin config option `allowIncompleteSetti
 
 ### AI-tone review
 
-Body reviews from prompt version 3 receive `task.aiToneMarkers` with host-detected AI-tone markers in the chapter narration: counts per thousand Han characters plus exact excerpts. Dialogue and 【】 panel lines are skipped. The reviewer reports real instances as advisory style issues; on prompt versions 3 and 4, and on version 5 with `aiToneBlocking` off, AI tone never blocks (see below). The markers and their limits are adapted from [lieflat-less-ai-tone](https://github.com/larashero3-dotcom/lieflat-less-ai-tone) (commit 27d2923, MIT License, Copyright (c) 2026 shiujan; notice in [third_party/lieflat-less-ai-tone.LICENSE](third_party/lieflat-less-ai-tone.LICENSE)). [src/ai-tone.ts](src/ai-tone.ts) lists the ported rules and those left out for fiction. From prompt version 4 the body-writing prompt also carries one short rule set from the same skill: no set-up-and-overturn framing, no 、 strings of three or more items, few reveal dashes, no set openers, nominalised summaries or translationese, and paragraph-opening comments that name their subject; dialogue, questions and rhythm are exempt, and the technical-metaphor ban takes precedence. Runs created on earlier prompt versions keep their original prompts.
+Body reviews from prompt version 3 receive `task.aiToneMarkers` with host-detected AI-tone markers in the chapter narration: counts per thousand Han characters plus exact excerpts. Dialogue and 【】 panel lines are skipped. The reviewer reports real instances as advisory style issues; on prompt versions 3 and 4, and on version 5 with `aiToneBlocking` off, AI tone never blocks (see below). The markers and their limits are adapted from [lieflat-less-ai-tone](https://github.com/larashero3-dotcom/lieflat-less-ai-tone) (commit 27d2923, MIT License, Copyright (c) 2026 shiujan; notice in [third_party/lieflat-less-ai-tone.LICENSE](third_party/lieflat-less-ai-tone.LICENSE)). [src/ai-tone.ts](https://github.com/hldz-top/dsh-story/blob/main/src/ai-tone.ts) lists the ported rules and those left out for fiction. From prompt version 4 the body-writing prompt also carries one short rule set from the same skill: no set-up-and-overturn framing, no 、 strings of three or more items, few reveal dashes, no set openers, nominalised summaries or translationese, and paragraph-opening comments that name their subject; dialogue, questions and rhythm are exempt, and the technical-metaphor ban takes precedence. Runs created on earlier prompt versions keep their original prompts.
 
 **AI tone blocks body reviews by default (prompt version 5).** The plugin config switch `aiToneBlocking` (boolean, default `true`) makes AI tone in a chapter body a blocking finding that goes back through the normal body repair. The reviewer still files AI tone as advisory style issues (style issues must stay advisory, or the whole review is rejected), with ids starting `ai-tone-`; the plugin decides in code which of them block. It runs the same detector as `task.aiToneMarkers` on the body's narration (dialogue and 【】 panel lines removed), and a quoted span blocks only when one of its verbatim occurrences in that narration fully covers a detector hit. So a fragment of dialogue, a commentary word such as 看起来 that does not open a paragraph, or a connective such as 因此， that follows a comma never blocks. One covered hit is enough for every rule, including a single dash or 、 enumeration. Quotes are matched character for character: a quote that passed review admission only after normalisation (full-width or half-width forms, line breaks, quote styles) is recorded but does not block. Only the body review changes: every other stage, and the body review with the switch off, keeps the version-4 prompt byte for byte, so with `aiToneBlocking: false` a version-5 run behaves like version 4 (AI tone advisory). The run stops on these conditions:
 
@@ -91,7 +123,7 @@ Each body review that the host blocked for AI tone is marked on its stored run a
 
 The same line, with `"reason":"ai-tone"`, ends the repair instruction the next body attempt receives.
 
-Known limitation: dialogue is recognised by its quote marks, so an unclosed 「 or “ makes the rest of that passage count as dialogue and AI tone there goes undetected. Likewise, a review quote that spans dialogue (for example `他说：「走。」——然后`) is never found in the narration, so it does not block even when it contains a marker. Both under-block (the chapter passes); they never block by mistake.
+Known limitation: dialogue is recognised by its quote marks. An unclosed 「 or “ stops at the line and is not removed, so narration after it is still scanned. A review quote that spans closed dialogue (for example `他说：「走。」——然后`) is never found in the narration, so it does not block even when it contains a marker. That under-blocks (the chapter passes); it never blocks by mistake.
 
 The switch is frozen into each new run with the other execution limits. Resume compares it as part of the same limits check: a version-5 run whose recorded value differs from the current config is refused (`run-limits`, naming `aiToneBlocking`); a version-5 run record without the value is corrupt (`corrupt-run`) and is refused, never treated as off; runs created before version 5 (versions 1 to 4) have no value, are treated as off whatever the current config says, and resume normally with advisory AI tone.
 
@@ -139,7 +171,7 @@ The [development guide](docs/development/harness.md) explains scope, isolated fi
 
 ### Offline chapter lint
 
-`node scripts/chapter-lint.mjs` runs `src/chapter-lint.ts` over a stored body (`body.json`, or `--store $DSH_HOME/storages/story_writing.json --body-id …`) or an exported chapter `.md`, optionally with its chapter outline (`--outline` / `--outline-id`). It is report-only and not part of the writing pipeline: it never calls a model, never writes a store and always exits 0 after a report; bad arguments, unreadable or non-UTF-8 files and input it cannot interpret print one `chapter-lint: …` line and exit 2 (`--help` prints usage). Input errors name the file and the position: `chapter-lint: <file>:<line>:<column>: invalid JSON: …` for JSON syntax errors, and `chapter-lint: <file>: <$.field.path>: expected …, got …` for structure and type errors in a body, outline or typo table (every scene needs string `sceneId` and `text`; every typo entry needs a nonempty string `wrong` and a string `right`). With `--store`, the artifact id follows the file name, e.g. `chapter-lint: story_writing.json: artifact artifact_…: $.scenes[0].text: expected a string, got missing`. Checks: standalone 【】 line count against the outline's cap (plus duplicates), Arabic-numeral literals the outline requires, a number in the 【任务已发布】 panel when the outline asks for one, scene/obligation/anchor positions (`--anchor 标签=正则`), a typo table (`--typos table.json`) and advisory technical metaphors (a technology/finance term list, seeded from the ch1 v2 style audit, in the same sentence as a 「比…还/更/都」 comparison, excluding 比如/比较/无比; 像/如同/仿佛-style metaphors are left to the review prompts). Positions are code-point offsets into the scenes joined with blank lines, title excluded, punctuation and whitespace included, divided by the total code points.
+`node scripts/chapter-lint.mjs` runs `src/chapter-lint.ts` over a stored body (`body.json`, or `--store $DSH_HOME/storages/story_writing.json --body-id …`) or an exported chapter `.md`, optionally with its chapter outline (`--outline` / `--outline-id`). It is report-only and not part of the writing pipeline: it never calls a model, never writes a store and always exits 0 after a report; bad arguments, unreadable or non-UTF-8 files and input it cannot interpret print one `chapter-lint: …` line and exit 2 (`--help` prints usage). Input errors name the file and the position: `chapter-lint: <file>:<line>:<column>: invalid JSON: …` for JSON syntax errors, and `chapter-lint: <file>: <$.field.path>: expected …, got …` for structure and type errors in a body, outline or typo table (every scene needs string `sceneId` and `text`; every typo entry needs a nonempty string `wrong` and a string `right`). With `--store`, the artifact id follows the file name, e.g. `chapter-lint: story_writing.json: artifact artifact_…: $.scenes[0].text: expected a string, got missing`. Checks: standalone 【】 line count against the outline's cap (plus duplicates), Arabic-numeral literals the outline requires, a number in the 【任务已发布】 panel when the outline asks for one, scene/obligation/anchor positions (`--anchor 标签=正则`), a typo table (`--typos table.json`), advisory technical metaphors (a technology/finance term list, seeded from the ch1 v2 style audit, in the same sentence as a 「比…还/更/都」 comparison, excluding 比如/比较/无比; 像/如同/仿佛-style metaphors are left to the review prompts) and advisory empty 【】 placeholders (an unfilled pair, including one whose interior is only whitespace such as a full-width space; the finding carries the same code-point location as other findings, does not change the panel count and does not change the exit code). Positions are code-point offsets into the scenes joined with blank lines, title excluded, punctuation and whitespace included, divided by the total code points.
 
 ## Host integration
 

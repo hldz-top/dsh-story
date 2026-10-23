@@ -488,7 +488,7 @@ export class ManuscriptStore {
   private record(actor: Actor, novelId: NovelId): NovelRecord {
     this.owner.getNovel(actor, novelId)
     const novel = this.domain.table('novels').get(novelId)
-    if (novel === undefined) throw new WritingError('novel-not-found', 'Novel does not exist')
+    if (novel === undefined) throw new WritingError('novel-not-found', 'novelId does not exist')
     return novel
   }
 

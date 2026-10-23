@@ -101,7 +101,7 @@ it('rejects an artifact belonging to another novel before creating any projectio
   const outcome = await preview(first, second.brief.id)
   expect(outcome.isError).toBe(true)
   if (!outcome.isError) throw new Error('An unrelated artifact must not produce preview metadata')
-  expect(outcome.error.message).toContain('Artifact is not published in this novel')
+  expect(outcome.error.message).toContain('artifactId is not published in this novel')
   expect(outcome.meta).toBeUndefined()
   expect(await readdir(cwd)).toEqual([])
   expect(ctx.story.getNovel(actor, first.id)).toEqual(first)

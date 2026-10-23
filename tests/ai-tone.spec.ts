@@ -47,10 +47,57 @@ describe('detectAiTone', () => {
     expect(dash?.perThousandHan).toBe(117.6)
   })
 
+  it('does not let an unclosed 「 swallow narration up to a later 」', () => {
+    const text = '他说：「还没说完\n说白了，旁白还在。\n「这句闭合了」'
+    expect(rules(text).opener).toBe(1)
+    expect(narrationOf(text)).toContain('说白了')
+  })
+
+  it('does not let an unclosed “ swallow narration up to a later ”', () => {
+    const text = '他说：“还没说完\n说白了，旁白还在。\n“这句闭合了”'
+    expect(rules(text).opener).toBe(1)
+    expect(narrationOf(text)).toContain('说白了')
+  })
+
+  it('skips a panel line that has trailing spaces', () => {
+    const text = '他停下。\n【时间、地点、人物】 \n门还开着。'
+    expect(rules(text).enumeration).toBeUndefined()
+    expect(narrationOf(text)).not.toContain('时间、地点、人物')
+  })
+
+  it('flags 当…时 after 的时候 and leaves 当…的时候， alone', () => {
+    expect(rules('当夜深的时候时，他才懂。')['when-clause']).toBe(1)
+    expect(rules('当他来的时候，门开了。')['when-clause']).toBeUndefined()
+  })
+
+  it('flags a connective after an ASCII period with or without following whitespace', () => {
+    expect(rules('压力还在.然而，门关了。').connective).toBe(1)
+    expect(rules('He left. 然而，门关了。').connective).toBe(1)
+    expect(rules('压力还在.\u3000然而，门关了。').connective).toBe(1)
+  })
+
+  it('does not treat a period after a digit as a sentence break', () => {
+    expect(rules('第3.然而').connective).toBeUndefined()
+    expect(rules('第3.然而，门关了。').connective).toBeUndefined()
+    expect(rules('第3. 然而，门关了。').connective).toBeUndefined()
+    expect(rules('2.0.此外').connective).toBeUndefined()
+    expect(rules('2.0.此外，门关了。').connective).toBeUndefined()
+    expect(rules('2.0. 此外，门关了。').connective).toBeUndefined()
+  })
+
   it('reports the ch1 v1 dash habit and keeps the v2 draft nearly clean', () => {
     const body = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/ai-tone/${name}`, import.meta.url), 'utf8')) as { scenes: { text: string }[] }
     const chapter = (name: string) => body(name).scenes.map(scene => scene.text).join('\n\n')
     expect(rules(chapter('ch1-v1-body.json'))).toEqual({ enumeration: 4, dash: 14 })
     expect(rules(chapter('ch1-v2-body.json'))).toEqual({ enumeration: 2 })
+  })
+
+  it('freezes detector output for the two chapter fixtures', () => {
+    const body = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/ai-tone/${name}`, import.meta.url), 'utf8')) as { scenes: { text: string }[] }
+    const chapter = (name: string) => body(name).scenes.map(scene => scene.text).join('\n\n')
+    for (const name of ['ch1-v1', 'ch1-v2'] as const) {
+      const golden = JSON.parse(readFileSync(new URL(`./fixtures/ai-tone/${name}-markers.json`, import.meta.url), 'utf8')) as unknown
+      expect(detectAiTone(chapter(`${name}-body.json`)), name).toEqual(golden)
+    }
   })
 })
