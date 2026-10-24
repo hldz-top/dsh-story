@@ -9,7 +9,7 @@ import { artifactIdSchema, novelIdSchema, requestIdSchema, WritingError, type Ar
 import { writingActor } from './tools.ts'
 import { parseModelOutput, StageValidationRejection } from './stage-rejection.ts'
 import { researchSelectedConclusions } from './research-selection.ts'
-import { researchConclusions, researchEvidenceContentSchema, researchQuestionSchema } from './research.ts'
+import { admitParsed, researchConclusions, researchEvidenceContentSchema, researchQuestionIdMessage, researchQuestionSchema } from './research.ts'
 import type { WritingService } from './service.ts'
 import type { StageResult } from './stage-executor.ts'
 import type { ResearchNecessity } from './research-planning.ts'
@@ -162,7 +162,7 @@ export function researchToolAuthorization(ctx: Context, service: WritingService,
   return async exec => {
     if (request.necessity === undefined) return
     if (exec.name === 'story_start_research') {
-      const args = startArguments.parse(exec.arguments)
+      const args = admitParsed(() => startArguments.parse(exec.arguments), 'id', researchQuestionIdMessage)
       if (args.novelId !== request.novelId || args.briefArtifactId !== request.briefArtifactId || args.requestId !== request.requestId
         || !isDeepStrictEqual(args.questions, request.necessity.questions)) throw new WritingError('invalid-input', 'Research start must match the exact frozen request and questions')
     }

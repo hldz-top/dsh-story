@@ -8,8 +8,11 @@ import type { WritingService } from './service.ts'
 import { artifactIdParameter, artifactProperties, defineStoryTool, novelIdParameter, parseToolBriefArtifactId, parseToolNovelId, parseToolPlanId, parseToolRequestId, requestIdParameter, writingActor } from './tools.ts'
 import { collectResearchSources } from './research-log.ts'
 import { readResearchSource, researchSourceIndex, selectResearchEvidence } from './research-selection.ts'
+import { parseSelectedFindings } from './research.ts'
 
 const text = { type: 'string', required: true } as const
+/** Nested question and finding identifiers. The schema stays a string; admission owns the format error. */
+const boundedIdentifier = { type: 'string', required: true, description: 'nonblank string of at most 256 characters' } as const
 const integer = { type: 'integer', required: true } as const
 const questionProperties = {
   id: text, kind: { ...text, enum: ['internal', 'creative', 'external'] }, question: text, reason: text,
@@ -91,7 +94,7 @@ export function registerResearchTools(ctx: Context, service: WritingService): vo
     description: `Record research questions against the current creative brief. Classify internal story facts, creative choices, and external facts separately, explaining why. Maximum ${service.researchLimits.maxResearchQuestions} questions, ${service.researchLimits.maxResearchCalls} native web calls, ${service.researchLimits.maxResearchSources} source rows including rejected references, and separate ${service.researchLimits.maxEvidenceChars}-character allowances for index metadata, selected excerpts and cumulative source reads. After planning, use existing web_search/web_fetch for external questions; independent questions may run in parallel. Use story_research_results before completing the plan.`,
     parameters: {
       novelId: novelIdParameter, requestId: requestIdParameter, briefArtifactId: artifactIdParameter,
-      questions: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: questionProperties } },
+      questions: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { ...questionProperties, id: boundedIdentifier } } },
     },
     output: researchOutput,
     async execute(args, exec) {
@@ -171,7 +174,7 @@ export function registerResearchTools(ctx: Context, service: WritingService): vo
     parameters: {
       novelId: novelIdParameter, planId: artifactIdParameter, requestId: requestIdParameter,
       findings: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: {
-        questionId: text, callIds: { type: 'array', required: true, items: { type: 'string' } }, conclusion: text, adequate: { type: 'boolean', required: true },
+        questionId: boundedIdentifier, callIds: { type: 'array', required: true, items: { type: 'string' } }, conclusion: text, adequate: { type: 'boolean', required: true },
         selections: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: selectionProperties } },
       } } },
     },
@@ -180,14 +183,12 @@ export function registerResearchTools(ctx: Context, service: WritingService): vo
       const actor = await writingActor(ctx, exec)
       const novelId = parseToolNovelId(args.novelId)
       const planId = parseToolPlanId(args.planId)
+      const requestId = parseToolRequestId(args.requestId)
+      const findings = parseSelectedFindings(args.findings)
       const plan = service.getResearch(actor, { novelId, planId })
-      const findings = args.findings.map(finding => ({ ...finding, callIds: finding.callIds.map(brandString<ToolCallId>),
-        selections: finding.selections.map(selection => ({ ...selection, callId: brandString<ToolCallId>(selection.callId) })) }))
       const sources = plan.result !== null || plan.reservedCalls.length === 0 ? [] : await collectResearchSources(ctx, exec, plan, service.researchLimits)
       const observations = plan.result === null ? selectResearchEvidence(sources, findings, service.researchLimits) : []
-      return researchValue(await service.completeSelectedResearch(actor, {
-        novelId, planId, requestId: parseToolRequestId(args.requestId), findings,
-      }, observations))
+      return researchValue(await service.completeSelectedResearch(actor, { novelId, planId, requestId, findings }, observations))
     },
   })))
 }

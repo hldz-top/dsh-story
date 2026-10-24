@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { WritingError, type Actor, type ArtifactId, type NovelId, type NovelView, type RequestId } from './contracts.ts'
 import { artifactKinds, parseArtifactId, parseNovelId, parseRequestId } from './contracts.ts'
 import { parseAttemptId, parseRunId, type AttemptId, type RunId } from './run-store.ts'
+import { findingQuestionIdMessage, researchQuestionIdMessage } from './research.ts'
 import type { WritingService } from './service.ts'
 import { projectArtifact } from './projection.ts'
 
@@ -78,13 +79,22 @@ function isIdParam(name: string): name is ToolIdParam {
   return Object.hasOwn(idFormatMessage, name)
 }
 
+function admittedIdMessage(name: string): string | undefined {
+  if (isIdParam(name)) return idFormatMessage[name]
+  if (/^questions\[\d+\]\.id$/.test(name)) return researchQuestionIdMessage
+  if (/^findings\[\d+\]\.questionId$/.test(name)) return findingQuestionIdMessage
+  return undefined
+}
+
 function idTypeError(error: unknown): WritingError | undefined {
   if (!(error instanceof ToolArgsError)) return undefined
   const messages: string[] = []
   for (const violation of error.violations) {
     const name = /^"([^"]+)" must be a string$/.exec(violation)?.[1]
-    if (name === undefined || !isIdParam(name)) return undefined
-    messages.push(idFormatMessage[name])
+    if (name === undefined) return undefined
+    const message = admittedIdMessage(name)
+    if (message === undefined) return undefined
+    messages.push(message)
   }
   const message = messages[0]
   return message === undefined ? undefined : new WritingError('invalid-input', message)
@@ -92,6 +102,7 @@ function idTypeError(error: unknown): WritingError | undefined {
 
 /**
  * defineTool, plus a translation of wrong-type id arguments into the same invalid-input text.
+ * Nested questions[].id and findings[].questionId use that rule too.
  * The published schema stays type string. Other failures, including non-Zod errors, are unchanged.
  * @param options - Tool definition.
  * @returns The registered tool definition.

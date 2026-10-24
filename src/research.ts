@@ -3,7 +3,7 @@ import { brandString } from '@deepseek-ai/dsh-brand'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { z } from 'zod'
-import { selectedFindingSchema, selectedObservationSchema } from './research-selection.ts'
+import { selectedFindingSchema, selectedObservationSchema, type ResearchSelectedFinding } from './research-selection.ts'
 import { artifactIdSchema, novelIdSchema, WritingError, type ResearchFinding, type ResearchLimits, type ResearchObservation, type ResearchOutcome, type ResearchQuestion } from './contracts.ts'
 
 const nonblank = z.string().refine(value => value.trim().length > 0)
@@ -43,6 +43,36 @@ export const researchObservationSchema = legacyObservationSchema.extend({ reject
 export const researchFindingSchema = z.strictObject({
   questionId: nonblank.max(256), callIds: z.array(callId), conclusion: nonblank, adequate: z.boolean(),
 })
+/** Model-facing invalid-input text for questions[].id. Nested, so it stays outside the top-level id map. */
+export const researchQuestionIdMessage = 'questions[].id must be a nonblank string of at most 256 characters'
+/** Model-facing invalid-input text for findings[].questionId. Nested, so it stays outside the top-level id map. */
+export const findingQuestionIdMessage = 'findings[].questionId must be a nonblank string of at most 256 characters'
+
+/**
+ * Parse untrusted JSON and turn one identifier field's Zod failure into invalid-input.
+ * A non-Zod error, or a Zod failure of any other field, is rethrown unchanged.
+ * @param parse - Schema parse of one untrusted value.
+ * @param field - Identifier property, matched against the last issue path segment.
+ * @param message - Readable invalid-input sentence for that identifier.
+ * @returns The parsed value.
+ */
+export function admitParsed<T>(parse: () => T, field: string, message: string): T {
+  try {
+    return parse()
+  } catch (error) {
+    if (error instanceof z.ZodError && error.issues.some(issue => issue.path.at(-1) === field
+      && (issue.code === 'custom' || issue.code === 'too_big' || issue.code === 'invalid_type'))) {
+      throw new WritingError('invalid-input', message)
+    }
+    throw error
+  }
+}
+
+/** @param findings - Untrusted completion input. @returns Findings whose questionId passed the bounded-id rule. */
+export function parseSelectedFindings(findings: unknown): ResearchSelectedFinding[] {
+  return admitParsed(() => selectedFindingSchema.array().parse(findings), 'questionId', findingQuestionIdMessage)
+}
+
 /** Stored classification vocabulary. */
 export const researchOutcomeSchema = z.enum(['not-needed', 'succeeded', 'insufficient', 'failed'])
 
@@ -67,7 +97,7 @@ export const researchEvidenceContentSchema = z.union([
 
 /** @param questions - Caller-supplied planning input. @param limits - Per-plan bounds. @returns Detached validated questions. */
 export function researchQuestions(questions: readonly ResearchQuestion[], limits: ResearchLimits): ResearchQuestion[] {
-  const parsed = z.array(researchQuestionSchema).nonempty().parse(questions)
+  const parsed = admitParsed(() => z.array(researchQuestionSchema).nonempty().parse(questions), 'id', researchQuestionIdMessage)
   const violation = researchQuestionViolation(parsed, limits)
   if (violation !== null) throw new WritingError(violation.code, violation.message)
   return parsed
@@ -102,7 +132,7 @@ export function researchQuestionViolation(questions: readonly ResearchQuestion[]
  * @returns Classified findings and the aggregate outcome.
  */
 export function researchConclusions(questions: readonly ResearchQuestion[], findings: readonly ResearchFinding[], observations: readonly ResearchObservation[], limits: ResearchLimits) {
-  const parsed = z.array(researchFindingSchema).parse(findings)
+  const parsed = admitParsed(() => z.array(researchFindingSchema).parse(findings), 'questionId', findingQuestionIdMessage)
   if (parsed.length !== questions.length || new Set(parsed.map(item => item.questionId)).size !== parsed.length
     || parsed.some(item => !questions.some(question => question.id === item.questionId))) {
     throw new WritingError('invalid-input', 'Research findings must answer every planned question exactly once')

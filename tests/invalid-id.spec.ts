@@ -17,9 +17,11 @@ import { z } from 'zod'
 import * as Story from '../src/index.ts'
 import { WritingError, parseArtifactId, parseNovelId, parseRequestId, type Actor } from '../src/contracts.ts'
 import { parseRunId } from '../src/run-store.ts'
+import { findingQuestionIdMessage, parseSelectedFindings, researchConclusions, researchQuestionIdMessage, researchQuestions } from '../src/research.ts'
 import { admitToolId, artifactIdParameter, attemptIdParameter, defineStoryTool, expectedAppliedIdParameter, idFormatMessage, novelIdParameter, parseToolNovelId, parseToolRunId, requestIdParameter, runIdParameter, type ToolIdParam } from '../src/tools.ts'
 import { mountPluginRuntime } from './support/plugin-runtime.ts'
 import { call, ScriptedModel, stop } from './support/model.ts'
+import { testResearchLimits } from './support/storage.ts'
 
 const uuid = '00c38d7c-50d8-4a1b-93f0-188daf5a9859'
 const novelMessage = idFormatMessage.novelId
@@ -316,7 +318,7 @@ it('rejects every schema id field without a raw zod error', async () => {
   }
 })
 
-/** Top-level *Id parameters that are not admitted ids. Nested question ids are out of scope. */
+/** Top-level *Id parameters that are not admitted ids. Nested question ids are admitted separately. */
 const idParameterAllowlist = new Set(['callId'])
 
 it('does not treat a wrong-type constructor parameter as an admitted id', async () => {
@@ -515,6 +517,131 @@ it('rejects every other id kind and names a missing id', async () => {
     serviceLimits: { ...ctx.story.limits, ...ctx.story.researchLimits },
   })
   expect(await refused('story_read_run_output', { runId: run.id, attemptId, offset: 0, limit: 1 })).toContain('attemptId does not belong to this run')
+})
+
+const question = { kind: 'creative' as const, question: '体裁？', reason: '作者决定。' }
+const legacyFinding = { callIds: [] as string[], conclusion: '悬疑。', adequate: true }
+const findingBody = { ...legacyFinding, selections: [] as [] }
+const rawZod = /"code":|ZodError/
+
+function expectIdentifierError(run: () => unknown, message: string, label: string): void {
+  try {
+    run()
+    throw new Error(`${label} succeeded`)
+  } catch (error) {
+    expect(error, label).toBeInstanceOf(WritingError)
+    if (!(error instanceof WritingError)) throw error
+    expect(error.code, label).toBe('invalid-input')
+    expect(error.message, label).toBe(message)
+    expect(error.message, label).not.toMatch(zodDump)
+    expect(error.message, label).not.toMatch(rawZod)
+    expect(error, label).not.toBeInstanceOf(z.ZodError)
+  }
+}
+
+it('admits bounded research question ids and rejects malformed ones without a zod dump', () => {
+  expect(researchQuestionIdMessage).toBe('questions[].id must be a nonblank string of at most 256 characters')
+  expect(findingQuestionIdMessage).toBe('findings[].questionId must be a nonblank string of at most 256 characters')
+  expect(Object.hasOwn(idFormatMessage, 'questionId')).toBe(false)
+  const id = 'q'.repeat(256)
+  expect(researchQuestions([{ id, ...question }], testResearchLimits)).toEqual([{ id, ...question }])
+  expect(researchConclusions([{ id, ...question }], [{ questionId: id, ...legacyFinding }] as never, [], testResearchLimits)).toMatchObject({ outcome: 'not-needed', findings: [{ questionId: id }] })
+  expect(parseSelectedFindings([{ questionId: id, ...findingBody }])).toMatchObject([{ questionId: id }])
+  for (const value of ['', '   ', 'x'.repeat(257), 1, null]) {
+    expectIdentifierError(() => researchQuestions([{ id: value, ...question } as never], testResearchLimits), researchQuestionIdMessage, `question ${String(value)}`)
+    expectIdentifierError(() => researchQuestions([{ id: 'genre', ...question }, { id: value, ...question } as never], testResearchLimits), researchQuestionIdMessage, `second question ${String(value)}`)
+    expectIdentifierError(() => researchConclusions([{ id: 'genre', ...question }], [{ questionId: value, ...legacyFinding } as never], [], testResearchLimits), findingQuestionIdMessage, `finding ${String(value)}`)
+    expectIdentifierError(() => parseSelectedFindings([{ questionId: 'genre', ...findingBody }, { questionId: value, ...findingBody }]), findingQuestionIdMessage, `second finding ${String(value)}`)
+  }
+  expect(() => researchQuestions([], testResearchLimits)).toThrow(z.ZodError)
+  expect(() => researchQuestions([{ id: 'genre', ...question, question: '   ' }], testResearchLimits)).toThrow(z.ZodError)
+  expect(() => researchConclusions([{ id: 'genre', ...question }], [{ questionId: 'genre', ...legacyFinding, conclusion: '   ' }] as never, [], testResearchLimits)).toThrow(z.ZodError)
+})
+
+it('rejects malformed nested research ids from the tools without a raw zod error', async () => {
+  const { ctx, actor, execute } = await setup()
+  const created = await ctx.story.createNovel(actor, { requestId: parseRequestId('nested-id-novel'), title: '潮汐城', brief: '守塔人找到了失踪日志。' })
+  const novelId = created.id
+  const startSchema = ctx.tools.schemas().find(schema => schema.name === 'story_start_research')
+  const completeSchema = ctx.tools.schemas().find(schema => schema.name === 'story_complete_research')
+  const questions = startSchema?.parameters.properties
+  const findings = completeSchema?.parameters.properties
+  const questionIdSchema = questions !== null && typeof questions === 'object' && 'questions' in questions ? questions.questions : undefined
+  const findingSchema = findings !== null && typeof findings === 'object' && 'findings' in findings ? findings.findings : undefined
+  expect(questionIdSchema).toMatchObject({ items: { properties: { id: { type: 'string', description: 'nonblank string of at most 256 characters' } } } })
+  expect(findingSchema).toMatchObject({ items: { properties: { questionId: { type: 'string', description: 'nonblank string of at most 256 characters' } } } })
+  const read = async (name: string, args: Record<string, unknown>) => {
+    const outcome = await execute(name, args)
+    if (outcome.isError) throw new Error(`${name} failed: ${outcome.error.message}`)
+    return outcome.value
+  }
+  const refused = async (name: string, args: Record<string, unknown>, label: string) => {
+    const text = errorText(await execute(name, args), label)
+    expect(text, label).not.toMatch(rawZod)
+    return text
+  }
+  const short = await read('story_start_research', { novelId, requestId: 'nested-short', briefArtifactId: created.brief.id, questions: [{ id: 'genre', ...question }] })
+  const plan = z.object({ planId: z.string(), questions: z.array(z.object({ id: z.string() })), result: z.null() }).parse(short)
+  expect(plan.questions[0]?.id).toBe('genre')
+  for (const [index, value] of (['', '   ', 'x'.repeat(257), 1, null] as const).entries()) {
+    const label = `start ${index} ${typeof value === 'string' ? value.length : String(value)}`
+    expect(await refused('story_start_research', {
+      novelId, requestId: `nested-bad-${index}`, briefArtifactId: created.brief.id,
+      questions: [{ id: 'kept', ...question }, { id: value, ...question }],
+    }, label)).toBe(`Error: ${researchQuestionIdMessage}`)
+    expect(await refused('story_complete_research', {
+      novelId, planId: plan.planId, requestId: `nested-finding-${index}`,
+      findings: [{ questionId: 'genre', ...findingBody }, { questionId: value, ...findingBody }],
+    }, `complete ${index}`)).toBe(`Error: ${findingQuestionIdMessage}`)
+  }
+  expect(await read('story_get_research', { novelId, planId: plan.planId })).toMatchObject({ planId: plan.planId, result: null })
+  expect(await read('story_complete_research', {
+    novelId, planId: plan.planId, requestId: 'nested-complete-short', findings: [{ questionId: 'genre', ...findingBody }],
+  })).toMatchObject({ planId: plan.planId, outcome: 'not-needed' })
+  const longId = 'q'.repeat(256)
+  const long = z.object({ planId: z.string(), questions: z.array(z.object({ id: z.string() })) }).parse(await read('story_start_research', {
+    novelId, requestId: 'nested-boundary', briefArtifactId: created.brief.id, questions: [{ id: longId, ...question }],
+  }))
+  expect(long.questions[0]?.id).toBe(longId)
+  expect(await read('story_complete_research', {
+    novelId, planId: long.planId, requestId: 'nested-complete-boundary', findings: [{ questionId: longId, ...findingBody }],
+  })).toMatchObject({ planId: long.planId, outcome: 'not-needed' })
+})
+
+it('records friendly nested research id errors in the model-visible tool result', async () => {
+  const model = new ScriptedModel((_request, index) => {
+    if (index === 0) return call('story_start_research', {
+      novelId: `novel_${uuid}`, requestId: 'visible-question', briefArtifactId: artifactId,
+      questions: [{ id: '', ...question }, { id: '   ', ...question }],
+    })
+    if (index === 1) return call('story_complete_research', {
+      novelId: `novel_${uuid}`, planId: artifactId, requestId: 'visible-finding',
+      findings: [{ questionId: 'x'.repeat(257), ...findingBody }],
+    }, 'complete-long')
+    if (index === 2) return call('story_start_research', {
+      novelId: `novel_${uuid}`, requestId: 'visible-type', briefArtifactId: artifactId,
+      questions: [{ id: 1, ...question }],
+    }, 'start-number')
+    return stop()
+  })
+  const { agent } = await setup(model)
+  agent.followup(createUserMessage({ content: [{ type: 'text', text: '记录一个空的研究问题。' }], source: { kind: 'user' } }))
+  await agent.whenIdle()
+  const request = model.requests.at(-1)
+  if (request === undefined) throw new Error('The loop did not record a model request')
+  const results = request.messages.filter((message): message is ToolResultMessage => message.role === 'tool')
+  const texts = results.flatMap(result => result.content.flatMap(block => block.type === 'text' ? [block.text] : []))
+  expect(texts).toEqual([
+    `Error: ${researchQuestionIdMessage}`,
+    `Error: ${findingQuestionIdMessage}`,
+    `Error: ${researchQuestionIdMessage}`,
+  ])
+  expect(texts.join('\n')).not.toMatch(zodDump)
+  expect(texts.join('\n')).not.toMatch(rawZod)
+  const logged = agent.session.snapshotEvents().flatMap(event => event.type === 'tool/result'
+    ? event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : [])
+    : [])
+  expect(logged).toEqual(texts)
 })
 
 it('names a missing baseArtifactId without treating a valid id as malformed', async () => {

@@ -5,12 +5,12 @@ import type { z } from 'zod'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { Domain, DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
-import { researchSelectedConclusions, selectedFindingSchema, type ResearchSelection, type ResearchSelectedFinding, type SelectedResearchObservation } from './research-selection.ts'
+import { researchSelectedConclusions, type ResearchSelection, type ResearchSelectedFinding, type SelectedResearchObservation } from './research-selection.ts'
 import type { Actor, Artifact, ArtifactId, ArtifactKind, ArtifactRef, ArtifactRequest, ArtifactSlice, CreateNovelRequest, NovelId, NovelView, ReadArtifactRequest, ResearchCall, ResearchLimits, ResearchObservation, ResearchRequest, ResearchView, SaveBriefRequest, StartResearchRequest, WritingLimits } from './contracts.ts'
 import { WritingError } from './contracts.ts'
 import { checkModelArtifactBytes } from './stage-rejection.ts'
 import { writingDomain, type NovelRecord, type ResearchRecord, type SettingsRecord } from './records.ts'
-import { researchEvidenceContentSchema, researchPlanContentSchema, researchQuestions } from './research.ts'
+import { parseSelectedFindings, researchEvidenceContentSchema, researchPlanContentSchema, researchQuestions } from './research.ts'
 
 import { settingsCatalog } from './settings-catalog.ts'
 import { proseView } from './prose-view.ts'
@@ -350,7 +350,7 @@ export class WritingService {
     const plan = this.researchRecord(novel, request.planId)
     this.researchOwner(actor, plan)
     this.getResearch(actor, request)
-    const findings = selectedFindingSchema.array().parse(request.findings)
+    const findings = parseSelectedFindings(request.findings)
     const hash = createHash('sha256').update(JSON.stringify(findings)).digest('hex')
     if (plan.completeRequest !== null) {
       if (plan.completeRequest.requestId !== request.requestId) throw new WritingError('request-conflict', 'Research plan is already completed')
