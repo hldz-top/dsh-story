@@ -3,9 +3,10 @@
  * Not wired into the writing pipeline; scripts/chapter-lint.mjs runs it over stored or exported drafts.
  *
  * Position metric: the chapter text is the stored scenes' `text` joined with "\n\n" (no title, exactly what
- * the exported .md carries after its "# title\n\n" line). One character is one Unicode code point; punctuation,
- * whitespace and newlines all count. percent = start offset (0-based code points) / total code points × 100,
- * rounded to one decimal.
+ * the exported .md carries after its "# title\n\n" line). CRLF in a chapter string or in scene text is
+ * normalized to LF before measuring, the same replacement {@link chapterFromMarkdown} applies to an export.
+ * One character is one Unicode code point; punctuation, whitespace and newlines all count. percent = start
+ * offset (0-based code points) / total code points × 100, rounded to one decimal.
  */
 
 /** The parts of a stored body artifact the lint reads. */
@@ -39,7 +40,7 @@ export interface ChapterLintReport {
   }
   readonly typos: readonly (TypoRule & Located)[]
   readonly metaphors: readonly (Located & { readonly sentence: string; readonly terms: readonly string[] })[]
-  /** Unfilled 【】 pairs. Whitespace-only interiors count. Advisory only: not an error, and not removed from {@link ChapterLintReport.panels}. */
+  /** Unfilled 【】 pairs. Whitespace-only interiors count, including one line break; a blank line between 【 and 】 does not. Advisory only: not an error, and not removed from {@link ChapterLintReport.panels}. */
   readonly placeholders: readonly Located[]
   readonly findings: readonly LintFinding[]
 }
@@ -54,11 +55,14 @@ export const DEFAULT_TYPOS: readonly TypoRule[] = [
 
 const PANEL_LINE = /^【[^\n]*】$/gmu
 /**
- * An unfilled 【】 placeholder. The interior may be whitespace (ordinary spaces, tabs, newlines, the full-width
- * space) or the zero-width characters U+200B–U+200D and U+2060. Any other character, half-width [], and an unmatched 【 or 】 do not match.
+ * An unfilled 【】 placeholder. The interior may be whitespace other than CR/LF (ordinary spaces, tabs, the
+ * full-width space), the zero-width characters U+200B–U+200D and U+2060, and a single line break (LF or CRLF).
+ * A blank line — a line break, then only that whitespace or those zero-width characters, then another line
+ * break — does not match, so an unclosed 【 and a 】 in a later paragraph are not one empty pair. Any other
+ * character, half-width [], and an unmatched 【 or 】 do not match.
  * This does not change {@link PANEL_LINE}: a line that is only 【】 is still a panel line and is also reported here.
  */
-const EMPTY_BRACKET = /【[\s\u200b-\u200d\u2060]*】/gu
+const EMPTY_BRACKET = /【(?:[^\S\r\n]|\u200b|\u200c|\u200d|\u2060|\r?\n(?!(?:[^\S\r\n]|\u200b|\u200c|\u200d|\u2060)*\r?\n))*】/gu
 /** Numbers that only describe the plan (lengths, beat/panel counts, ratios), never prose facts. */
 const META_UNIT = /^\s*(?:[–\-~～/]\s*\d|字|拍|条|次|%|％|章|段|步|个|句|处|成|倍|分之)/u
 const LITERAL = /(?<![\p{L}\p{N}_.:：–\-~～/])([A-Z]?\d+(?::\d{2})?)(?![\p{L}\p{N}_:：])/gu
@@ -79,13 +83,22 @@ export const TECH_METAPHOR_TERMS: readonly string[] = ['气密性', '信用评�
  */
 const COMPARISON = /(?<![无对])比(?![如较方例赛分重率])[^，,。！？!?\n]{1,16}?[还更都]/u
 const CONTEXT = 12
+/** Line breaks in a context snippet. A run of CRLF, lone CR or LF becomes one space; other whitespace stays. */
+const CONTEXT_BREAK = /(?:\r\n|[\r\n])+/gu
 
-/** @returns The chapter text exactly as reviewers and the exported .md see it. */
-export function assembleChapter(body: LintBody): string { return body.scenes.map(scene => scene.text).join('\n\n') }
+/** CRLF (`\r\n`) becomes LF. A lone CR stays, so a scene that ends in CR still lines up with the `\n\n` join. */
+function normalizeNewlines(text: string): string {
+  return text.replace(/\r\n/gu, '\n')
+}
 
-/** @param markdown - An exported chapter: "# title\n\n" + chapter text + "\n". @returns The chapter text without the title line. */
+/** @returns The chapter text exactly as reviewers and the exported .md see it, with CRLF normalized to LF. */
+export function assembleChapter(body: LintBody): string {
+  return body.scenes.map(scene => normalizeNewlines(scene.text)).join('\n\n')
+}
+
+/** @param markdown - An exported chapter: "# title\n\n" + chapter text + "\n". CRLF is normalized first. @returns The chapter text without the title line. */
 export function chapterFromMarkdown(markdown: string): string {
-  const text = markdown.replace(/\r\n/gu, '\n')
+  const text = normalizeNewlines(markdown)
   const body = /^# [^\n]*\n\n/u.test(text) ? text.replace(/^# [^\n]*\n\n/u, '') : text
   return body.endsWith('\n') ? body.slice(0, -1) : body
 }
@@ -113,7 +126,7 @@ class Points {
   locate(utf16: number, matched: number): Located {
     const offset = this.offset(utf16)
     const context = this.chars.slice(Math.max(0, offset - CONTEXT), offset + matched + CONTEXT).join('')
-    return { offset, percent: this.percent(offset), context: context.replace(/\n+/gu, ' ') }
+    return { offset, percent: this.percent(offset), context: context.replace(CONTEXT_BREAK, ' ') }
   }
 }
 
@@ -158,12 +171,20 @@ function requiresTaskDigit(outline: LintOutline): boolean {
 }
 
 /**
- * @param chapter - Chapter text (see {@link assembleChapter}) or a stored body for scene positions.
+ * @param chapter - Chapter text (see {@link assembleChapter}) or a stored body for scene positions. CRLF is normalized before offsets are measured.
  * @param options - Outline for caps, literals and obligation positions; typo table; named anchors.
  * @returns A report; nothing is rejected or rewritten.
  */
 export function lintChapter(chapter: string | LintBody, options: LintOptions = {}): ChapterLintReport {
-  const text = typeof chapter === 'string' ? chapter : assembleChapter(chapter)
+  let text: string
+  let normalizedScenes: { sceneId: string; text: string }[] | null
+  if (typeof chapter === 'string') {
+    text = normalizeNewlines(chapter)
+    normalizedScenes = null
+  } else {
+    normalizedScenes = chapter.scenes.map(scene => ({ sceneId: scene.sceneId, text: normalizeNewlines(scene.text) }))
+    text = assembleChapter({ scenes: normalizedScenes })
+  }
   const points = new Points(text)
   const findings: LintFinding[] = []
   const { outline } = options
@@ -201,9 +222,9 @@ export function lintChapter(chapter: string | LintBody, options: LintOptions = {
   }
 
   const scenes: { sceneId: string; offset: number; percent: number }[] = []
-  if (typeof chapter !== 'string') {
+  if (normalizedScenes !== null) {
     let offset = 0
-    for (const scene of chapter.scenes) {
+    for (const scene of normalizedScenes) {
       scenes.push({ sceneId: scene.sceneId, offset, percent: points.percent(offset) })
       offset += [...scene.text].length + 2
     }
