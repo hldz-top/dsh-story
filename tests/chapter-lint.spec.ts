@@ -38,6 +38,69 @@ describe('position metric', () => {
   })
 })
 
+describe('CRLF normalization (N3)', () => {
+  const typos = [{ wrong: '掉水', right: '掉压' }]
+  const anchors = [{ label: '面板', pattern: '【任务完成】' }]
+  const lfBody: LintBody = {
+    scenes: [
+      { sceneId: 's1', text: '开场。\n他看见【】。' },
+      { sceneId: 's2', text: '【任务完成】\n第二场掉水。' },
+    ],
+  }
+  const crlfBody: LintBody = {
+    scenes: lfBody.scenes.map(scene => ({ sceneId: scene.sceneId, text: scene.text.replace(/\n/gu, '\r\n') })),
+  }
+  const view = (report: ReturnType<typeof lintChapter>) => ({
+    chars: report.chars,
+    panels: report.panels.lines.map(({ offset, percent, text }) => ({ offset, percent, text })),
+    scenes: report.positions.scenes,
+    anchors: report.positions.anchors.map(anchor => anchor.match === null ? null : { offset: anchor.match.offset, percent: anchor.match.percent, context: anchor.match.context, text: anchor.match.text }),
+    placeholders: report.placeholders,
+    typos: report.typos.map(({ wrong, offset, percent, context }) => ({ wrong, offset, percent, context })),
+    messages: report.findings.map(finding => finding.message),
+  })
+  const noCarriageReturn = (report: ReturnType<typeof lintChapter>) => {
+    expect(JSON.stringify(report)).not.toContain('\\r')
+    for (const item of [...report.placeholders, ...report.typos]) expect(item.context).not.toMatch(/[\r\n]/)
+  }
+
+  it('matches LF offsets, percents and context for a CRLF chapter string', () => {
+    const lf = assembleChapter(lfBody)
+    const left = lintChapter(lf, { typos, anchors })
+    const right = lintChapter(lf.replace(/\n/gu, '\r\n'), { typos, anchors })
+    expect(view(right)).toEqual(view(left))
+    expect(right.positions.scenes).toEqual([])
+    noCarriageReturn(right)
+  })
+
+  it('matches LF scene offsets when stored scene text contains CRLF', () => {
+    const left = lintChapter(lfBody, { typos, anchors })
+    const right = lintChapter(crlfBody, { typos, anchors })
+    expect(assembleChapter(crlfBody)).toBe(assembleChapter(lfBody))
+    expect(assembleChapter(crlfBody)).not.toContain('\r')
+    expect(view(right)).toEqual(view(left))
+    expect(right.positions.scenes).toEqual([
+      { sceneId: 's1', offset: 0, percent: 0 },
+      { sceneId: 's2', offset: 12, percent: 48 },
+    ])
+    noCarriageReturn(right)
+  })
+
+  it('reads a CRLF export as the same chapter text as the normalized body', () => {
+    const lf = assembleChapter(lfBody)
+    const markdown = `# 标题\r\n\r\n${lf.replace(/\n/gu, '\r\n')}\r\n`
+    expect(chapterFromMarkdown(markdown)).toBe(lf)
+    expect(chapterFromMarkdown(markdown)).toBe(assembleChapter(crlfBody))
+  })
+
+  it('does not leak a lone CR into context', () => {
+    const report = lintChapter('前文\r【】后文\n掉水', { typos })
+    expect(report.chars).toBe(10)
+    expect(report.placeholders).toEqual([{ offset: 3, percent: 30, context: '前文 【】后文 掉水' }])
+    expect(report.typos).toEqual([{ wrong: '掉水', right: '掉压', offset: 8, percent: 80, context: '前文 【】后文 掉水' }])
+  })
+})
+
 describe('v1 draft (artifact_230c4d0c)', () => {
   const report = lintChapter(v1, { outline, anchors })
 
@@ -220,6 +283,34 @@ describe('empty 【】 placeholders (advisory)', () => {
       expect(report.placeholders, sample).toHaveLength(1)
       expect(report.findings.every(finding => finding.severity === 'advisory'), sample).toBe(true)
     }
+  })
+
+  it('still reports a single line break inside 【】, including zero-width characters on that line (N4)', () => {
+    const single = lintChapter('前【\n】后')
+    expect(single.placeholders).toEqual([{ offset: 1, percent: 20, context: '前【 】后' }])
+    expect(empty(single).map(finding => finding.message)).toEqual(['空【】（20%）：前【 】后'])
+    const mixed = lintChapter('前【  \n\u200b  】后')
+    expect(mixed.placeholders).toEqual([{ offset: 1, percent: 10, context: '前【   \u200b  】后' }])
+    expect(mixed.placeholders[0]!.context).not.toMatch(/[\r\n]/)
+    expect(empty(mixed)).toHaveLength(1)
+    const crlf = lintChapter('前【\r\n】后')
+    expect(crlf.placeholders).toEqual(single.placeholders)
+    expect(crlf.placeholders[0]!.context).not.toContain('\r')
+    expect(empty(crlf)).toHaveLength(1)
+  })
+
+  it('does not pair 【 with 】 across a blank line (N4)', () => {
+    for (const sample of ['【\n\n】', '【\n   \n】', '【\n\u200b\n】', '【\r\n\r\n】', '【\r\n   \r\n】', '【\r\n\u200b\r\n】']) {
+      const report = lintChapter(sample)
+      expect(report.placeholders, JSON.stringify(sample)).toEqual([])
+      expect(empty(report), JSON.stringify(sample)).toEqual([])
+    }
+    const mixed = lintChapter('段尾【\n\n】段首有【】。')
+    expect(mixed.placeholders).toEqual([{ offset: 9, percent: 75, context: '段尾【 】段首有【】。' }])
+    expect(empty(mixed)).toHaveLength(1)
+    const spaced = lintChapter('段尾【\n   \n】段首有【】。')
+    expect(spaced.placeholders.map(item => item.offset)).toEqual([mixed.placeholders[0]!.offset + 3])
+    expect(empty(spaced)).toHaveLength(1)
   })
 })
 
