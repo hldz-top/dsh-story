@@ -313,7 +313,7 @@ it('returns persisted settings candidates and manuscript collections without the
   expect(jsonResult(results[0])).toEqual({ novelId, ...h.service.getSettings(h.actor, h.novel.id) })
   // Host-measured beats feed body reviews only; the read tool does not publish them.
   const manuscript = h.service.getManuscript(h.actor, h.novel.id)
-  const published = (items: typeof manuscript.history) => items.map(({ beats: _beats, ...item }) => item)
+  const published = (items: typeof manuscript.history) => items.map(({ beats: _beats, aiTone: _aiTone, ...item }) => item)
   expect(jsonResult(results[1])).toEqual({ novelId, ...manuscript, history: published(manuscript.history), heads: published(manuscript.heads) })
   expect(JSON.stringify(results)).not.toContain('Full private setting text')
 })
@@ -455,7 +455,7 @@ it('G2: reports an import refused by an unfinished run with a machine-readable l
   let args: Record<string, unknown> = {}
   const model = new ScriptedModel((_request, index) => index === 0 ? call('story_settings_import', args) : stop())
   const h = await setup(model, { allowIncompleteSettings: true }, { allowSettingsImport: true })
-  await h.runs.begin(h.actor, h.input)
+  const held = await h.runs.begin(h.actor, h.input)
   // A well-formed document; this novel has no adopted a1 yet, so the refusal must come from the run-active check that precedes every other check.
   args = { novelId: h.novel.id, requestId: 'import-a1', dimensionCode: 'a1', expectedAppliedId: h.novel.brief.id, output: JSON.stringify({ version: 1, dimensionCode: 'a1', inputRefs: [], facts: [{ id: 'genre', statement: 'A harbor mystery.' }], contentMarkdown: '# Genre\n\nHarbor mystery.' }) }
   beginConversation(h.agent)
@@ -463,5 +463,28 @@ it('G2: reports an import refused by an unfinished run with a machine-readable l
   const result = recordedResults(model)[0]
   expect(result?.isError).toBe(true)
   const text = result?.content[0]?.type === 'text' ? result.content[0].text : ''
-  expect(JSON.parse(text.split('\n').at(-1) ?? '')).toEqual({ code: 'import-refused', reason: 'run-active' })
+  expect(JSON.parse(text.split('\n').at(-1) ?? '')).toEqual({ code: 'import-refused', reason: 'run-active', runId: held.id })
+  expect(text).toContain(`writing run (${held.id}); stop it first`)
+})
+
+it('reports story_write refused by an unfinished run with the holding runId on the readable line and the JSON last line', async () => {
+  let input: BeginRunInput
+  const model = new ScriptedModel((_request, index) => {
+    if (index !== 0) return stop()
+    const { executionLimits: _limits, serviceLimits: _serviceLimits, mode: _mode, revision: _revision, ...args } = input
+    return call('story_write', { ...args, requestId: 'second-write', settingsRoots: ['a4', 'a5', 'g2'] })
+  })
+  const h = await setup(model, {})
+  input = h.input
+  const held = await h.runs.begin(h.actor, h.input)
+  beginConversation(h.agent)
+  await h.agent.whenIdle()
+  const result = recordedResults(model)[0]
+  expect(result?.isError).toBe(true)
+  const text = result?.content[0]?.type === 'text' ? result.content[0].text : ''
+  const lines = text.split('\n')
+  expect(lines).toHaveLength(2)
+  expect(lines[0]).toBe(`Error: The novel already has an unfinished writing run (${held.id}); stop it with story_stop or resume it with story_resume first`)
+  expect(JSON.parse(lines[1] ?? '')).toEqual({ code: 'active-run', runId: held.id })
+  expect(h.runs.list(h.actor, input.novelId).map(run => run.id)).toEqual([held.id])
 })

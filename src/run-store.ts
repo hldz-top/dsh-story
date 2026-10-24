@@ -28,6 +28,9 @@ const executionLimitsSchema = z.strictObject({
   maxRepairAttempts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), maxParallelStages: positive,
   maxStageRequests: positive, stageTimeoutMs: positive.max(2_147_483_647), maxDelegationDepth: positive,
   minChapterWords: positive, maxChapterWords: positive, stageProvider: z.string().min(1).refine(value => value.trim().length > 0),
+  // Prompt version 5 and later only: whether AI-tone findings in a body review block. Recorded on every such run (begin fills
+  // the default, on); absent on runs created before version 5, which keep advisory AI tone whatever the current config says.
+  aiToneBlocking: z.boolean().exactOptional(),
 }).refine(value => value.minChapterWords <= value.maxChapterWords, 'Invalid chapter word range')
 /** Native execution and writing limits captured before a run; model selection stays with DSH. */
 export type RunExecutionLimits = z.infer<typeof executionLimitsSchema>
@@ -81,6 +84,9 @@ export type EvidenceEvent = z.infer<typeof evidenceEventSchema>
 /** Code points kept per recorded quote or reason; events are diagnostics, the admitted value itself is stored in full. */
 const EVENT_TEXT_CHARS = 400
 const MAX_EVIDENCE_EVENTS = 200
+const aiToneBlockSchema = z.strictObject({ reason: z.enum(['ai-tone', 'ai-tone-repeat', 'ai-tone-exhausted']), spans: z.array(z.string()).max(20) })
+/** Why the host blocked the body a review attempt judged: the stop or repair reason and the blocking body excerpts. */
+export type AiToneBlockRecord = z.infer<typeof aiToneBlockSchema>
 const attemptSchema = z.strictObject({
   id: attemptIdSchema, parentSessionId: sessionIdSchema, request: attemptRequestSchema,
   status: z.enum(['prepared', 'running', 'succeeded', 'failed', 'unknown']), childSessionId: sessionIdSchema.nullable(),
@@ -89,6 +95,10 @@ const attemptSchema = z.strictObject({
   failureKind: attemptFailureKindSchema.optional(),
   // Host evidence repairs and drops from admitting this attempt's output; absent when none (and on older records).
   evidenceEvents: z.array(evidenceEventSchema).max(MAX_EVIDENCE_EVENTS).optional(),
+  // Prompt version 5 body reviews only: set on a review whose body the host blocked for AI tone. The review artifact itself
+  // stays as the reviewer wrote it (its AI-tone issues are advisory), so this marker is what shows the block before any
+  // manual use of that body. Absent on every other attempt and on older records.
+  aiToneBlock: aiToneBlockSchema.exactOptional(),
 })
 type AttemptRecord = z.infer<typeof attemptSchema>
 /** Detached execution progress, excluding the stored prompt and response schema. */
@@ -99,7 +109,7 @@ const runSchema = z.strictObject({
   startedBy: sessionIdSchema, lastResumedBy: sessionIdSchema,
   attempts: z.array(attemptSchema), error: z.string().nullable(),
   // Prompt text version fixed at creation so a resume rebuilds identical prompts; absent on runs created before versioning (= 1).
-  promptVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  promptVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional(),
 })
 /** Detached progress metadata; raw stage outputs are read explicitly. */
 export type WritingRun = Omit<RunRecord, 'attempts'> & { readonly attempts: readonly WritingAttempt[] }
@@ -125,6 +135,28 @@ export class RunStoreError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'RunStoreError' }
 }
 function fail(code: string, message: string): never { throw new RunStoreError(code, message) }
+/** One resume-compared limit whose captured value differs from the current deployment's. */
+export interface RunLimitMismatch { readonly key: string; readonly saved: number | boolean | null; readonly current: number | boolean }
+/**
+ * A resume refused because captured limits differ from the current config. Readable text first, then one JSON line
+ * `{"code":"run-limits","mismatched":[{"key":...,"saved":...,"current":...}]}` naming every differing key.
+ * Keeps the name RunStoreError, so existing handlers that match on it still apply.
+ */
+export class RunLimitsError extends RunStoreError {
+  constructor(readonly mismatched: readonly RunLimitMismatch[]) {
+    super('run-limits', `Restore the captured writing and research limits before resuming; legacy runs without a snapshot cannot resume. Differing: ${mismatched.map(item => `${item.key} (saved ${String(item.saved)}, current ${String(item.current)})`).join(', ')}.\n${JSON.stringify({ code: 'run-limits', mismatched })}`)
+  }
+}
+/**
+ * The novel is held by another unfinished (running or interrupted) run. The readable sentence names it and the message ends with
+ * one JSON line `{"code":"active-run","runId":...}`, so a caller can stop or resume exactly that run.
+ */
+export class ActiveRunError extends RunStoreError {
+  constructor(message: string, readonly runId: RunId) {
+    super('active-run', `${message} (${runId}); stop it with story_stop or resume it with story_resume first\n${JSON.stringify({ code: 'active-run', runId })}`)
+    this.name = 'ActiveRunError'
+  }
+}
 function active(run: { readonly status: WritingRun['status'] }): boolean { return run.status === 'running' || run.status === 'interrupted' }
 
 /** Per-novel histories; native model execution and cancellation quiescence belong to the caller. */
@@ -139,6 +171,7 @@ export class RunStore {
     actor.signal?.throwIfAborted()
     const parsed = beginSchema.safeParse(input)
     if (!parsed.success) fail('invalid-input', parsed.error.message)
+    const request = withAiToneBlocking(parsed.data, promptVersion)
     await this.ensureNovel(actor, parsed.data.novelId)
     let result: RunRecord | undefined
     await this.domain.table('novels').update(parsed.data.novelId, current => {
@@ -147,13 +180,14 @@ export class RunStore {
       const existing = current.runs.find(run => run.requestId === parsed.data.requestId)
       if (existing !== undefined) {
         requireServiceLimits(existing)
-        if (!isDeepStrictEqual(beginSchema.parse(pickRequest(existing)), parsed.data)) fail('request-conflict', 'Request ID already names different writing inputs')
+        if (!isDeepStrictEqual(beginSchema.parse(pickRequest(existing)), withAiToneBlocking(parsed.data, existing.promptVersion ?? 1))) fail('request-conflict', 'Request ID already names different writing inputs')
         result = existing
         return current
       }
       validateRevisionBudget(parsed.data, this.limits)
-      if (current.runs.some(active)) fail('active-run', 'The novel already has an unfinished writing run')
-      result = { ...parsed.data, limits: { ...this.limits }, id: brandString<RunId>(`run_${randomUUID()}`), status: 'running', startedBy: actor.sessionId, lastResumedBy: actor.sessionId, attempts: [], error: null, promptVersion }
+      const holder = current.runs.find(active)
+      if (holder !== undefined) throw new ActiveRunError('The novel already has an unfinished writing run', holder.id)
+      result = { ...request, limits: { ...this.limits }, id: brandString<RunId>(`run_${randomUUID()}`), status: 'running', startedBy: actor.sessionId, lastResumedBy: actor.sessionId, attempts: [], error: null, promptVersion }
       return { ...current, version: 2, runs: [...current.runs, result] }
     })
     if (result === undefined) fail('corrupt-run', 'Run creation did not produce a record')
@@ -166,7 +200,7 @@ export class RunStore {
       const run = record.runs.find(item => item.id === runId)
       if (run !== undefined) { this.own(actor, record); return runView(run) }
     }
-    return fail('run-not-found', 'Writing run does not exist')
+    return fail('run-not-found', 'runId does not exist')
   }
 
   /** @param actor - Workspace owner. @param novelId - Novel whose history is requested. @returns Detached runs in creation order. */
@@ -183,7 +217,8 @@ export class RunStore {
       requireServiceLimits(original)
       const run = recoverOutputs(original, this.domain)
       if (run.status === 'completed') fail('run-state', 'Completed runs cannot resume')
-      if (record.runs.some(other => other.id !== run.id && active(other))) fail('active-run', 'Another unfinished run owns the novel')
+      const holder = record.runs.find(other => other.id !== run.id && active(other))
+      if (holder !== undefined) throw new ActiveRunError('Another unfinished run owns the novel', holder.id)
       if (latestAttempts(run).some(attempt => attempt.status === 'unknown') && !options.retryUnknown) fail('unknown-outcome', 'Explicit retry permission is required for unknown stage outcomes')
       return { ...run, status: 'running', lastResumedBy: actor.sessionId, error: null,
         attempts: run.attempts.map(attempt => attempt.status === 'unknown' && latestAttempts(run).some(latest => latest.id === attempt.id) ? { ...attempt, retryAuthorized: options.retryUnknown } : attempt) }
@@ -233,7 +268,7 @@ export class RunStore {
   async saveOutput(actor: Actor, runId: RunId, attemptId: AttemptId, text: string): Promise<WritingAttempt> {
     actor.signal?.throwIfAborted()
     const run = this.get(actor, runId)
-    if (!run.attempts.some(attempt => attempt.id === attemptId)) fail('attempt-not-found', 'Attempt does not belong to this run')
+    if (!run.attempts.some(attempt => attempt.id === attemptId)) fail('attempt-not-found', 'attemptId does not belong to this run')
     const pending = this.outputWrites.get(attemptId)
     if (pending !== undefined) {
       if (pending.text !== text) fail('output-conflict', 'Attempt output is immutable')
@@ -248,7 +283,7 @@ export class RunStore {
   readOutput(actor: Actor, runId: RunId, attemptId: AttemptId): RunOutput {
     const run = this.get(actor, runId)
     const attempt = run.attempts.find(item => item.id === attemptId)
-    if (attempt === undefined) fail('attempt-not-found', 'Attempt does not belong to this run')
+    if (attempt === undefined) fail('attempt-not-found', 'attemptId does not belong to this run')
     if (attempt.output === null) fail('output-not-found', 'Attempt has no published raw output')
     const output = this.domain.table('outputs').get(attemptId)
     if (output === undefined || output.runId !== runId || !isDeepStrictEqual(outputRef(output), attempt.output)) fail('corrupt-run', 'Saved output does not match its attempt reference')
@@ -307,10 +342,27 @@ export class RunStore {
     return attemptView(findAttempt(run, attemptId))
   }
 
+  /**
+   * @param actor - Workspace owner. @param runId - Running request. @param attemptId - Succeeded body-review attempt.
+   * @param block - The host's AI-tone block of the reviewed body; recording the same block again is a no-op.
+   * @returns The attempt with its durable marker.
+   */
+  async recordAiToneBlock(actor: Actor, runId: RunId, attemptId: AttemptId, block: AiToneBlockRecord): Promise<WritingAttempt> {
+    const parsed = aiToneBlockSchema.parse(block)
+    const run = await this.change(actor, runId, current => {
+      this.requireRunning(current)
+      return replaceAttempt(current, attemptId, attempt => {
+        if (attempt.status !== 'succeeded') fail('attempt-state', 'An AI-tone block belongs to a review attempt with saved output')
+        return isDeepStrictEqual(attempt.aiToneBlock, parsed) ? attempt : { ...attempt, aiToneBlock: parsed }
+      })
+    })
+    return attemptView(findAttempt(run, attemptId))
+  }
+
   private async persistOutput(actor: Actor, runId: RunId, attemptId: AttemptId, text: string): Promise<WritingAttempt> {
     const run = this.get(actor, runId)
     const attempt = run.attempts.find(item => item.id === attemptId)
-    if (attempt === undefined) fail('attempt-not-found', 'Attempt does not belong to this run')
+    if (attempt === undefined) fail('attempt-not-found', 'attemptId does not belong to this run')
     const existing = this.domain.table('outputs').get(attemptId)
     if (existing !== undefined && (existing.text !== text || existing.runId !== runId)) fail('output-conflict', 'Attempt output is immutable')
     if (attempt.status === 'succeeded') { this.readOutput(actor, runId, attemptId); return attempt }
@@ -365,6 +417,15 @@ function pickRequest(run: RunRecord) {
   return { serviceLimits: run.serviceLimits, executionLimits: run.executionLimits, novelId: run.novelId, requestId: run.requestId, briefArtifactId: run.briefArtifactId, settingsRoots: run.settingsRoots, chapterCount: run.chapterCount, fromChapter: run.fromChapter, throughChapter: run.throughChapter, mode: run.mode, revision: run.revision }
 }
 
+/**
+ * A run on prompt version 5 or later always records aiToneBlocking (default on when the caller passed none); an older run
+ * never does, so its body reviews stay advisory regardless of the deployment's current switch.
+ */
+function withAiToneBlocking(input: BeginRunInput, promptVersion: PromptVersion): BeginRunInput {
+  const { aiToneBlocking, ...limits } = input.executionLimits
+  return { ...input, executionLimits: promptVersion >= 5 ? { ...limits, aiToneBlocking: aiToneBlocking ?? true } : limits }
+}
+
 function requireServiceLimits(run: RunRecord): void {
   if (run.serviceLimits === null) fail('run-limits', 'Legacy run has no recorded service limits; read or stop it and begin a new request')
 }
@@ -376,7 +437,7 @@ function attemptView(attempt: AttemptRecord): WritingAttempt {
 function runView(run: RunRecord): WritingRun { return structuredClone({ ...run, attempts: run.attempts.map(attemptView) }) }
 function findAttempt(run: RunRecord, id: AttemptId): AttemptRecord {
   const attempt = run.attempts.find(item => item.id === id)
-  if (attempt === undefined) fail('attempt-not-found', 'Attempt does not belong to this run')
+  if (attempt === undefined) fail('attempt-not-found', 'attemptId does not belong to this run')
   return attempt
 }
 function replaceAttempt(run: RunRecord, id: AttemptId, transform: (attempt: AttemptRecord) => AttemptRecord): RunRecord {

@@ -12,6 +12,7 @@ import type { Domain } from '@deepseek-ai/dsh-storage-domain'
 import type { z } from 'zod'
 import type { Actor, Artifact, ArtifactId, ArtifactRef, NovelId, RequestId } from './contracts.ts'
 import { assembleBody, inspectBody, measureBeats } from './body-text.ts'
+import { detectAiTone, type AiToneReport } from './ai-tone.ts'
 import type { BodyBeats, BodyLengthResult, BodyWordBounds } from './body-text.ts'
 import type { ReviewCategory, StageInputRef } from './stage-output.ts'
 import type { AppliedChapterRecord } from './manuscript-records.ts'
@@ -52,6 +53,8 @@ export interface ManuscriptCandidateView {
   readonly wordCount: number | null; readonly length: BodyLengthResult | null
   /** Host-measured scene and panel positions of a body candidate; null for every other kind. */
   readonly beats: BodyBeats | null
+  /** Host-detected AI-tone markers in body narration (src/ai-tone.ts); null for other kinds. */
+  readonly aiTone: AiToneReport | null
 }
 /** Exact candidate review with a latest-review compare-and-set precondition. */
 export interface SaveManuscriptReviewRequest {
@@ -485,7 +488,7 @@ export class ManuscriptStore {
   private record(actor: Actor, novelId: NovelId): NovelRecord {
     this.owner.getNovel(actor, novelId)
     const novel = this.domain.table('novels').get(novelId)
-    if (novel === undefined) throw new WritingError('novel-not-found', 'Novel does not exist')
+    if (novel === undefined) throw new WritingError('novel-not-found', 'novelId does not exist')
     return novel
   }
 
@@ -570,7 +573,7 @@ export class ManuscriptStore {
     const review = candidate.reviewHistory.at(-1)
     return structuredClone({ target: candidate.target, artifact: candidate.artifact, inputRefs: candidate.inputRefs, childSessionId: candidate.childSessionId, revisionOf: candidate.revisionOf,
       status: candidate.applied ? 'applied' : inspection?.length.blocking ? 'blocked' : review === undefined ? 'candidate' : review.blocking ? 'blocked' : 'reviewed',
-      review: review?.artifact ?? null, stale: changedInputs.length > 0, changedInputs, wordCount: inspection?.wordCount ?? null, length: inspection?.length ?? null, beats: validated.kind === 'body' ? measureBeats(validated.output) : null })
+      review: review?.artifact ?? null, stale: changedInputs.length > 0, changedInputs, wordCount: inspection?.wordCount ?? null, length: inspection?.length ?? null, beats: validated.kind === 'body' ? measureBeats(validated.output) : null, aiTone: validated.kind === 'body' ? detectAiTone(assembleBody(validated.output)) : null })
   }
 
   private artifact<K extends ManuscriptKind | 'review'>(novelId: NovelId, kind: K, text: string): Artifact<K> {

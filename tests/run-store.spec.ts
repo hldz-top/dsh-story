@@ -72,7 +72,10 @@ describe.each(['json', 'sqlite'] as const)('%s durable writing runs', backend =>
     expect(first).toEqual(repeated)
     expect(first).toMatchObject({ ...input, status: 'running', startedBy: owner.sessionId, attempts: [] })
     expect(first.id).toMatch(/^run_[0-9a-f-]{36}$/)
-    await expect(h.store.begin(owner, { ...input, requestId: parseRequestId('second') })).rejects.toMatchObject({ code: 'active-run' })
+    const refused = h.store.begin(owner, { ...input, requestId: parseRequestId('second') })
+    await expect(refused).rejects.toMatchObject({ name: 'ActiveRunError', code: 'active-run', runId: first.id })
+    const message = await refused.then(() => '', (cause: unknown) => String((cause as Error).message))
+    expect(message.split('\n')).toEqual([`The novel already has an unfinished writing run (${first.id}); stop it with story_stop or resume it with story_resume first`, JSON.stringify({ code: 'active-run', runId: first.id })])
     expect(h.store.get(owner, first.id)).toEqual(first)
     expect(h.store.list(owner, input.novelId)).toEqual([first])
     expect(() => h.store.get({ ...owner, workspace: '/other' }, first.id)).toThrowError(expect.objectContaining({ code: 'workspace-mismatch' }))
@@ -239,7 +242,7 @@ describe.each(['json', 'sqlite'] as const)('%s durable writing runs', backend =>
     expect(stages.map(result => result.status).sort()).toEqual(['fulfilled', 'rejected'])
     expect(h.store.get(owner, run.id).attempts).toHaveLength(1)
     await h.restart()
-    await expect(h.store.begin(owner, { ...input, requestId: parseRequestId('after-interruption') })).rejects.toMatchObject({ code: 'active-run' })
+    await expect(h.store.begin(owner, { ...input, requestId: parseRequestId('after-interruption') })).rejects.toMatchObject({ code: 'active-run', runId: run.id })
   })
 
   it('checks cancellation inside queued updates and lets an unaborted cleanup actor stop the run', async () => {
@@ -297,7 +300,9 @@ describe.each(['json', 'sqlite'] as const)('%s durable writing runs', backend =>
     await expect(h.store.finish(owner, run.id, 'completed')).rejects.toMatchObject({ code: 'run-state' })
     await expect(h.store.finish(owner, run.id, 'stopped', 'Rewritten reason')).rejects.toMatchObject({ code: 'run-state' })
     const second = await h.store.begin(owner, { ...input, requestId: parseRequestId('new-write') })
-    await expect(h.store.resume(owner, run.id, { retryUnknown: false })).rejects.toMatchObject({ code: 'active-run' })
+    const blocked = h.store.resume(owner, run.id, { retryUnknown: false })
+    await expect(blocked).rejects.toMatchObject({ code: 'active-run', runId: second.id })
+    expect(JSON.parse((await blocked.then(() => '', (cause: unknown) => String((cause as Error).message))).split('\n').at(-1) ?? '')).toEqual({ code: 'active-run', runId: second.id })
     await h.store.finish(owner, second.id, 'failed', 'Failure')
     await h.store.resume(owner, run.id, { retryUnknown: false })
     expect(await h.store.finish(owner, run.id, 'completed')).toMatchObject({ status: 'completed' })
@@ -361,6 +366,17 @@ describe.each(['json', 'sqlite'] as const)('%s durable writing runs', backend =>
       { id: first.id, parentSessionId: owner.sessionId, status: 'unknown' },
       { id: replacement.id, parentSessionId: nextActor.sessionId, status: 'prepared' },
     ] })
+  })
+
+  it('reopens stored prompt versions 3 and 4', async () => {
+    const h = await useRunStorage(backend, limits)
+    const third = await h.store.begin(owner, { ...input, requestId: parseRequestId('prompt-v3') }, 3)
+    await h.store.finish(owner, third.id, 'stopped', 'Stored on prompt version 3.')
+    const fourth = await h.store.begin(owner, { ...input, requestId: parseRequestId('prompt-v4') }, 4)
+    await h.store.finish(owner, fourth.id, 'stopped', 'Stored on prompt version 4.')
+    await h.restart()
+    expect(h.store.get(owner, third.id).promptVersion).toBe(3)
+    expect(h.store.get(owner, fourth.id).promptVersion).toBe(4)
   })
 
 })
@@ -541,7 +557,7 @@ it('keeps an unfinished legacy run occupying its slot until the author explicitl
   await expect(h.store.resume(owner, run.id, { retryUnknown: true })).rejects.toMatchObject({ code: 'run-limits' })
   expect(h.store.get(owner, run.id)).toEqual(legacy)
   const next = { ...input, requestId: parseRequestId('explicit-replacement') }
-  await expect(h.store.begin(owner, next)).rejects.toMatchObject({ code: 'active-run' })
+  await expect(h.store.begin(owner, next)).rejects.toMatchObject({ code: 'active-run', runId: run.id })
   await h.store.finish(owner, run.id, 'stopped', 'Retire the run with unavailable original limits.')
   expect(await h.store.begin(owner, next)).toMatchObject({ serviceLimits, status: 'running' })
 })

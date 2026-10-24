@@ -1,0 +1,28 @@
+{
+  "source": "lieflat-less-ai-tone@27d2923 (MIT)",
+  "narrationHan": 3471,
+  "markers": [
+    {
+      "rule": "enumeration",
+      "skillRule": "2 顿号罗列过密",
+      "count": 4,
+      "perThousandHan": 1.2,
+      "examples": [
+        "音从腰上沉下去，力气走绳、走杆、走几何，不走肩膀。",
+        "凉在格栅的沿上。他把应急锁环、气密胶、对接环密封件一件件码进胸前的工具挂袋里，码得",
+        "他脾气就是这样。先看表、先签字、再想回来的事。"
+      ]
+    },
+    {
+      "rule": "dash",
+      "skillRule": "4 破折号",
+      "count": 14,
+      "perThousandHan": 4,
+      "examples": [
+        "走，走的不是匀速——前几秒掉两格，接",
+        "板上，顺着嘶声走——它不是从同一块板",
+        "换边，左，右，左——然后伸手背贴门框"
+      ]
+    }
+  ]
+}

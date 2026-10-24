@@ -39,6 +39,8 @@ export interface Config extends ResearchLimits, RunExecutionLimits {
   allowIncompleteSettings: boolean
   /** Operator-only: register story_settings_import. Enable only for an import, then turn it off. Default false: the tool is absent from the tool schema. */
   allowSettingsImport: boolean
+  /** Body reviews on prompt version 5 turn AI-tone findings quoting the body into blocking issues. Frozen into each new run. Default true. */
+  aiToneBlocking: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -56,6 +58,7 @@ export const Config: z<Config> = z.object({
   previewDirectory: z.string().default('.dsh-story'),
   allowIncompleteSettings: z.boolean().default(false),
   allowSettingsImport: z.boolean().default(false),
+  aiToneBlocking: z.boolean().default(true),
   maxResearchQuestions: z.number().default(12),
   maxResearchCalls: z.number().default(12),
   maxResearchSources: z.number().default(24),
@@ -85,10 +88,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
   if (!Number.isSafeInteger(config.maxRepairAttempts) || config.maxRepairAttempts < 0) throw new Error('maxRepairAttempts must be a finite nonnegative integer')
   if (config.stageTimeoutMs > 2_147_483_647) throw new Error('stageTimeoutMs exceeds the supported timer range')
+  if (typeof config.aiToneBlocking !== 'boolean') throw new Error('aiToneBlocking must be a boolean')
   if (config.stageProvider.trim().length === 0) throw new Error('stageProvider must name a configured native in-process spawn provider')
   const executionLimits: RunExecutionLimits = { stageProvider: config.stageProvider, maxDelegationDepth: config.maxDelegationDepth,
     maxStageRequests: config.maxStageRequests, stageTimeoutMs: config.stageTimeoutMs, maxRepairAttempts: config.maxRepairAttempts,
-    maxParallelStages: config.maxParallelStages, minChapterWords: config.minChapterWords, maxChapterWords: config.maxChapterWords }
+    maxParallelStages: config.maxParallelStages, minChapterWords: config.minChapterWords, maxChapterWords: config.maxChapterWords,
+    aiToneBlocking: config.aiToneBlocking }
   const researchLimits: ResearchLimits = {
     maxResearchQuestions: config.maxResearchQuestions,
     maxResearchCalls: config.maxResearchCalls,
